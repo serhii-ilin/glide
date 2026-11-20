@@ -4,21 +4,17 @@
  * record mirroring probes and Acid3 indicator. See docs/dom-library-spike.md.
  */
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import vm from "node:vm";
 
-import { extractScripts, resolveScriptPath } from "./lib/html-scripts.mjs";
+import { runDominoBundleExperiments } from "./lib/domino-bundle-experiments.mjs";
+import { extractScripts } from "./lib/html-scripts.mjs";
+import { runWptFileForked } from "./lib/wpt-fork.mjs";
+import { bootstrapPage } from "./lib/wpt-runner.mjs";
 import {
-  createBootstrapContext,
   createWindowContext,
-  dispatchEvent,
-  flushTestHarness,
-  htmlForDocumentParse,
   makeTimerQueue,
-  readHarnessResults,
   readFile,
   runScriptInContext,
 } from "./lib/vm-harness.mjs";
@@ -26,7 +22,6 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
 const SPIKE_DIR = path.join(ROOT, "target/dom-spike");
-const spikeRequire = createRequire(path.join(SPIKE_DIR, "package.json"));
 const WPT_ROOT = path.join(ROOT, "tests/compat/wpt");
 const NODES_DIR = path.join(WPT_ROOT, "dom/nodes");
 const ACID3_CACHE = path.join(
@@ -34,7 +29,6 @@ const ACID3_CACHE = path.join(
   "target/compat-cache/http___acid3_acidtests_org_",
 );
 const PROBE_SOURCE = readFile(path.join(__dirname, "lib/probe-source.js"));
-const SPIKE_REPORT = path.join(__dirname, "spike-testharnessreport.js");
 const RESULTS_JSON = path.join(SPIKE_DIR, "results.json");
 
 const LIBRARIES = [
@@ -79,6 +73,10 @@ function ensureSpikeDeps() {
     "install",
     "--save-exact",
     "esbuild",
+    "browserify",
+    "rollup",
+    "@rollup/plugin-node-resolve",
+    "@rollup/plugin-commonjs",
     ...LIBRARIES.map((l) => l.packageSpec),
     "whatwg-url",
   ];
@@ -139,14 +137,22 @@ function bundleLibrary(lib) {
   let bundleRuntimeOk = false;
   if (lib.id === "domino" || lib.id === "linkedom" || lib.id === "happy-dom") {
     try {
-      bootstrapPage(lib, "", "<!DOCTYPE html><html><body></body></html>");
+      bootstrapPage(
+        { ...lib, bootstrap: "require" },
+        "",
+        "<!DOCTYPE html><html><body></body></html>",
+      );
       bundleRuntimeOk = true;
     } catch {
       bundleRuntimeOk = false;
     }
   } else if (esbuildBundleOk) {
     try {
-      bootstrapPage(lib, readFile(outFile), "<!DOCTYPE html><html><body></body></html>");
+      bootstrapPage(
+        { ...lib, bootstrap: "bundle" },
+        readFile(outFile),
+        "<!DOCTYPE html><html><body></body></html>",
+      );
       bundleRuntimeOk = true;
     } catch {
       bundleRuntimeOk = false;
@@ -174,7 +180,10 @@ function bundleLibrary(lib) {
             ? null
             : "esbuild output fails createPage in bare vm"
           : (run.stderr || run.stdout || "esbuild failed").trim(),
-    minifiedBytes: lib.id === "domino" ? dominoLibBytes() : minBytes,
+    minifiedBytes:
+      lib.id === "domino"
+        ? dominoLibBytes()
+        : minBytes || folderJsBytes(path.join(nm, lib.id === "happy-dom" ? "happy-dom/lib" : "linkedom/cjs")),
     esbuildMinifiedBytes: minBytes,
     shims: shimInfo,
     version: installed.version,
@@ -262,156 +271,20 @@ function dominoLibBytes() {
   return total;
 }
 
-function bootstrapPage(lib, bundleCode, html, { stripScripts = true } = {}) {
-  const parseHtml = stripScripts ? htmlForDocumentParse(html) : html;
-  if (lib.id === "domino") {
-    const domino = spikeRequire("domino");
-    const window = domino.createWindow(
-      parseHtml || "<!DOCTYPE html><html><head></head><body></body></html>",
-    );
-    return { window, document: window.document };
-  }
-  if (lib.id === "linkedom") {
-    const { parseHTML } = spikeRequire("linkedom");
-    const parsed = parseHTML(
-      parseHtml || "<!DOCTYPE html><html><head></head><body></body></html>",
-    );
-    const window = parsed.window ?? parsed;
-    return { window, document: parsed.document };
-  }
-  if (lib.id === "happy-dom") {
-    const { Window } = spikeRequire("happy-dom");
-    const window = new Window({
-      url: "http://localhost/",
-      width: 1024,
-      height: 768,
-    });
-    window.document.open();
-    window.document.write(
-      parseHtml || "<!DOCTYPE html><html><head></head><body></body></html>",
-    );
-    window.document.close();
-    return { window, document: window.document };
-  }
-  const boot = createBootstrapContext(makeTimerQueue());
-  runScriptInContext(boot, bundleCode, "bundle.js");
-  runScriptInContext(
-    boot,
-    `globalThis.__PAGE__ = ${lib.globalName}.createPage(${JSON.stringify(parseHtml)});`,
-    "<createPage>",
-  );
-  return boot.__PAGE__;
-}
-
-function runWptFile(lib, bundleCode, htmlPath) {
-  const html = readFile(htmlPath);
-  const testDir = path.dirname(htmlPath);
-  const scripts = extractScripts(html);
-  let page;
-  try {
-    page = bootstrapPage(lib, bundleCode, html);
-  } catch (e) {
-    return {
-      file: path.basename(htmlPath),
-      error: `createPage: ${e.message}`,
-      tests: [],
-      timedOut: false,
-    };
-  }
-  if (!page?.window) {
-    return {
-      file: path.basename(htmlPath),
-      error: `bundle missing ${lib.globalName}.createPage`,
-      tests: [],
-      timedOut: false,
-    };
-  }
-
-  const timerQueue = makeTimerQueue();
-  const sandbox = createWindowContext(page.window, timerQueue);
-
-  let harnessError = null;
-  for (const spec of scripts) {
-    try {
-      if (spec.src) {
-        const resolved = resolveScriptPath(spec.src, testDir, WPT_ROOT);
-        if (!fs.existsSync(resolved)) {
-          harnessError = `missing script: ${spec.src} -> ${resolved}`;
-          break;
-        }
-        let code = readFile(resolved);
-        if (resolved.endsWith("glide-testharnessreport.js")) {
-          code = readFile(SPIKE_REPORT);
-        }
-        runScriptInContext(sandbox, code, resolved);
-      } else if (spec.code) {
-        runScriptInContext(sandbox, spec.code, `${path.basename(htmlPath)}:${spec.line}`);
-      }
-    } catch (e) {
-      harnessError = `script error (${spec.src || "inline"}): ${e.message}`;
-      break;
-    }
-  }
-
-  if (!harnessError) {
-    try {
-      dispatchEvent(sandbox, "DOMContentLoaded");
-      dispatchEvent(sandbox, "load");
-    } catch (e) {
-      harnessError = `event: ${e.message}`;
-    }
-  }
-
-  let drain = timerQueue.drainUntilIdle();
-  if (!harnessError) {
-    try {
-      flushTestHarness(sandbox);
-    } catch (e) {
-      harnessError = `flush: ${e.message}`;
-    }
-    drain = timerQueue.drainUntilIdle();
-  }
-  const summary = harnessError ? null : readHarnessResults(sandbox);
-
-  if (process.env.SPIKE_DEBUG && htmlPath.includes("Document-createComment")) {
-    console.error(
-      "DEBUG",
-      path.basename(htmlPath),
-      "hasTest",
-      typeof sandbox.test,
-      "pre",
-      !!sandbox.document?.getElementById("__glide_results"),
-      "summary",
-      summary?.tests?.length,
-      "err",
-      harnessError,
-    );
-  }
-
-  return {
-    file: path.basename(htmlPath),
-    error: harnessError,
-    timedOut: drain.timedOut,
-    pendingTimers: drain.pending ?? 0,
-    summary,
-    tests: summary?.tests ?? [],
-    harnessStatus: summary?.status ?? (harnessError ? "ERROR" : "NO_RESULTS"),
-  };
-}
-
-function summarizeWpt(runs) {
+function summarizeWpt(runs, libId) {
   let passed = 0;
   let total = 0;
   let filesFull = 0;
   const errors = [];
   const timeouts = [];
   for (const r of runs) {
+    if (r.hung || r.timedOut) {
+      timeouts.push(`${libId}:${r.file}`);
+      continue;
+    }
     if (r.error) {
       errors.push(`${r.file}: ${r.error}`);
       continue;
-    }
-    if (r.timedOut) {
-      timeouts.push(r.file);
     }
     const tests = r.tests;
     if (tests.length === 0) {
@@ -446,7 +319,7 @@ function summarizeWpt(runs) {
 
 function runMirroringProbe(lib, bundleCode) {
   const page = bootstrapPage(
-    lib,
+    { ...lib, bootstrap: "require" },
     bundleCode,
     "<!DOCTYPE html><html><head></head><body></body></html>",
   );
@@ -485,7 +358,12 @@ function runAcid3(lib, bundleCode) {
   const html = readFile(ACID3_CACHE);
   let page;
   try {
-    page = bootstrapPage(lib, bundleCode, html, { stripScripts: false });
+    page = bootstrapPage(
+      { ...lib, bootstrap: "require" },
+      bundleCode,
+      html,
+      { stripScripts: false },
+    );
   } catch (e) {
     return { score: null, note: `createPage: ${e.message}` };
   }
@@ -532,7 +410,7 @@ function detectDominoMutation(lib, bundleCode) {
   }
   try {
     const page = bootstrapPage(
-      lib,
+      { ...lib, bootstrap: "require" },
       bundleCode,
       "<!DOCTYPE html><html><body></body></html>",
     );
@@ -544,17 +422,19 @@ function detectDominoMutation(lib, bundleCode) {
   }
 }
 
-function main() {
+async function main() {
   console.log("DOM library spike: installing deps in target/dom-spike …");
   ensureSpikeDeps();
 
   const htmlFiles = listWptHtmlFiles();
+  const htmlPaths = htmlFiles.map((f) => path.join(NODES_DIR, f));
   console.log(`WPT dom/nodes: ${htmlFiles.length} HTML files`);
 
   const report = {
     generatedAt: new Date().toISOString(),
     wptFileCount: htmlFiles.length,
     libraries: {},
+    dominoBundleExperiments: [],
   };
 
   const only = process.env.SPIKE_ONLY?.split(",").map((s) => s.trim());
@@ -589,15 +469,24 @@ function main() {
         : "";
 
     const canRun = bundleInfo.runtimeOk ?? bundleInfo.bundleOk;
-    const wptRuns = canRun
-      ? htmlFiles.map((f) => runWptFile(lib, bundleCode, path.join(NODES_DIR, f)))
-      : htmlFiles.map((f) => ({
+    const wptLib = { ...lib, bootstrap: "require" };
+    const wptRuns = [];
+    if (canRun) {
+      for (const htmlPath of htmlPaths) {
+        process.stdout.write(`  WPT ${path.basename(htmlPath)} …\n`);
+        wptRuns.push(await runWptFileForked(wptLib, bundleCode, htmlPath));
+      }
+    } else {
+      for (const f of htmlFiles) {
+        wptRuns.push({
           file: f,
           error: bundleInfo.bundleError || "bundle failed",
           tests: [],
-        }));
+        });
+      }
+    }
 
-    const wpt = summarizeWpt(wptRuns);
+    const wpt = summarizeWpt(wptRuns, lib.id);
     const probe = canRun
       ? runMirroringProbe(lib, bundleCode)
       : { error: "no bundle" };
@@ -611,21 +500,32 @@ function main() {
     report.libraries[lib.id] = {
       ...bundleInfo,
       license: lib.license,
+      wptBootstrap: "require",
       wpt,
       wptRuns,
       probe,
       dominoMutation,
       acid3,
     };
+    fs.writeFileSync(RESULTS_JSON, JSON.stringify(report, null, 2));
 
     console.log(
       `WPT: ${wpt.passed}/${wpt.total} (${wpt.percent.toFixed(1)}%), files fully passing: ${wpt.filesFull}/${wpt.fileCount}`,
     );
+    if (wpt.timeouts.length) {
+      console.log(`  timeouts: ${wpt.timeouts.join(", ")}`);
+    }
     if (acid3.score != null) {
       console.log(`Acid3 indicator: ${acid3.score}/100`);
     } else {
       console.log(`Acid3 indicator: n/a (${acid3.note || "unparsed"})`);
     }
+  }
+
+  if (!only || only.includes("domino")) {
+    console.log("\n=== domino bundle experiments (T9b vendoring) ===");
+    report.dominoBundleExperiments =
+      await runDominoBundleExperiments(htmlPaths);
   }
 
   fs.writeFileSync(RESULTS_JSON, JSON.stringify(report, null, 2));
@@ -679,4 +579,7 @@ function printMarkdownTables(report) {
   }
 }
 
-main();
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

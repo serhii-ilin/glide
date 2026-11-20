@@ -243,3 +243,4 @@ dom/nodes/DOMImplementation-createHTMLDocument.js
 dom/nodes/ChildNode-remove.js
 dom/nodes/attributes.js
 dom/nodes/characterset-helper.js
+dom/nodes/productions.js

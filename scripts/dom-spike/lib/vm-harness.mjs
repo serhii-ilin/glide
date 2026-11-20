@@ -2,6 +2,7 @@ import vm from "node:vm";
 import fs from "node:fs";
 
 const TIMER_CAP_MS = 10_000;
+export const VM_SCRIPT_TIMEOUT_MS = 5000;
 
 const VM_BUILTINS = [
   "Object",
@@ -265,23 +266,32 @@ export function createBootstrapContext(timerQueue) {
   };
   attachVmBuiltins(sandbox);
   vm.createContext(sandbox);
-  vm.runInContext(
-    [
-      "var globalThis = this;",
-      "var global = globalThis;",
-      "var self = this;",
-      "var window = this;",
-      "var top = this;",
-      "var parent = this;",
-    ].join(" "),
-    sandbox,
-  );
+  try {
+    vm.runInContext(
+      [
+        "var globalThis = this;",
+        "var global = globalThis;",
+        "var self = this;",
+        "var window = this;",
+        "var top = this;",
+        "var parent = this;",
+      ].join(" "),
+      sandbox,
+      { timeout: VM_SCRIPT_TIMEOUT_MS },
+    );
+  } catch (e) {
+    throw new Error(`bootstrap globals: ${e.message}`);
+  }
   return sandbox;
 }
 
 export function runScriptInContext(sandbox, code, filename) {
-  const script = new vm.Script(code, { filename });
-  script.runInContext(sandbox);
+  try {
+    const script = new vm.Script(code, { filename, displayErrors: true });
+    script.runInContext(sandbox, { timeout: VM_SCRIPT_TIMEOUT_MS });
+  } catch (e) {
+    throw e;
+  }
 }
 
 export function readFile(path) {

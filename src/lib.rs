@@ -13,6 +13,7 @@ pub mod html;
 pub mod js;
 pub mod keyboard;
 pub mod location;
+pub mod net;
 pub mod parse;
 mod runtime;
 pub mod shot;

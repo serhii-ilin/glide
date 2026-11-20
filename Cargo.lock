@@ -1099,6 +1099,7 @@ dependencies = [
  "once_cell",
  "peniko",
  "png",
+ "reqwest",
  "tokio",
  "url",
  "v8",

@@ -53,5 +53,9 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | F-024 | T5 Page-only zoom (Cmd/Ctrl +/-/0) and find in page (Cmd/Ctrl+F) | done | R-010 | `zoom::tests::*`, `find::tests::*`, `keyboard::tests::readme_shortcut_table`, `chrome::tests::toolbar_height_stable_across_page_zoom`, manual M-022–M-025 | Chrome viewport zoom; toolbar counter-scaled with `--ui` |
 | F-025 | T6 Profile dir, settings, session restore, history file, bookmarks, in-memory cookies | done | R-011 | `profile::tests::*`, `history::tests::from_parts_restores_position`, `args::tests::*`, `keyboard::tests::readme_shortcut_table`, `net::tests::{provider_with_cookies_feature_builds,glide_bookmarks_page_delivers_html}`, manual M-026–M-028 | F-026 deferred; profile under platform data dir or `GLIDE_PROFILE_DIR` |
 | F-026 | Cookies persisted to disk | deferred | R-011 | | blitz-net builds its own reqwest client; needs a custom NetProvider |
-| F-027 | T7 Compatibility runner and `docs/compat/REPORT.md` (Acid1-3, WPT subset) | planned | R-012 | | |
-| F-028 | T8 Super-critical compatibility fixes | planned | R-013 | | scoped after T7 |
+| F-027 | T7 Compatibility runner (`compat` bin) and `docs/compat/REPORT.md` | done | R-012 | `compat::*`, `tests/compat_runner.rs`, `docs/compat/results.json` | Acid1-3 live URLs, ~100 WPT reftests + 30 `dom/nodes` harness; `scripts/vendor-wpt.sh` |
+| F-028 | T8 Super-critical compatibility fixes | planned | R-013 | | no crash/panic/hang in T7 report; scoped after T7 |
+| F-030 | WPT CSS reftest pixel diffs | deferred | R-012 | `docs/compat/REPORT.md` | 31/99 reftests exceed 0.1% / channel 16 tolerance |
+| F-031 | WPT testharness DOM gaps | deferred | R-012 | `docs/compat/REPORT.md` | 0/29 harness files pass (minimal `testharnessreport` shim) |
+| F-032 | Missing Web APIs and DOM bindings | deferred | R-012 | `tests/compat/probe.html`, `docs/compat/REPORT.md` | 37/57 probe keys undefined (e.g. `localStorage`, `MutationObserver`, `getComputedStyle`, many `documentElement` accessors) |
+| F-033 | Acid2/Acid3 layout and JS test gaps | deferred | R-012 | `docs/compat/REPORT.md` | Acid2 vs reference ~3.7% diff; Acid3 score not parsed with JS; Acid1 unreachable in run |

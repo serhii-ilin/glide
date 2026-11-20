@@ -73,6 +73,15 @@ cargo run --release -- --screenshot --no-js https://example.com example-nojs.png
 
 This fetches the page, waits for stylesheets and images, runs page scripts unless `--no-js` is set, and writes a PNG with Vello's CPU rasterizer.
 
+### Compatibility report
+
+```sh
+cargo build --release --bin glide --bin compat
+cargo run --release --bin compat -- --suite all
+```
+
+Writes `docs/compat/REPORT.md` and `docs/compat/results.json` (Acid1–3, vendored WPT subset, API probe). Re-vendor WPT files with `./scripts/vendor-wpt.sh`.
+
 ## Why this is not a Kitesurf crate dependency
 
 Kitesurf (Apache-2.0, opened November 2026) is a browser engine built to run on Cloudflare Workers. Its Rust workspace members are `kitesurf-core`, `renderer-core`, and `scene-host-wasm`. They are the right code for a Worker, and a poor fit for a native window:

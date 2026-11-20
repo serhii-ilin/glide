@@ -98,14 +98,18 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     Ok(document)
 }
 
-/// Collapse whitespace in each line and drop empty lines (one block of text per line).
+/// Collapse whitespace in each line, drop blank lines, and append a trailing newline.
 pub fn format_dump_text(doc: &BaseDocument, scripting_enabled: bool) -> String {
     let raw = body_text_content(doc, scripting_enabled);
-    raw.lines()
+    let lines: Vec<String> = raw
+        .lines()
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    if lines.is_empty() {
+        return "\n".to_string();
+    }
+    format!("{}\n", lines.join("\n"))
 }
 
 fn body_text_content(doc: &BaseDocument, scripting_enabled: bool) -> String {
@@ -115,6 +119,38 @@ fn body_text_content(doc: &BaseDocument, scripting_enabled: bool) -> String {
     let mut out = String::new();
     append_visible_text(doc, body.id, scripting_enabled, &mut out);
     out
+}
+
+fn push_line_break(out: &mut String) {
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+fn is_block_element(node: &blitz_dom::node::Node) -> bool {
+    node.data.is_element_with_tag_name(&local_name!("p"))
+        || node.data.is_element_with_tag_name(&local_name!("div"))
+        || node.data.is_element_with_tag_name(&local_name!("li"))
+        || node.data.is_element_with_tag_name(&local_name!("ul"))
+        || node.data.is_element_with_tag_name(&local_name!("ol"))
+        || node.data.is_element_with_tag_name(&local_name!("h1"))
+        || node.data.is_element_with_tag_name(&local_name!("h2"))
+        || node.data.is_element_with_tag_name(&local_name!("h3"))
+        || node.data.is_element_with_tag_name(&local_name!("h4"))
+        || node.data.is_element_with_tag_name(&local_name!("h5"))
+        || node.data.is_element_with_tag_name(&local_name!("h6"))
+        || node.data.is_element_with_tag_name(&local_name!("section"))
+        || node.data.is_element_with_tag_name(&local_name!("article"))
+        || node.data.is_element_with_tag_name(&local_name!("header"))
+        || node.data.is_element_with_tag_name(&local_name!("footer"))
+        || node.data.is_element_with_tag_name(&local_name!("nav"))
+        || node.data.is_element_with_tag_name(&local_name!("main"))
+        || node.data.is_element_with_tag_name(&local_name!("table"))
+        || node.data.is_element_with_tag_name(&local_name!("tr"))
+        || node.data.is_element_with_tag_name(&local_name!("pre"))
+        || node
+            .data
+            .is_element_with_tag_name(&local_name!("blockquote"))
 }
 
 fn append_visible_text(
@@ -145,8 +181,19 @@ fn append_visible_text(
             {
                 return;
             }
+            if node_ref.data.is_element_with_tag_name(&local_name!("br")) {
+                push_line_break(out);
+                return;
+            }
+            let block = is_block_element(node_ref);
+            if block {
+                push_line_break(out);
+            }
             for child in node_ref.children.iter() {
                 append_visible_text(doc, *child, scripting_enabled, out);
+            }
+            if block {
+                push_line_break(out);
             }
         }
         NodeData::AnonymousBlock(..) => {
@@ -165,15 +212,37 @@ pub fn dump_text(url: &str, js_enabled: bool) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use blitz_dom::DocumentConfig;
+
+    fn doc_from_html(html: &str, scripting: bool) -> BaseDocument {
+        parse::document_from_html(html, DocumentConfig::default(), scripting)
+    }
+
     #[test]
     fn dump_lines_collapses_whitespace() {
-        let raw = "  hello   world\n\n\nfoo  bar  ";
-        let got: String = raw
-            .lines()
-            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(got, "hello world\nfoo bar");
+        let doc = doc_from_html(
+            "<!DOCTYPE html><html><body><p>  hello   world</p><p>foo  bar</p></body></html>",
+            true,
+        );
+        assert_eq!(format_dump_text(&doc, true), "hello world\nfoo bar\n");
+    }
+
+    #[test]
+    fn block_elements_are_separated() {
+        let doc = doc_from_html(
+            "<!DOCTYPE html><html><body><p>a</p><p>b</p></body></html>",
+            true,
+        );
+        assert_eq!(format_dump_text(&doc, true), "a\nb\n");
+    }
+
+    #[test]
+    fn br_breaks_lines() {
+        let doc = doc_from_html(
+            "<!DOCTYPE html><html><body><p>a<br>b</p></body></html>",
+            true,
+        );
+        assert_eq!(format_dump_text(&doc, true), "a\nb\n");
     }
 }

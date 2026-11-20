@@ -582,6 +582,13 @@ mod tests {
                 Some(BrowserShortcut::ToggleJs),
             ));
             cases.extend(both(
+                "Shift+J not intercepted",
+                KeyCode::KeyJ,
+                shift_only,
+                None,
+                None,
+            ));
+            cases.extend(both(
                 &format!("{tag}+L focus address bar"),
                 KeyCode::KeyL,
                 prim,

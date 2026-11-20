@@ -1,4 +1,4 @@
-//! `glide` binary entry: parse CLI args and run the window or headless screenshot.
+//! `glide` binary entry: parse CLI args and run the window, headless screenshot, or --dump-text.
 
 use glide::args::{RunMode, parse, usage};
 use glide::{headless, run_window, shot, tokio_runtime};

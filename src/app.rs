@@ -153,7 +153,7 @@ impl Glide {
                 match command {
                     NavCommand::Back => {
                         if let Some(url) = self.history.back() {
-                            self.js.on_navigation(&url);
+                            self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             self.expecting = Some(url.clone());
                             self.shown.clone_from(&url);
@@ -162,7 +162,7 @@ impl Glide {
                     }
                     NavCommand::Forward => {
                         if let Some(url) = self.history.forward() {
-                            self.js.on_navigation(&url);
+                            self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             self.expecting = Some(url.clone());
                             self.shown.clone_from(&url);
@@ -171,22 +171,21 @@ impl Glide {
                     }
                     NavCommand::Reload => {
                         let url = self.history.current();
-                        self.js.on_navigation(&url);
+                        self.js.on_navigation(&doc, &url);
                         load_iframe(&mut doc, &url);
                         self.expecting = Some(url);
                     }
                     NavCommand::ToggleJs => {
                         let new = !self.html_provider.scripting_enabled.load(Ordering::Relaxed);
-                        set_js_runtime_mode(&self.html_provider, &mut self.js, new);
+                        set_js_runtime_mode(&self.html_provider, &mut self.js, &doc, new);
                         let url = self.history.current();
-                        self.js.on_navigation(&url);
                         load_iframe(&mut doc, &url);
                         self.expecting = Some(url);
                         set_js_indicator(&mut doc, new);
                     }
                     NavCommand::Go(raw) => {
                         let url = resolve_location(&raw);
-                        self.js.on_navigation(&url);
+                        self.js.on_navigation(&doc, &url);
                         self.history.push(url.clone());
                         load_iframe(&mut doc, &url);
                         self.expecting = Some(url.clone());

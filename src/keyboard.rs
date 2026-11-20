@@ -25,6 +25,7 @@ pub enum BrowserShortcut {
     Back,
     Forward,
     Reload,
+    ToggleJs,
     FocusAddressBar,
     CloseWindow,
     Quit,
@@ -61,6 +62,7 @@ pub fn browser_shortcut(
         KeyCode::KeyQ if primary && !shift => return Some(BrowserShortcut::Quit),
         KeyCode::BracketLeft if primary && !shift => return Some(BrowserShortcut::Back),
         KeyCode::BracketRight if primary && !shift => return Some(BrowserShortcut::Forward),
+        KeyCode::KeyJ if primary && shift => return Some(BrowserShortcut::ToggleJs),
         KeyCode::F5 if !primary && !alt => return Some(BrowserShortcut::Reload),
         KeyCode::ArrowLeft if alt && !primary => return Some(BrowserShortcut::Back),
         KeyCode::ArrowRight if alt && !primary => return Some(BrowserShortcut::Forward),
@@ -407,6 +409,7 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         BrowserShortcut::Back => Some(NavCommand::Back),
         BrowserShortcut::Forward => Some(NavCommand::Forward),
         BrowserShortcut::Reload => Some(NavCommand::Reload),
+        BrowserShortcut::ToggleJs => Some(NavCommand::ToggleJs),
         BrowserShortcut::FocusAddressBar | BrowserShortcut::CloseWindow | BrowserShortcut::Quit => {
             None
         }
@@ -572,6 +575,13 @@ mod tests {
                 Some(BrowserShortcut::Reload),
             ));
             cases.extend(both(
+                &format!("{tag}+Shift+J toggle JavaScript"),
+                KeyCode::KeyJ,
+                prim | ModifiersState::SHIFT,
+                Some(BrowserShortcut::ToggleJs),
+                Some(BrowserShortcut::ToggleJs),
+            ));
+            cases.extend(both(
                 &format!("{tag}+L focus address bar"),
                 KeyCode::KeyL,
                 prim,
@@ -709,6 +719,10 @@ mod tests {
         assert_eq!(
             nav_from_shortcut(BrowserShortcut::Reload),
             Some(NavCommand::Reload)
+        );
+        assert_eq!(
+            nav_from_shortcut(BrowserShortcut::ToggleJs),
+            Some(NavCommand::ToggleJs)
         );
         assert!(nav_from_shortcut(BrowserShortcut::FocusAddressBar).is_none());
     }
@@ -914,7 +928,7 @@ mod tests {
     }
 
     fn chrome_test_document() -> BaseDocument {
-        let html = chrome_document("");
+        let html = chrome_document("", true);
         let mut doc = parse::document_from_html(&html, test_document_config(), false);
         layout_doc(&mut doc);
         let url_id = doc.get_element_by_id("url").expect("url input");
@@ -1020,7 +1034,7 @@ mod tests {
     const PAGE_INPUT_FIXTURE: &str = include_str!("../tests/fixtures/input.html");
 
     fn chrome_with_page_srcdoc() -> BaseDocument {
-        let html = chrome_document("about:blank");
+        let html = chrome_document("about:blank", true);
         let mut doc = parse::document_from_html(&html, test_document_config(), false);
         layout_doc(&mut doc);
         let page_id = doc.get_element_by_id("page").expect("page iframe");

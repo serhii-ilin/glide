@@ -60,6 +60,9 @@ impl JsHost {
         if !on {
             self.worker = None;
         }
+        self.started_for_url = None;
+        self.pending_sources = None;
+        self.pending_indices = None;
     }
 
     pub fn now_ms(&self) -> u64 {

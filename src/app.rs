@@ -15,9 +15,11 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
 
+use std::sync::atomic::Ordering;
+
 use crate::chrome::{NavCommand, chrome_document, command_from_url};
 use crate::history::History;
-use crate::html::{GlideHtmlProvider, HtmlPageDocument};
+use crate::html::{GlideHtmlProvider, HtmlPageDocument, set_js_runtime_mode};
 use crate::js::{JsHost, JsTap};
 use crate::keyboard;
 use crate::location::resolve_location;
@@ -57,7 +59,7 @@ pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
     };
 
     let doc = HtmlPageDocument(parse::document_from_html(
-        &chrome_document(&start),
+        &chrome_document(&start, js_enabled),
         chrome_config,
         js_enabled,
     ));
@@ -107,7 +109,6 @@ struct Glide {
     inner: BlitzApplication<Renderer>,
     bus: NavBus,
     js: JsHost,
-    #[expect(dead_code, reason = "runtime JS toggle, F-022")]
     html_provider: GlideHtmlProvider,
     history: History,
     /// URL we last asked the iframe to load. Observations of that load,
@@ -173,6 +174,15 @@ impl Glide {
                         self.js.on_navigation(&url);
                         load_iframe(&mut doc, &url);
                         self.expecting = Some(url);
+                    }
+                    NavCommand::ToggleJs => {
+                        let new = !self.html_provider.scripting_enabled.load(Ordering::Relaxed);
+                        set_js_runtime_mode(&self.html_provider, &mut self.js, new);
+                        let url = self.history.current();
+                        self.js.on_navigation(&url);
+                        load_iframe(&mut doc, &url);
+                        self.expecting = Some(url);
+                        set_js_indicator(&mut doc, new);
                     }
                     NavCommand::Go(raw) => {
                         let url = resolve_location(&raw);
@@ -307,6 +317,20 @@ fn set_address(doc: &mut BaseDocument, url: &str) {
         return;
     };
     doc.mutate().set_attribute(id, qual_name!("value"), url);
+}
+
+fn set_js_indicator(doc: &mut BaseDocument, on: bool) {
+    let Some(id) = doc.get_element_by_id("js-toggle") else {
+        return;
+    };
+    let label = if on { "JS on" } else { "JS off" };
+    let mut m = doc.mutate();
+    let children: Vec<_> = m.child_ids(id).into_iter().collect();
+    for child in children {
+        m.remove_and_drop_node(child);
+    }
+    let text_id = m.create_text_node(label);
+    m.append_children(id, &[text_id]);
 }
 
 fn page_url(doc: &BaseDocument) -> Option<String> {

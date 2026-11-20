@@ -1,8 +1,8 @@
 //! Apply [`DomRequest`] values on the UI thread.
 
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use blitz_dom::{BaseDocument, LocalName, QualName, local_name, qual_name};
@@ -10,11 +10,8 @@ use blitz_net::Provider;
 use blitz_traits::net::Request;
 use url::Url;
 
+use super::bridge::{DomRequest, DomResponse, DomValue, node_to_handle, resolve_handle};
 use crate::parse;
-use super::bridge::{
-    node_to_handle, resolve_handle, DomRequest, DomResponse,
-    DomValue,
-};
 
 pub fn apply_request(
     doc: &mut BaseDocument,
@@ -96,7 +93,11 @@ fn apply_inner(
             let id = m.create_text_node(&text);
             DomResponse::ok(reply, DomValue::NodeId(node_to_handle(id)))
         }
-        DomRequest::AppendChild { parent, child, reply } => {
+        DomRequest::AppendChild {
+            parent,
+            child,
+            reply,
+        } => {
             let Some(parent) = resolve_handle(doc, parent) else {
                 return DomResponse::err(reply, "invalid parent node");
             };
@@ -107,7 +108,11 @@ fn apply_inner(
             m.append_children(parent, &[child]);
             DomResponse::ok(reply, DomValue::NodeId(node_to_handle(child)))
         }
-        DomRequest::RemoveChild { parent, child, reply } => {
+        DomRequest::RemoveChild {
+            parent,
+            child,
+            reply,
+        } => {
             let Some(parent) = resolve_handle(doc, parent) else {
                 return DomResponse::err(reply, "invalid parent node");
             };
@@ -241,7 +246,12 @@ fn apply_inner(
                 .is_some_and(|c| class_tokens(c).any(|t| t == token));
             DomResponse::ok(reply, DomValue::Bool(contains))
         }
-        DomRequest::StyleSet { node, name, value, reply } => {
+        DomRequest::StyleSet {
+            node,
+            name,
+            value,
+            reply,
+        } => {
             let Some(node) = resolve_handle(doc, node) else {
                 return DomResponse::err(reply, "invalid node");
             };
@@ -393,8 +403,8 @@ fn camel_to_kebab(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blitz_dom::DocumentConfig;
     use crate::parse;
+    use blitz_dom::DocumentConfig;
 
     fn sample_doc(html: &str) -> blitz_dom::BaseDocument {
         parse::document_from_html(html, DocumentConfig::default(), true)
@@ -465,7 +475,10 @@ mod tests {
             &mut doc,
             None,
             &base,
-            DomRequest::GetTextContent { node: child, reply: 6 },
+            DomRequest::GetTextContent {
+                node: child,
+                reply: 6,
+            },
         );
         assert!(matches!(text.value, DomValue::String(ref s) if s == "hello"));
     }
@@ -480,7 +493,8 @@ mod tests {
 
     #[test]
     fn set_text_content_via_rpc() {
-        let mut doc = sample_doc(r#"<!DOCTYPE html><html><body><p id="t">before</p></body></html>"#);
+        let mut doc =
+            sample_doc(r#"<!DOCTYPE html><html><body><p id="t">before</p></body></html>"#);
         let base = doc.url().to_string();
         let id = doc.get_element_by_id("t").unwrap();
         let handle = node_to_handle(id);
@@ -494,7 +508,10 @@ mod tests {
                 reply: 1,
             },
         );
-        let text = doc.get_node(id).map(|n| n.text_content()).unwrap_or_default();
+        let text = doc
+            .get_node(id)
+            .map(|n| n.text_content())
+            .unwrap_or_default();
         assert_eq!(text, "after");
     }
 

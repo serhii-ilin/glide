@@ -1,7 +1,7 @@
 //! JS host on the UI thread: DOM RPC drain, script scheduling, frame pump.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use blitz_dom::BaseDocument;
@@ -10,10 +10,10 @@ use blitz_traits::events::{BlitzImeEvent, UiEvent};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 
 use super::apply::apply_request;
-use super::bridge::{bubble_handles, DomRequest, DomResponse};
+use super::bridge::{DomRequest, DomResponse, bubble_handles};
 use super::scripts::{
-    collect_scripts, execution_plan, resolve_sources, source_body, spawn_resolve_sources,
-    ScriptSource,
+    ScriptSource, collect_scripts, execution_plan, resolve_sources, source_body,
+    spawn_resolve_sources,
 };
 use super::tap::JsTap;
 use super::worker::JsWorker;
@@ -79,9 +79,8 @@ impl JsHost {
         if self.started_for_url.as_deref() == Some(page_url) {
             return;
         }
-        let specs = with_page_subdoc(chrome, collect_scripts).unwrap_or_else(|| {
-            collect_scripts(chrome)
-        });
+        let specs =
+            with_page_subdoc(chrome, collect_scripts).unwrap_or_else(|| collect_scripts(chrome));
         self.base_url = page_url.to_string();
         self.started_for_url = Some(page_url.to_string());
         self.clock = Instant::now();
@@ -205,11 +204,7 @@ impl JsHost {
         redraw
     }
 
-    fn apply_dom_rpc(
-        &self,
-        chrome: &mut BaseDocument,
-        request: DomRequest,
-    ) -> DomResponse {
+    fn apply_dom_rpc(&self, chrome: &mut BaseDocument, request: DomRequest) -> DomResponse {
         if let Some(page) = page_subdoc_mut(chrome) {
             apply_request(page, self.net.as_ref(), &self.base_url, request)
         } else {
@@ -225,7 +220,11 @@ impl JsHost {
     }
 
     /// Headless/tests: resolve script sources on a worker thread and run when ready.
-    pub fn finish_script_resolution_sync(&mut self, rt: &tokio::runtime::Handle, specs: &[super::scripts::ScriptSpec]) {
+    pub fn finish_script_resolution_sync(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        specs: &[super::scripts::ScriptSpec],
+    ) {
         if self.pending_sources.is_none() && self.pending_indices.is_some() {
             if let Some(net) = &self.net {
                 let sources = resolve_sources(specs, net, &self.base_url, rt);

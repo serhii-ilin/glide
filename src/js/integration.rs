@@ -72,6 +72,10 @@ fn failed_external_script_does_not_panic() {
         r#async: false,
         node: blitz_traits::node_id::NodeId::default(),
     }];
-    let sources = crate::js::scripts::resolve_sources(&specs, &net, "https://example.test/", handle);
-    assert!(matches!(sources[0], crate::js::scripts::ScriptSource::Failed { .. }));
+    let sources =
+        crate::js::scripts::resolve_sources(&specs, &net, "https://example.test/", handle);
+    assert!(matches!(
+        sources[0],
+        crate::js::scripts::ScriptSource::Failed { .. }
+    ));
 }

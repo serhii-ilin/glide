@@ -71,11 +71,7 @@ fn render_url_inner(url: &str, path: &Path, js_enabled: bool) -> Result<(), Stri
         viewport: Some(Viewport::new(WIDTH, HEIGHT, 1.0, ColorScheme::Light)),
         ..Default::default()
     };
-    let mut document = HtmlPageDocument(parse::document_from_html(
-        &html,
-        config,
-        js_enabled,
-    ));
+    let mut document = HtmlPageDocument(parse::document_from_html(&html, config, js_enabled));
 
     let start = Instant::now();
     js_host.maybe_start_page(&document.0, &final_url, &handle);

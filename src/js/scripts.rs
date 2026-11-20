@@ -66,7 +66,11 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
                 let defer = src.is_some() && defer;
                 let async_attr = src.is_some() && async_attr;
                 let inline = if src.is_none() {
-                    Some(doc.get_node(child).map(|n| n.text_content()).unwrap_or_default())
+                    Some(
+                        doc.get_node(child)
+                            .map(|n| n.text_content())
+                            .unwrap_or_default(),
+                    )
                 } else {
                     None
                 };
@@ -130,18 +134,17 @@ pub fn resolve_sources(
                 return ScriptSource::Inline(body.clone());
             }
             let src = s.src.as_deref().unwrap_or("");
-            let parsed = match Url::parse(src).or_else(|_| {
-                Url::parse(base_url).and_then(|b| b.join(src))
-            }) {
-                Ok(u) => u,
-                Err(err) => {
-                    eprintln!("[js] script url invalid ({src}): {err}");
-                    return ScriptSource::Failed {
-                        url: src.to_string(),
-                        error: err.to_string(),
-                    };
-                }
-            };
+            let parsed =
+                match Url::parse(src).or_else(|_| Url::parse(base_url).and_then(|b| b.join(src))) {
+                    Ok(u) => u,
+                    Err(err) => {
+                        eprintln!("[js] script url invalid ({src}): {err}");
+                        return ScriptSource::Failed {
+                            url: src.to_string(),
+                            error: err.to_string(),
+                        };
+                    }
+                };
             match rt.block_on(net.fetch_async(Request::get(parsed))) {
                 Ok((_final_url, bytes)) => ScriptSource::External {
                     url: src.to_string(),
@@ -193,13 +196,14 @@ mod tests {
     #[test]
     fn finds_inline_scripts_in_fixture() {
         let html = std::fs::read_to_string("tests/fixtures/counter.html").unwrap();
-        let doc = crate::parse::document_from_html(
-            &html,
-            DocumentConfig::default(),
-            true,
-        );
+        let doc = crate::parse::document_from_html(&html, DocumentConfig::default(), true);
         let scripts = collect_scripts(&doc);
         assert_eq!(scripts.len(), 1);
-        assert!(scripts[0].inline.as_ref().is_some_and(|s| s.contains("addEventListener")));
+        assert!(
+            scripts[0]
+                .inline
+                .as_ref()
+                .is_some_and(|s| s.contains("addEventListener"))
+        );
     }
 }

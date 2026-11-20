@@ -3,7 +3,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use blitz_dom::{BaseDocument, DocGuard, DocGuardMut, Document, DocumentConfig, DocumentMutator, HtmlParserProvider, NodeId};
+use blitz_dom::{
+    BaseDocument, DocGuard, DocGuardMut, Document, DocumentConfig, DocumentMutator,
+    HtmlParserProvider, NodeId,
+};
 
 use crate::js::JsTap;
 use crate::parse;
@@ -39,11 +42,8 @@ impl HtmlParserProvider for GlideHtmlProvider {
     }
 
     fn parse_document(&self, html: &str, config: DocumentConfig) -> Box<dyn Document> {
-        let inner = parse::document_from_html(
-            html,
-            config,
-            self.scripting_enabled.load(Ordering::Relaxed),
-        );
+        let inner =
+            parse::document_from_html(html, config, self.scripting_enabled.load(Ordering::Relaxed));
         if self.js_tap.enabled() {
             Box::new(JsPageDocument::new(inner, self.js_tap.clone()))
         } else {

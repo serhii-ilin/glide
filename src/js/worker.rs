@@ -1,7 +1,7 @@
 //! V8 isolate on a dedicated thread.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -24,16 +24,11 @@ pub struct JsWorker {
 
 #[derive(Debug)]
 enum WorkerMessage {
-    RunScripts {
-        sources: Vec<String>,
-    },
+    RunScripts { sources: Vec<String> },
     FireDomContentLoaded,
     Pump { now_ms: u64 },
     FlushRaf,
-    DispatchBubble {
-        path: Vec<u64>,
-        event_type: String,
-    },
+    DispatchBubble { path: Vec<u64>, event_type: String },
     Shutdown,
 }
 
@@ -101,8 +96,8 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
         {
             let scope = &mut v8::ContextScope::new(hs, context);
             install_bindings(scope, context);
-            let source = v8::String::new(scope, include_str!("bootstrap.js"))
-                .expect("bootstrap source");
+            let source =
+                v8::String::new(scope, include_str!("bootstrap.js")).expect("bootstrap source");
             run_script(scope, source, "<bootstrap>");
         }
         v8::Global::new(hs, context)
@@ -155,11 +150,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                     .collect();
                 let array = v8::Array::new_with_elements(scope, &ids);
                 let ty = v8::String::new(scope, &event_type).unwrap();
-                call_global_fn(
-                    scope,
-                    "__glide_dispatch_bubble",
-                    &[array.into(), ty.into()],
-                );
+                call_global_fn(scope, "__glide_dispatch_bubble", &[array.into(), ty.into()]);
                 scope.perform_microtask_checkpoint();
                 drain_glide_microtasks(scope);
             }
@@ -186,11 +177,7 @@ fn dom_sync_callback(
     mut rv: v8::ReturnValue,
 ) {
     let op = args.get(0).to_rust_string_lossy(scope);
-    let reply = args
-        .get(1)
-        .to_uint32(scope)
-        .map(|n| n.value())
-        .unwrap_or(1) as u64;
+    let reply = args.get(1).to_uint32(scope).map(|n| n.value()).unwrap_or(1) as u64;
 
     let dom_req = match map_dom_op(&op, reply, scope, &args) {
         Ok(req) => req,
@@ -393,10 +380,7 @@ fn dom_value_to_v8<'s>(
     }
 }
 
-fn v8_error_object<'s>(
-    scope: &mut v8::PinScope<'s, '_>,
-    msg: &str,
-) -> v8::Local<'s, v8::Value> {
+fn v8_error_object<'s>(scope: &mut v8::PinScope<'s, '_>, msg: &str) -> v8::Local<'s, v8::Value> {
     let obj = v8::Object::new(scope);
     let key = v8::String::new(scope, "__error").unwrap();
     let val = v8::String::new(scope, msg).unwrap();

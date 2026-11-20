@@ -73,15 +73,15 @@ pub fn browser_shortcut(
         }
         KeyCode::PageUp if !primary => return Some(BrowserShortcut::Scroll(ScrollAction::PageUp)),
         KeyCode::PageDown if !primary => {
-            return Some(BrowserShortcut::Scroll(ScrollAction::PageDown))
+            return Some(BrowserShortcut::Scroll(ScrollAction::PageDown));
         }
         KeyCode::Home if !primary => return Some(BrowserShortcut::Scroll(ScrollAction::Home)),
         KeyCode::End if !primary => return Some(BrowserShortcut::Scroll(ScrollAction::End)),
         KeyCode::ArrowUp if !primary && !alt => {
-            return Some(BrowserShortcut::Scroll(ScrollAction::Up))
+            return Some(BrowserShortcut::Scroll(ScrollAction::Up));
         }
         KeyCode::ArrowDown if !primary && !alt => {
-            return Some(BrowserShortcut::Scroll(ScrollAction::Down))
+            return Some(BrowserShortcut::Scroll(ScrollAction::Down));
         }
         _ => {}
     }
@@ -93,7 +93,9 @@ pub fn macos_standard_keybinding(code: KeyCode, modifiers: ModifiersState) -> Op
     if modifiers.control_key() || modifiers.meta_key() {
         match code {
             KeyCode::KeyZ if !modifiers.shift_key() => return None, // undo not implemented in Blitz
-            KeyCode::KeyA | KeyCode::KeyC | KeyCode::KeyV | KeyCode::KeyX if !modifiers.shift_key() => {
+            KeyCode::KeyA | KeyCode::KeyC | KeyCode::KeyV | KeyCode::KeyX
+                if !modifiers.shift_key() =>
+            {
                 return None; // clipboard / select-all via KeyDown in Blitz
             }
             KeyCode::ArrowLeft if modifiers.shift_key() => {
@@ -124,7 +126,10 @@ pub fn macos_standard_keybinding(code: KeyCode, modifiers: ModifiersState) -> Op
         }
     }
 
-    if modifiers.shift_key() && !modifiers.control_key() && !modifiers.meta_key() && !modifiers.alt_key()
+    if modifiers.shift_key()
+        && !modifiers.control_key()
+        && !modifiers.meta_key()
+        && !modifiers.alt_key()
     {
         match code {
             KeyCode::ArrowLeft => return Some("moveLeftAndModifySelection:"),
@@ -135,7 +140,10 @@ pub fn macos_standard_keybinding(code: KeyCode, modifiers: ModifiersState) -> Op
         }
     }
 
-    if !modifiers.control_key() && !modifiers.meta_key() && !modifiers.alt_key() && !modifiers.shift_key()
+    if !modifiers.control_key()
+        && !modifiers.meta_key()
+        && !modifiers.alt_key()
+        && !modifiers.shift_key()
     {
         match code {
             KeyCode::Backspace => return Some("deleteBackward:"),
@@ -326,16 +334,13 @@ pub fn dispatch_text_keys<Rend: WindowRenderer>(view: &mut View<Rend>, event: &K
     false
 }
 
-pub fn scroll_page<Rend: WindowRenderer>(
-    view: &mut View<Rend>,
-    action: ScrollAction,
-) -> bool {
+pub fn scroll_page<Rend: WindowRenderer>(view: &mut View<Rend>, action: ScrollAction) -> bool {
     let mut chrome = view.doc.inner_mut();
     let chrome = &mut *chrome;
     let Some(page_id) = page_iframe_id(chrome) else {
         return scroll_chrome_viewport(chrome, action);
     };
-  let Some(sub) = chrome
+    let Some(sub) = chrome
         .get_node_mut(page_id)
         .and_then(|node| node.subdoc_mut())
     else {

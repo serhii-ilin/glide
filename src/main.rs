@@ -17,14 +17,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use blitz_dom::{DocumentConfig, qual_name};
-use html::{GlideHtmlProvider, HtmlPageDocument};
-use js::{JsHost, JsTap};
 use blitz_net::Provider;
 use blitz_shell::{
     BlitzApplication, BlitzShellEvent, BlitzShellProxy, WindowConfig, create_default_event_loop,
 };
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use chrome::{NavCommand, chrome_document, command_from_url};
+use html::{GlideHtmlProvider, HtmlPageDocument};
+use js::{JsHost, JsTap};
 use location::resolve_location;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -44,8 +44,14 @@ fn main() {
             .filter(|a| *a != "--no-js")
             .cloned()
             .collect();
-        let url = args.first().cloned().unwrap_or_else(|| "https://example.com".into());
-        let path = args.get(1).cloned().unwrap_or_else(|| "glide-screenshot.png".into());
+        let url = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "https://example.com".into());
+        let path = args
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| "glide-screenshot.png".into());
         let url = resolve_location(&url);
         let runtime = tokio_runtime();
         let _guard = runtime.enter();

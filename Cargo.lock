@@ -983,6 +983,7 @@ dependencies = [
  "blitz-paint",
  "blitz-shell",
  "blitz-traits",
+ "keyboard-types",
  "peniko",
  "png",
  "tokio",

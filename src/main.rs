@@ -5,6 +5,7 @@
 //! Kitesurf crates themselves are not linked here.
 
 mod chrome;
+mod keyboard;
 mod location;
 mod shot;
 
@@ -20,9 +21,8 @@ use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use chrome::{NavCommand, chrome_document, command_from_url};
 use location::resolve_location;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{WindowAttributes, WindowId};
 
 const CHROME_BASE: &str = "https://glide.invalid/chrome";
@@ -279,47 +279,52 @@ impl Glide {
         }
     }
 
-    fn shortcut(&mut self, window_id: WindowId, event: &WindowEvent) -> bool {
-        let WindowEvent::KeyboardInput { event, .. } = event else {
+    fn handle_browser_shortcut(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: &WindowEvent,
+    ) -> bool {
+        let Some(view) = self.inner.windows.get_mut(&window_id) else {
             return false;
         };
-        if event.state != ElementState::Pressed {
-            return false;
-        }
-        let PhysicalKey::Code(code) = event.physical_key else {
+        let Some(shortcut) = keyboard::try_browser_shortcut(view, event) else {
             return false;
         };
-        let (alt, primary) = {
-            let Some(view) = self.inner.windows.get(&window_id) else {
-                return false;
-            };
-            let mods = view.keyboard_modifiers.state();
-            (mods.alt_key(), mods.control_key() || mods.meta_key())
-        };
-        let command = match code {
-            KeyCode::ArrowLeft if alt => Some(NavCommand::Back),
-            KeyCode::ArrowRight if alt => Some(NavCommand::Forward),
-            KeyCode::KeyR if primary => Some(NavCommand::Reload),
-            KeyCode::F5 => Some(NavCommand::Reload),
-            KeyCode::KeyL if primary => {
-                if let Some(view) = self.inner.windows.get_mut(&window_id) {
-                    {
-                        let mut doc = view.doc.inner_mut();
-                        if let Some(id) = doc.get_element_by_id("url") {
-                            doc.set_focus_to(id);
-                        }
-                    }
-                    view.request_redraw();
-                }
-                return true;
+
+        match shortcut {
+            keyboard::BrowserShortcut::FocusAddressBar => {
+                keyboard::focus_address_bar(view);
+                view.request_redraw();
+                true
             }
-            _ => None,
-        };
-        if let Some(command) = command {
-            self.bus.push(command);
-            true
-        } else {
-            false
+            keyboard::BrowserShortcut::CloseWindow => {
+                if let Some(win) = self.inner.windows.remove(&window_id) {
+                    drop(win);
+                }
+                if self.inner.windows.is_empty() {
+                    event_loop.exit();
+                }
+                true
+            }
+            keyboard::BrowserShortcut::Quit => {
+                self.inner.windows.clear();
+                event_loop.exit();
+                true
+            }
+            keyboard::BrowserShortcut::Scroll(action) => {
+                keyboard::scroll_page(view, action);
+                view.request_redraw();
+                true
+            }
+            other => {
+                if let Some(command) = keyboard::nav_from_shortcut(other) {
+                    self.bus.push(command);
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 }
@@ -384,13 +389,27 @@ impl ApplicationHandler for Glide {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        if self.shortcut(window_id, &event) {
+        if self.handle_browser_shortcut(event_loop, window_id, &event) {
             self.inner
                 .proxy
                 .send_event(BlitzShellEvent::Poll { window_id });
             self.sync();
             return;
         }
+
+        if let WindowEvent::KeyboardInput { event, .. } = &event {
+            if let Some(view) = self.inner.windows.get_mut(&window_id) {
+                if keyboard::dispatch_text_keys(view, event) {
+                    view.request_redraw();
+                    self.inner
+                        .proxy
+                        .send_event(BlitzShellEvent::Poll { window_id });
+                    self.sync();
+                    return;
+                }
+            }
+        }
+
         self.inner.window_event(event_loop, window_id, event);
         self.sync();
     }

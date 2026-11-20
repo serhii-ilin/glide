@@ -19,9 +19,19 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Key | Action |
 | --- | --- |
 | Enter | Open the address bar |
-| Alt+Left / Alt+Right | Back / forward |
+| Alt+Left / Alt+Right (Option on macOS) | Back / forward |
+| Cmd/Ctrl+[ / Cmd/Ctrl+] | Back / forward (macOS) |
 | Ctrl+R or F5 | Reload |
 | Ctrl+L or Cmd+L | Focus the address bar |
+| Cmd/Ctrl+W | Close the window |
+| Cmd/Ctrl+Q | Quit |
+| Space / PgUp / PgDn / arrows | Scroll the page when no text field is focused |
+
+Text fields (address bar and in-page inputs) use normal editing shortcuts: Backspace and
+Delete, arrows, Home/End, Shift+selection, Cmd/Ctrl+C/X/V, and Cmd/Ctrl+A. On macOS,
+Option+Left/Right moves by word; Glide synthesizes Apple's standard keybindings for
+Backspace because Blitz's text editor expects them on that platform. Keys are forwarded
+into the page `<iframe>` when it has focus.
 
 The first release build compiles Stylo and Vello, so it takes a while. Later builds are incremental.
 

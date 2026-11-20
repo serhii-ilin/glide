@@ -29,6 +29,7 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | R-011 | Settings, session, history and bookmarks survive a restart | M1 |
 | R-012 | A reproducible HTML/CSS/JS compatibility report against public benchmarks | M1 |
 | R-013 | No crash, hang or panic on common pages; super-critical compatibility issues are fixed | M1 |
+| R-014 | WPT `dom/nodes` ≥15% subtests and ≥3 full files; Acid3 with JS ≥15/100 | M1 |
 
 ## Features
 
@@ -56,7 +57,12 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | F-027 | T7 Compatibility runner (`compat` bin) and `docs/compat/REPORT.md` | done | R-012 | `compat::*`, `tests/compat_runner.rs`, `docs/compat/results.json` | Acid1-3 live URLs, ~100 WPT reftests + 30 `dom/nodes` harness; `scripts/vendor-wpt.sh` |
 | F-028 | T8 Super-critical compatibility fixes | done | R-013 | `docs/compat/REPORT.md` | T7 run (191 checks) found no crash, panic or hang; nothing to fix. Non-critical gaps are F-030–F-033 |
 | F-030 | WPT CSS reftest pixel diffs | deferred | R-012 | `docs/compat/REPORT.md` | 31/99 reftests exceed 0.1% / channel 16 tolerance |
-| F-031 | WPT testharness cannot load | deferred | R-012 | `docs/compat/REPORT.md`, `compat::subprocess::tests::first_uncaught_from_glide_stderr` | JS global `self` missing (`ReferenceError` at `testharness.js` load); 0/29 files measurable—not DOM API gaps. A small shim (e.g. `self` → `globalThis`) would let the suite measure DOM APIs; deferred per super-critical-only policy |
+| F-031 | WPT testharness `dom/nodes` measurable | in-progress | R-014 | `docs/compat/REPORT.md`, `src/js/worker.rs` (`vendor_tests`), `tests/compat_runner.rs` | Domino page DOM + `self`; latest compat run still reports harness/Acid3 gaps (see OPEN ISSUES in T9b report) |
+| F-036 | Domino page DOM + Blitz mirroring | in-progress | R-014 | `src/js/snapshot.rs`, `src/js/batch.rs`, `src/js/dom-glue.js`, `src/js/vendor/domino.js`, `js::integration::*`, `js::worker::vendor_tests` | Snapshot bootstrap + batched mirror RPC; headless WPT pump still failing |
+| F-034 | `document.write` | in-progress | R-014 | `src/js/dom-glue.js` | Uses domino native `document.write`; Acid3 with-JS not yet parsing score |
 | F-032 | Missing Web APIs and DOM bindings | deferred | R-012 | `tests/compat/probe.html`, `docs/compat/REPORT.md` | 37/57 probe keys undefined (e.g. `localStorage`, `MutationObserver`, `getComputedStyle`, many `documentElement` accessors) |
-| F-033 | Acid2/Acid3 layout and JS test gaps | deferred | R-012 | `docs/compat/REPORT.md` | Acid2 vs reference ~3.7% diff; Acid3 with-JS score not parsed (`TypeError: document.write is not a function`); Acid3 no-JS is baseline only (`info`); Acid1 HTTP 403 (UA note in report) |
-| F-035 | T9a DOM library selection (domino / linkedom / happy-dom spike) | done | R-012 | `docs/dom-library-spike.md`, `scripts/dom-spike/run.mjs`, `scripts/dom-spike/tests/fork-timeout.test.mjs`, `tests/dom_spike.rs` | Recommends **domino** (multi-file vendoring); no esbuild IIFE matches npm WPT; T9b integration deferred |
+| F-033 | Acid2/Acid3 layout and JS test gaps | in-progress | R-014 | `docs/compat/REPORT.md` | Acid2 ~3.7% reftest diff; Acid3 with-JS score not parsed (layout + script errors); Acid1 HTTP 403 (UA note) |
+| F-035 | T9a DOM library selection (domino / linkedom / happy-dom spike) | done | R-012 | `docs/dom-library-spike.md`, `scripts/dom-spike/run.mjs`, `scripts/dom-spike/tests/fork-timeout.test.mjs`, `tests/dom_spike.rs` | Recommends **domino** (multi-file vendoring); T9b in F-036 |
+| F-037 | `Range` for Acid3 | deferred | R-014 | | Not required for first domino mirror milestone |
+| F-038 | `MutationObserver` | deferred | R-014 | | domino uses `_setMutationHandler` instead |
+| F-039 | Form control value read-back (Blitz → domino) | deferred | R-014 | | `input.value` / `checked` RPC not wired yet |

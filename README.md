@@ -104,11 +104,11 @@ Kitesurf patches those crates (box-shadow performance, gradient LUTs, iframe sce
 
 ## Page JavaScript
 
-Glide runs page scripts with the [V8](https://v8.dev/) crate on a dedicated `glide-js` thread. The UI thread owns the DOM; scripts call through a small synchronous RPC (`src/js/`). Each navigation tears down the isolate and starts a new one. `--no-js` disables parsing `<script>` tags, skipping the worker entirely. While the window is open, use the **JS on** / **JS off** toolbar pill or Cmd/Ctrl+Shift+J to flip scripting and reload the current page.
+Glide runs page scripts with [V8](https://v8.dev/) on a dedicated `glide-js` thread. The **Blitz** document on the UI thread is authoritative for layout and paint; page scripts see a **[domino](https://github.com/fgnass/domino) 2.1.9** in-memory DOM (vendored under `third_party/domino/`, embedded as `src/js/vendor/domino.js`). On each navigation the worker snapshots Blitz into domino, mirrors mutations back in batches over RPC, and proxies geometry (`getBoundingClientRect`, `getComputedStyle`, …) by Blitz node id. See `src/js/dom-glue.js` and `docs/dom-library-spike.md`.
 
-Supported in the bootstrap shim today: `document` queries and mutations, inline/defer/async classic scripts, `setTimeout` / `setInterval`, `requestAnimationFrame`, `fetch` (via `blitz-net`), and `console.log`. DOM events are stored in JS; clicks are forwarded from the UI thread when possible.
+Globals: `self` / `window` / `globalThis`, domino constructors (`Node`, `HTMLElement`, …), `URL` / `URLSearchParams` (href resolution via Rust `url`), `DOMParser`, `TreeWalker` / `NodeIterator`, and `document.write` (initial parse + mirror). Timers, `fetch`, and `console` remain in `src/js/bootstrap.js`.
 
-Limits: no `addEventListener` registry on the Rust side beyond bookkeeping, incomplete UI event types, five-second per-script watchdog, no modules/service workers/workers, and many Web APIs are missing. Real sites may still fail; `tests/fixtures/counter.html` is the smoke test.
+Limits: no `MutationObserver` or `Range`; domino `getComputedStyle` is stubbed (layout values come from Blitz where wired). No modules, workers, or service workers. Five-second per-script watchdog. `tests/fixtures/counter.html` and `js-toggle.html` are smoke tests; WPT `dom/nodes` and Acid3 scores are in `docs/compat/REPORT.md`.
 
 The first `--release` build downloads and compiles V8 prebuilts in addition to Stylo and Vello, so allow extra time and disk.
 
@@ -146,7 +146,8 @@ src/args.rs       CLI parsing
 src/chrome.rs     chrome markup and navigation commands
 src/net.rs        loading state, stop, and error pages for failed loads
 src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
-src/js/           V8 worker, DOM RPC, script loading
+src/js/           V8 worker, domino glue, Blitz mirror RPC
+third_party/      domino 2.1.9 (page JS DOM)
 src/parse.rs      html5ever with configurable scripting flag
 src/location.rs   URL vs. search
 src/profile.rs    on-disk settings, session, history log, bookmarks

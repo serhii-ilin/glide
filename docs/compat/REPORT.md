@@ -1,7 +1,7 @@
 # Glide compatibility report
 
 Date: 2026-11-20
-Git: `171178a`
+Git: `a08317c`
 OS: macos
 
 ## Summary
@@ -21,10 +21,10 @@ None recorded.
 - probe:api — Web API missing (undefined typeof): 37
 - wpt:reftest — rendering differs (pixel diff): 31
 - wpt:testharness — harness did not load (ReferenceError: self is not defined): 26
-- wpt:testharness — harness did not load (ReferenceError: runCharacterSetTests is not defined): 2
+- wpt:testharness — harness did not load (ReferenceError: async_test is not defined): 2
+- wpt:testharness — harness did not load (ReferenceError: setup is not defined): 1
 - acid:score — could not parse NN/100 score; TypeError: document.write is not a function: 1
 - acid:reftest — Acid2 test page vs reference (expected differences): 1
-- wpt:testharness — harness did not load (ReferenceError: setup is not defined): 1
 
 ## API probe
 

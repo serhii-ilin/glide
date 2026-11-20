@@ -17,9 +17,10 @@ pub mod location;
 pub mod nav;
 pub mod net;
 pub mod parse;
+pub mod profile;
 mod runtime;
 pub mod shot;
 pub mod zoom;
 
-pub use app::run_window;
+pub use app::{WindowLaunch, prepare_window_launch, run_window};
 pub use runtime::tokio_runtime;

@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn headless_find_selection_on_fixture() {
         const FIXTURE: &str = include_str!("../tests/fixtures/find.html");
-        let html = chrome_document("about:blank", true);
+        let html = chrome_document("about:blank", true, false);
         let mut chrome = parse::document_from_html(&html, test_document_config(), false);
         layout_doc(&mut chrome);
         let page_id = chrome.get_element_by_id("page").expect("page iframe");

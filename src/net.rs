@@ -10,6 +10,7 @@ use blitz_traits::net::{
     AbortController, AbortSignal, Bytes, NetHandler, NetProvider, NetWaker, Request,
 };
 use tokio::sync::Notify;
+use url::Url;
 
 /// Tracks in-flight page and subresource loads for chrome UI and stop.
 #[derive(Default)]
@@ -118,15 +119,54 @@ pub struct GlideNet {
     inner: Arc<Provider>,
     state: Arc<LoadState>,
     waker: Arc<dyn NetWaker>,
+    bookmarks: Arc<dyn Fn() -> String + Send + Sync>,
 }
 
 impl GlideNet {
-    pub fn new(inner: Arc<Provider>, state: Arc<LoadState>, waker: Arc<dyn NetWaker>) -> Arc<Self> {
+    pub fn new(
+        inner: Arc<Provider>,
+        state: Arc<LoadState>,
+        waker: Arc<dyn NetWaker>,
+        bookmarks: Arc<dyn Fn() -> String + Send + Sync>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             inner,
             state,
             waker,
+            bookmarks,
         })
+    }
+
+    fn deliver_internal_page(
+        &self,
+        doc_id: usize,
+        resolved_url: String,
+        html: String,
+        handler: Box<dyn NetHandler>,
+    ) {
+        let token = self.state.begin_page_load();
+        let state = self.state.clone();
+        let waker = self.waker.clone();
+        let generation = token.generation;
+        tokio::spawn(async move {
+            let _guard = PageLoadGuard {
+                state: &state,
+                generation,
+                doc_id,
+                waker: &waker,
+            };
+            handler.bytes(resolved_url, Bytes::from(html));
+        });
+    }
+
+    fn try_internal_glide_page(&self, url: &Url) -> Option<String> {
+        if url.scheme() != "glide" {
+            return None;
+        }
+        match url.host_str() {
+            Some("bookmarks") => Some((self.bookmarks)()),
+            _ => None,
+        }
     }
 
     fn fetch_page(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
@@ -208,6 +248,12 @@ impl Drop for PageLoadGuard<'_> {
 
 impl NetProvider for GlideNet {
     fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
+        if let Some(html) = self.try_internal_glide_page(&request.url) {
+            let resolved = request.url.to_string();
+            self.deliver_internal_page(doc_id, resolved, html, handler);
+            return;
+        }
+
         let chrome_id = self.state.chrome_doc_id();
         if chrome_id != 0 && doc_id == chrome_id {
             self.fetch_page(doc_id, request, handler);
@@ -448,7 +494,7 @@ mod tests {
         let state = Arc::new(LoadState::default());
         let chrome_id = 42;
         state.set_chrome_doc_id(chrome_id);
-        let net = GlideNet::new(inner, state.clone(), waker);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
 
         let record = Arc::new(StdMutex::new(None));
         let handler = Box::new(RecordHandler {
@@ -486,7 +532,7 @@ mod tests {
         let inner = Arc::new(Provider::new(Some(waker.clone())));
         let state = Arc::new(LoadState::default());
         state.set_chrome_doc_id(3);
-        let net = GlideNet::new(inner, state.clone(), waker);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
 
         let record = Arc::new(StdMutex::new(None));
         let handler = Box::new(RecordHandler {
@@ -520,7 +566,7 @@ mod tests {
         let state = Arc::new(LoadState::default());
         let chrome_id = 7;
         state.set_chrome_doc_id(chrome_id);
-        let net = GlideNet::new(inner, state, waker);
+        let net = GlideNet::new(inner, state, waker, test_bookmarks_supplier());
 
         let record = Arc::new(StdMutex::new(None));
         let handler = Box::new(RecordHandler {
@@ -553,7 +599,7 @@ mod tests {
         let inner = Arc::new(Provider::new(Some(waker.clone())));
         let state = Arc::new(LoadState::default());
         state.set_chrome_doc_id(1);
-        let net = GlideNet::new(inner, state.clone(), waker);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
 
         let record = Arc::new(StdMutex::new(None));
         let handler = Box::new(RecordHandler {
@@ -582,7 +628,7 @@ mod tests {
         let state = Arc::new(LoadState::default());
         state.set_chrome_doc_id(5);
         state.test_page_delay_ms.store(30_000, Ordering::Relaxed);
-        let net = GlideNet::new(inner, state.clone(), waker);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
 
         let record = Arc::new(StdMutex::new(None));
         let handler = Box::new(RecordHandler {
@@ -627,7 +673,7 @@ mod tests {
         let state = Arc::new(LoadState::default());
         state.set_chrome_doc_id(8);
         state.test_page_delay_ms.store(5_000, Ordering::Relaxed);
-        let net = GlideNet::new(inner, state.clone(), waker);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
 
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/input.html");
@@ -662,5 +708,55 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!state.page_loading());
+    }
+
+    fn test_bookmarks_supplier() -> Arc<dyn Fn() -> String + Send + Sync> {
+        Arc::new(|| crate::profile::bookmarks_page_html(&[]))
+    }
+
+    #[test]
+    fn provider_with_cookies_feature_builds() {
+        let _provider = Provider::new(None);
+    }
+
+    #[test]
+    fn glide_bookmarks_page_delivers_html() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(9);
+        let net = GlideNet::new(
+            inner,
+            state.clone(),
+            waker,
+            Arc::new(|| "<html><title>Bookmarks</title></html>".to_string()),
+        );
+
+        let record = Arc::new(StdMutex::new(None));
+        let handler = Box::new(RecordHandler {
+            done: record.clone(),
+        });
+        let url = Url::parse("glide://bookmarks").expect("url");
+        net.fetch(9, Request::get(url), handler);
+
+        for _ in 0..200 {
+            if record.lock().expect("record").is_some() && !state.page_loading() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let body = record
+            .lock()
+            .expect("record")
+            .as_ref()
+            .expect("body")
+            .1
+            .clone();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("Bookmarks"));
     }
 }

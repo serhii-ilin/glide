@@ -40,10 +40,22 @@ fn main() {
                 }
             }
         }
-        Ok(RunMode::Window { url, js_enabled }) => {
+        Ok(RunMode::Window {
+            cli_url,
+            js_enabled: _,
+            cli_no_js,
+        }) => {
             let runtime = tokio_runtime();
             let _guard = runtime.enter();
-            if let Err(err) = run_window(url, js_enabled) {
+            let profile = match glide::profile::Profile::open() {
+                Ok(profile) => profile,
+                Err(err) => {
+                    eprintln!("profile: {err}");
+                    std::process::exit(1);
+                }
+            };
+            let launch = glide::prepare_window_launch(cli_url.as_deref(), cli_no_js, profile);
+            if let Err(err) = run_window(launch) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }

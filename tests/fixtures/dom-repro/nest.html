@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><body><div id=host></div><p id=out>-</p><script>
+var h = document.getElementById('host');
+h.innerHTML = '<div style="width:50px" id=outer><div id=in>xxxxxxxxxxxxxxxxxxxxxxxx</div></div>';
+var w = document.getElementById('in').offsetWidth;
+var d = document.createElement('div'); d.style.width='40px'; d.innerHTML='<span id=s2>yy</span>'; 
+var f = document.createDocumentFragment(); var a=document.createElement('b'); a.textContent='A1'; var b=document.createElement('b'); b.textContent='B2'; f.appendChild(a); f.appendChild(b);
+document.body.insertBefore(f, document.getElementById('out'));
+document.getElementById('out').textContent = 'W=' + w + ' rect=' + JSON.stringify(document.getElementById('in').getBoundingClientRect().width);
+</script><p>TAIL</p></body></html>

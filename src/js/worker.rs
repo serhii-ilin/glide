@@ -207,6 +207,7 @@ fn dom_sync_callback(
         rv.set(v8_error_object(scope, "dom rpc timeout"));
         return;
     };
+    debug_assert_eq!(resp.id, reply);
     rv.set(dom_value_to_v8(scope, &resp.value));
 }
 
@@ -351,10 +352,12 @@ fn arg_handle(
             .parse::<u64>()
             .map_err(|_| format!("arg {idx} not a valid node id"));
     }
-    if let Some(n) = v.number_value(scope) {
-        if n >= 0.0 && n <= u64::MAX as f64 && n.trunc() == n {
-            return Ok(n as u64);
-        }
+    if let Some(n) = v.number_value(scope)
+        && n >= 0.0
+        && n <= u64::MAX as f64
+        && n.trunc() == n
+    {
+        return Ok(n as u64);
     }
     Err(format!("arg {idx} not a node id"))
 }

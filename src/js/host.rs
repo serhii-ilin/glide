@@ -12,8 +12,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use super::apply::apply_request;
 use super::bridge::{DomRequest, DomResponse, bubble_handles};
 use super::scripts::{
-    ScriptSource, collect_scripts, execution_plan, resolve_sources, source_body,
-    spawn_resolve_sources,
+    ScriptSource, collect_scripts, execution_plan, source_body, spawn_resolve_sources,
 };
 use super::tap::JsTap;
 use super::worker::JsWorker;
@@ -93,12 +92,11 @@ impl JsHost {
         let plan = execution_plan(&specs);
         self.pending_indices = Some(plan);
 
-        if self.net.is_some() {
+        if let Some(net) = &self.net {
             let specs_clone = specs;
-            let net = Arc::clone(self.net.as_ref().unwrap());
             self.pending_sources = Some(spawn_resolve_sources(
                 specs_clone,
-                net,
+                Arc::clone(net),
                 self.base_url.clone(),
                 rt.clone(),
             ));
@@ -220,16 +218,18 @@ impl JsHost {
     }
 
     /// Headless/tests: resolve script sources on a worker thread and run when ready.
+    #[cfg(test)]
     pub fn finish_script_resolution_sync(
         &mut self,
         rt: &tokio::runtime::Handle,
         specs: &[super::scripts::ScriptSpec],
     ) {
-        if self.pending_sources.is_none() && self.pending_indices.is_some() {
-            if let Some(net) = &self.net {
-                let sources = resolve_sources(specs, net, &self.base_url, rt);
-                self.start_from_sources(&sources);
-            }
+        if self.pending_sources.is_none()
+            && self.pending_indices.is_some()
+            && let Some(net) = &self.net
+        {
+            let sources = super::scripts::resolve_sources(specs, net, &self.base_url, rt);
+            self.start_from_sources(&sources);
         }
     }
 }
@@ -243,15 +243,15 @@ fn dispatch_tap_event(
     let Some(worker) = worker else {
         return;
     };
-    if let Some(page_id) = chrome.get_element_by_id("page") {
-        if let Some(sub) = chrome.get_node(page_id).and_then(|n| n.subdoc()) {
-            let inner = sub.inner();
-            if let Some((target, ty)) = ui_event_target(evt, &inner) {
-                worker.dispatch_dom_bubble(bubble_handles(&inner, target), ty);
-                *redraw = true;
-            }
-            return;
+    if let Some(page_id) = chrome.get_element_by_id("page")
+        && let Some(sub) = chrome.get_node(page_id).and_then(|n| n.subdoc())
+    {
+        let inner = sub.inner();
+        if let Some((target, ty)) = ui_event_target(evt, &inner) {
+            worker.dispatch_dom_bubble(bubble_handles(&inner, target), ty);
+            *redraw = true;
         }
+        return;
     }
     if let Some((target, ty)) = ui_event_target(evt, chrome) {
         worker.dispatch_dom_bubble(bubble_handles(chrome, target), ty);

@@ -40,48 +40,48 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
         .map(|n| n.children.iter().copied().collect())
         .unwrap_or_default();
     for child in children {
-        if let Some(el) = doc.get_node(child).and_then(|n| n.element_data()) {
-            if el.name.local == local_name!("script") {
-                if let Some(kind) = el.attr(local_name!("type")).map(str::to_lowercase) {
-                    if kind == "application/ld+json" || kind == "text/json" {
-                        continue;
-                    }
-                    if kind != "text/javascript"
-                        && kind != "application/javascript"
-                        && kind != "module"
-                        && !kind.is_empty()
-                    {
-                        continue;
-                    }
-                    if kind == "module" {
-                        continue;
-                    }
+        if let Some(el) = doc.get_node(child).and_then(|n| n.element_data())
+            && el.name.local == local_name!("script")
+        {
+            if let Some(kind) = el.attr(local_name!("type")).map(str::to_lowercase) {
+                if kind == "application/ld+json" || kind == "text/json" {
+                    continue;
                 }
-                let defer = el.attr(local_name!("defer")).is_some();
-                let async_attr = el.attr(local_name!("async")).is_some();
-                let src = el
-                    .attr(local_name!("src"))
-                    .map(str::to_string)
-                    .filter(|s| !s.is_empty());
-                let defer = src.is_some() && defer;
-                let async_attr = src.is_some() && async_attr;
-                let inline = if src.is_none() {
-                    Some(
-                        doc.get_node(child)
-                            .map(|n| n.text_content())
-                            .unwrap_or_default(),
-                    )
-                } else {
-                    None
-                };
-                out.push(ScriptSpec {
-                    inline,
-                    src,
-                    defer,
-                    r#async: async_attr,
-                    node: child,
-                });
+                if kind != "text/javascript"
+                    && kind != "application/javascript"
+                    && kind != "module"
+                    && !kind.is_empty()
+                {
+                    continue;
+                }
+                if kind == "module" {
+                    continue;
+                }
             }
+            let defer = el.attr(local_name!("defer")).is_some();
+            let async_attr = el.attr(local_name!("async")).is_some();
+            let src = el
+                .attr(local_name!("src"))
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            let defer = src.is_some() && defer;
+            let async_attr = src.is_some() && async_attr;
+            let inline = if src.is_none() {
+                Some(
+                    doc.get_node(child)
+                        .map(|n| n.text_content())
+                        .unwrap_or_default(),
+                )
+            } else {
+                None
+            };
+            out.push(ScriptSpec {
+                inline,
+                src,
+                defer,
+                r#async: async_attr,
+                node: child,
+            });
         }
         walk(doc, child, out);
     }
@@ -165,8 +165,16 @@ pub fn resolve_sources(
 pub fn source_body(source: &ScriptSource) -> Option<String> {
     match source {
         ScriptSource::Inline(s) => Some(s.clone()),
-        ScriptSource::External { body, .. } => Some(body.clone()),
-        ScriptSource::Failed { .. } => None,
+        ScriptSource::External { url, body } => {
+            if body.is_empty() {
+                eprintln!("[js] empty script body for {url}");
+            }
+            Some(body.clone())
+        }
+        ScriptSource::Failed { url, error } => {
+            eprintln!("[js] script skipped ({url}): {error}");
+            None
+        }
     }
 }
 
@@ -205,5 +213,6 @@ mod tests {
                 .as_ref()
                 .is_some_and(|s| s.contains("addEventListener"))
         );
+        assert_ne!(scripts[0].node.as_u64(), 0);
     }
 }

@@ -112,6 +112,7 @@ pub enum DomRequest {
 pub enum DomValue {
     Null,
     Bool(bool),
+    #[expect(dead_code, reason = "DOM numeric returns from JS RPC")]
     Number(f64),
     String(String),
     NodeId(u64),

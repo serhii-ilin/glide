@@ -14,7 +14,6 @@ use crate::parse;
 
 pub struct JsRunResult {
     pub final_text: String,
-    pub console: Vec<String>,
 }
 
 pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
@@ -22,7 +21,7 @@ pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    run_inline_page_with_runtime(html, pump_for, &rt.handle())
+    run_inline_page_with_runtime(html, pump_for, rt.handle())
 }
 
 fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> JsRunResult {
@@ -40,8 +39,8 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
         ..Default::default()
     };
     let mut document = HtmlPageDocument(parse::document_from_html(html, config, true));
-    js_host.maybe_start_page(&document.0, "https://example.test/", &rt);
-    js_host.finish_script_resolution_sync(&rt, &crate::js::scripts::collect_scripts(&document.0));
+    js_host.maybe_start_page(&document.0, "https://example.test/", rt);
+    js_host.finish_script_resolution_sync(rt, &crate::js::scripts::collect_scripts(&document.0));
 
     let start = Instant::now();
     while start.elapsed() < pump_for {
@@ -59,8 +58,5 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
         .map(|n| n.text_content())
         .unwrap_or_default();
 
-    JsRunResult {
-        final_text,
-        console: Vec::new(),
-    }
+    JsRunResult { final_text }
 }

@@ -260,36 +260,30 @@ pub fn dispatch_text_keys<Rend: WindowRenderer>(view: &mut View<Rend>, event: &K
         } else if let PhysicalKey::Code(code) = event.physical_key {
             if event.state.is_pressed() && browser_shortcut(code, modifiers, false).is_some() {
                 Some(false)
-            } else if let Some(page_id) = page_iframe_id(chrome) {
-                if let Some(sub) = chrome
+            } else if let Some(page_id) = page_iframe_id(chrome)
+                && let Some(sub) = chrome
                     .get_node_mut(page_id)
                     .and_then(|node| node.subdoc_mut())
+            {
+                let mut handled = false;
+                #[cfg(target_os = "macos")]
+                if event.state.is_pressed()
+                    && let PhysicalKey::Code(code) = event.physical_key
+                    && let Some(selector) = macos_standard_keybinding(code, modifiers)
                 {
-                    let mut handled = false;
-                    #[cfg(target_os = "macos")]
-                    if event.state.is_pressed() {
-                        if let PhysicalKey::Code(code) = event.physical_key {
-                            if let Some(selector) = macos_standard_keybinding(code, modifiers) {
-                                sub.handle_ui_event(UiEvent::AppleStandardKeybinding(
-                                    SmolStr::new(selector),
-                                ));
-                                handled = true;
-                            }
-                        }
-                    }
-                    if !handled {
-                        let blitz_key = winit_key_to_blitz(event, modifiers);
-                        let ui = if event.state.is_pressed() {
-                            UiEvent::KeyDown(blitz_key)
-                        } else {
-                            UiEvent::KeyUp(blitz_key)
-                        };
-                        sub.handle_ui_event(ui);
-                    }
-                    Some(true)
-                } else {
-                    Some(false)
+                    sub.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(selector)));
+                    handled = true;
                 }
+                if !handled {
+                    let blitz_key = winit_key_to_blitz(event, modifiers);
+                    let ui = if event.state.is_pressed() {
+                        UiEvent::KeyDown(blitz_key)
+                    } else {
+                        UiEvent::KeyUp(blitz_key)
+                    };
+                    sub.handle_ui_event(ui);
+                }
+                Some(true)
             } else {
                 Some(false)
             }

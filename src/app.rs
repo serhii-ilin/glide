@@ -477,11 +477,16 @@ mod tests {
         let mut doc = build_chrome_page_document(&start, false, &load_state, chrome_config);
         assert_ne!(load_state.chrome_doc_id(), 0);
 
+        // The error page reaches the iframe as a document event that a later
+        // `resolve()` applies, so wait for the title, not just the network state.
+        let mut title = String::new();
         for _ in 0..300 {
             doc.0.resolve(0.0);
+            title = page_title_of(&doc.0);
             if load_state.page_loads_started() >= 1
                 && record.lock().expect("lock").is_some()
                 && !load_state.page_loading()
+                && !title.is_empty()
             {
                 break;
             }
@@ -495,17 +500,6 @@ mod tests {
         assert!(record.lock().expect("lock").is_some());
         assert!(!load_state.page_loading());
 
-        let chrome = &doc.0;
-        let page_id = chrome.get_element_by_id("page").expect("page iframe");
-        let title = chrome
-            .get_node(page_id)
-            .and_then(|n| n.subdoc())
-            .and_then(|sub| {
-                sub.inner()
-                    .find_title_node()
-                    .map(|node| node.text_content())
-            })
-            .unwrap_or_default();
         assert!(
             title.contains("Can't open page"),
             "expected error page title, got {:?}",
@@ -517,5 +511,20 @@ mod tests {
 
     impl NavigationProvider for DummyNav {
         fn navigate_to(&self, _options: NavigationOptions) {}
+    }
+
+    fn page_title_of(chrome: &blitz_dom::BaseDocument) -> String {
+        let Some(page_id) = chrome.get_element_by_id("page") else {
+            return String::new();
+        };
+        chrome
+            .get_node(page_id)
+            .and_then(|n| n.subdoc())
+            .and_then(|sub| {
+                sub.inner()
+                    .find_title_node()
+                    .map(|node| node.text_content())
+            })
+            .unwrap_or_default()
     }
 }

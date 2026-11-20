@@ -9,8 +9,10 @@ const KNOWN_FLAGS: &[&str] = &["--no-js", "--screenshot", "--dump-text", "--help
 pub enum RunMode {
     Help,
     Window {
-        url: String,
+        /// `None` when the user did not pass a URL (restore session).
+        cli_url: Option<String>,
         js_enabled: bool,
+        cli_no_js: bool,
     },
     Screenshot {
         url: String,
@@ -50,7 +52,8 @@ where
         }
     }
 
-    let js_enabled = !raw.iter().any(|a| a == "--no-js");
+    let cli_no_js = raw.iter().any(|a| a == "--no-js");
+    let js_enabled = !cli_no_js;
 
     if raw.first().is_some_and(|a| a == "--dump-text") {
         let rest: Vec<String> = raw
@@ -91,13 +94,16 @@ where
         });
     }
 
-    let url = raw
+    let cli_url = raw
         .iter()
         .find(|a| !a.starts_with("--"))
-        .map(|arg| resolve_location(arg))
-        .unwrap_or_else(|| "https://example.com/".to_string());
+        .map(|arg| resolve_location(arg));
 
-    Ok(RunMode::Window { url, js_enabled })
+    Ok(RunMode::Window {
+        cli_url,
+        js_enabled,
+        cli_no_js,
+    })
 }
 
 #[cfg(test)]
@@ -110,8 +116,9 @@ mod tests {
         assert_eq!(
             mode,
             RunMode::Window {
-                url: "https://example.com/".into(),
+                cli_url: None,
                 js_enabled: true,
+                cli_no_js: false,
             }
         );
     }
@@ -122,8 +129,9 @@ mod tests {
         assert_eq!(
             mode,
             RunMode::Window {
-                url: "https://example.com/".into(),
+                cli_url: Some("https://example.com/".into()),
                 js_enabled: true,
+                cli_no_js: false,
             }
         );
     }
@@ -134,8 +142,9 @@ mod tests {
         assert_eq!(
             mode,
             RunMode::Window {
-                url: "https://example.com/".into(),
+                cli_url: Some("https://example.com/".into()),
                 js_enabled: false,
+                cli_no_js: true,
             }
         );
         let mode = parse([

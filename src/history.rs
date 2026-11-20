@@ -8,10 +8,16 @@ pub struct History {
 
 impl History {
     pub fn new(url: String) -> Self {
-        Self {
-            entries: vec![url],
-            index: 0,
-        }
+        Self::from_parts(vec![url], 0)
+    }
+
+    pub fn from_parts(entries: Vec<String>, index: usize) -> Self {
+        let index = if entries.is_empty() {
+            0
+        } else {
+            index.min(entries.len() - 1)
+        };
+        Self { entries, index }
     }
 
     pub fn current(&self) -> String {
@@ -49,6 +55,10 @@ impl History {
     }
 
     pub fn history_index(&self) -> usize {
+        self.index
+    }
+
+    pub fn index(&self) -> usize {
         self.index
     }
 
@@ -142,5 +152,13 @@ mod tests {
         h.restore_to_index(0);
         assert_eq!(h.entries(), &["https://a/"]);
         assert_eq!(h.history_index(), 0);
+    }
+
+    #[test]
+    fn from_parts_restores_position() {
+        let mut h = History::from_parts(vec!["https://a/".into(), "https://b/".into()], 1);
+        assert_eq!(h.current(), "https://b/");
+        assert_eq!(h.index(), 1);
+        assert!(h.back().is_some());
     }
 }

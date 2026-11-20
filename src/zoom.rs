@@ -6,7 +6,7 @@ const MIN_PERCENT: i32 = 30;
 const MAX_PERCENT: i32 = 300;
 const STEP_PERCENT: i32 = 10;
 
-/// Per-window page zoom (not persisted across restarts).
+/// Per-window page zoom level for the iframe viewport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageZoom {
     percent: i32,
@@ -23,6 +23,14 @@ impl PageZoom {
         Self { percent: 100 }
     }
 
+    pub fn percent(&self) -> i32 {
+        self.percent
+    }
+
+    pub fn set_percent(&mut self, percent: i32) {
+        self.percent = percent.clamp(MIN_PERCENT, MAX_PERCENT);
+    }
+
     pub fn level(&self) -> f32 {
         self.percent as f32 / 100.0
     }
@@ -37,10 +45,6 @@ impl PageZoom {
 
     pub fn reset(&mut self) {
         self.percent = 100;
-    }
-
-    fn set_percent(&mut self, percent: i32) {
-        self.percent = percent.clamp(MIN_PERCENT, MAX_PERCENT);
     }
 
     /// Counter-scale factor for chrome UI so the toolbar stays the same visual size.

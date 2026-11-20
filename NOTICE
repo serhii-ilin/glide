@@ -85,5 +85,14 @@ JavaScript on a worker thread. V8 is also subject to its own terms in the
 upstream repository.
 
 --------------------------------------------------------------------------------
+domino
+https://github.com/fgnass/domino
+Copyright Felix Gnass and contributors
+License: BSD-2-Clause
+Version used by Glide: 2.1.9 (vendored under third_party/domino/, embedded in src/js/vendor/domino.js)
+
+In-memory DOM implementation for page JavaScript.
+
+--------------------------------------------------------------------------------
 reqwest, tokio, url, winit, png, and the other crates named in Cargo.lock
 are third-party dependencies under the licenses recorded in those crates.

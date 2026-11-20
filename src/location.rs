@@ -15,10 +15,13 @@ pub fn resolve_location(raw: &str) -> String {
         return "https://example.com/".to_string();
     }
 
-    if let Ok(url) = Url::parse(raw)
-        && matches!(url.scheme(), "http" | "https" | "file")
-    {
-        return url.to_string();
+    if let Ok(url) = Url::parse(raw) {
+        if matches!(url.scheme(), "http" | "https" | "file") {
+            return url.to_string();
+        }
+        if url.as_str() == "glide://bookmarks" {
+            return url.to_string();
+        }
     }
 
     if !raw.contains([' ', '\t'])
@@ -85,5 +88,15 @@ mod tests {
     #[test]
     fn empty_input_opens_example() {
         assert_eq!(resolve_location("   "), "https://example.com/");
+    }
+
+    #[test]
+    fn glide_bookmarks_passes_through() {
+        assert_eq!(resolve_location("glide://bookmarks"), "glide://bookmarks");
+        let search = resolve_location("glide://back");
+        assert!(
+            search.starts_with("https://duckduckgo.com/html/?q="),
+            "{search}"
+        );
     }
 }

@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use blitz_dom::{BaseDocument, DocumentConfig, qual_name};
+use blitz_dom::{BaseDocument, Document, DocumentConfig, qual_name};
 use blitz_net::Provider;
 use blitz_shell::{
     BlitzApplication, BlitzShellEvent, BlitzShellProxy, WindowConfig, create_default_event_loop,
@@ -17,11 +17,13 @@ use winit::window::{WindowAttributes, WindowId};
 
 use std::sync::atomic::Ordering;
 
+use crate::bookmarks::BookmarksState;
 use crate::chrome::{
     NavCommand, chrome_document, command_from_url, set_address, set_loading_ui,
     sync_committed_address,
 };
 use crate::find::FindSession;
+use crate::history::History;
 use crate::html::{GlideHtmlProvider, HtmlPageDocument, set_js_runtime_mode};
 use crate::js::{JsHost, JsTap};
 use crate::keyboard;
@@ -29,19 +31,82 @@ use crate::location::resolve_location;
 use crate::nav::{NavKind, NavTracker, ObserveEffect};
 use crate::net::{GlideNet, LoadState};
 use crate::parse;
+use crate::profile::{
+    HistoryCommitKind, HistoryEntry, HistoryLogState, PendingHistoryCommand, ProfileStore,
+    Settings, effective_js_enabled, history_log_state_for_launch, session_for_disk,
+    settings_from_saved, should_append_history_log, should_persist_url, window_start_state,
+};
 use crate::zoom::PageZoom;
 
 const CHROME_BASE: &str = "https://glide.invalid/chrome";
 
 type Renderer = anyrender_vello_cpu::VelloCpuWindowRenderer;
 
-pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
+/// Startup state for the windowed browser.
+pub struct WindowLaunch {
+    pub start_url: String,
+    pub history: History,
+    pub defer_session_save: bool,
+    pub js_enabled: bool,
+    pub persist_js_setting: bool,
+    pub zoom: PageZoom,
+    pub profile: ProfileStore,
+    pub saved_settings: Settings,
+    pub history_log: HistoryLogState,
+}
+
+pub fn prepare_window_launch(
+    cli_url: Option<&str>,
+    cli_no_js: bool,
+    profile: ProfileStore,
+) -> WindowLaunch {
+    let saved = profile.load_settings();
+    let (saved_settings, zoom) = settings_from_saved(&saved);
+    let js_enabled = effective_js_enabled(cli_no_js, &saved_settings);
+    let session = profile.load_session();
+    let defer_session_save = cli_url.is_some();
+    let (start_url, entries, index) = window_start_state(cli_url, &session);
+    let history = History::from_parts(entries, index);
+    let history_log = history_log_state_for_launch(cli_url, &start_url, &session);
+    WindowLaunch {
+        start_url,
+        history,
+        defer_session_save,
+        js_enabled,
+        persist_js_setting: !cli_no_js,
+        zoom,
+        profile,
+        saved_settings,
+        history_log,
+    }
+}
+
+pub(crate) fn chrome_accepts_navigation(source_document: usize, chrome_doc_id: usize) -> bool {
+    chrome_doc_id != 0 && source_document == chrome_doc_id
+}
+
+pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
+    let WindowLaunch {
+        start_url: start,
+        history,
+        defer_session_save,
+        js_enabled,
+        persist_js_setting,
+        zoom,
+        profile,
+        saved_settings,
+        history_log,
+    } = launch;
+    let profile = Arc::new(profile);
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
     let load_state = Arc::new(LoadState::default());
     let net_impl = Arc::new(Provider::new(Some(Arc::new(proxy.clone()))));
     let waker: Arc<dyn blitz_traits::net::NetWaker> = Arc::new(proxy.clone());
-    let net = GlideNet::new(net_impl.clone(), load_state.clone(), waker);
+    let bookmarks_state = BookmarksState::load(profile.clone());
+    let bookmark_list = Arc::new(std::sync::RwLock::new(bookmarks_state.entries().to_vec()));
+    let bookmarks = BookmarksState::shared(bookmark_list.clone());
+    let net = GlideNet::new(net_impl.clone(), load_state.clone(), waker, bookmarks);
     let bus = NavBus::default();
 
     let js_tap = if js_enabled {
@@ -61,27 +126,45 @@ pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
         navigation_provider: Some(Arc::new(ChromeNav {
             bus: bus.clone(),
             proxy: proxy.clone(),
+            load_state: load_state.clone(),
         })),
         html_parser_provider: Some(Arc::new(html_provider.clone())),
         ..Default::default()
     };
 
-    let doc = build_chrome_page_document(&start, js_enabled, &load_state, chrome_config);
+    let bookmarked = bookmarks_state.is_bookmarked(&start);
+    let mut doc =
+        build_chrome_page_document(&start, js_enabled, bookmarked, &load_state, chrome_config);
+    {
+        let mut chrome = doc.0.inner_mut();
+        zoom.apply_to_chrome(&mut chrome);
+    }
 
     let attrs = WindowAttributes::default()
         .with_title("Glide")
         .with_surface_size(winit::dpi::LogicalSize::new(1100.0, 760.0));
     let window = WindowConfig::with_attributes(Box::new(doc), Renderer::new(), attrs);
 
-    let mut app = Glide::new(
+    let mut app = Glide::new(GlideBootstrap {
         proxy,
         receiver,
         bus,
-        start,
-        js_host,
+        start_url: start,
+        js: js_host,
         html_provider,
         load_state,
-    );
+        history,
+        zoom,
+        session: GlideSessionState {
+            profile,
+            saved_settings,
+            persist_js_setting,
+            defer_session_save,
+        },
+        bookmarks: bookmarks_state,
+        bookmark_list: bookmark_list.clone(),
+        history_log,
+    });
     app.inner.add_window(window);
     event_loop
         .run_app(app)
@@ -106,15 +189,43 @@ impl NavBus {
 struct ChromeNav {
     bus: NavBus,
     proxy: BlitzShellProxy,
+    load_state: Arc<LoadState>,
 }
 
 impl NavigationProvider for ChromeNav {
     fn navigate_to(&self, options: NavigationOptions) {
+        let chrome_id = self.load_state.chrome_doc_id();
+        if !chrome_accepts_navigation(options.source_document, chrome_id) {
+            return;
+        }
         if let Some(command) = command_from_url(&options.url) {
             self.bus.push(command);
             self.proxy.wake_up();
         }
     }
+}
+
+struct GlideSessionState {
+    profile: Arc<ProfileStore>,
+    saved_settings: Settings,
+    persist_js_setting: bool,
+    defer_session_save: bool,
+}
+
+struct GlideBootstrap {
+    proxy: BlitzShellProxy,
+    receiver: std::sync::mpsc::Receiver<BlitzShellEvent>,
+    bus: NavBus,
+    start_url: String,
+    js: JsHost,
+    html_provider: GlideHtmlProvider,
+    load_state: Arc<LoadState>,
+    history: History,
+    zoom: PageZoom,
+    session: GlideSessionState,
+    bookmarks: BookmarksState,
+    bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
+    history_log: HistoryLogState,
 }
 
 struct Glide {
@@ -129,58 +240,136 @@ struct Glide {
     address_written: String,
     zoom: PageZoom,
     find: FindSession,
+    session: GlideSessionState,
+    bookmarks: BookmarksState,
+    bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
+    history_log: HistoryLogState,
 }
 
 fn build_chrome_page_document(
     start: &str,
     js_enabled: bool,
+    bookmarked: bool,
     load_state: &LoadState,
     chrome_config: DocumentConfig,
 ) -> HtmlPageDocument {
     HtmlPageDocument(parse::document_from_html_with(
-        &chrome_document(start, js_enabled),
+        &chrome_document(start, js_enabled, bookmarked),
         chrome_config,
         js_enabled,
         |doc| load_state.set_chrome_doc_id(doc.id()),
     ))
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 impl Glide {
-    fn new(
-        proxy: BlitzShellProxy,
-        receiver: std::sync::mpsc::Receiver<BlitzShellEvent>,
-        bus: NavBus,
-        start: String,
-        js: JsHost,
-        html_provider: GlideHtmlProvider,
-        load_state: Arc<LoadState>,
-    ) -> Self {
+    fn new(init: GlideBootstrap) -> Self {
         Self {
-            inner: BlitzApplication::new(proxy, receiver),
-            bus,
-            js,
-            html_provider,
-            nav: NavTracker::new(start.clone()),
+            inner: BlitzApplication::new(init.proxy, init.receiver),
+            bus: init.bus,
+            js: init.js,
+            html_provider: init.html_provider,
+            nav: crate::nav::NavTracker::from_history(init.history, init.start_url.clone()),
             last_title: "Glide".to_string(),
-            load_state,
+            load_state: init.load_state,
             chrome_loading: false,
-            address_written: start,
-            zoom: PageZoom::new(),
+            address_written: init.start_url,
+            zoom: init.zoom,
             find: FindSession::default(),
+            session: init.session,
+            bookmarks: init.bookmarks,
+            bookmark_list: init.bookmark_list,
+            history_log: init.history_log,
+        }
+    }
+
+    fn save_settings(&self) -> Result<(), String> {
+        let js_enabled = if self.session.persist_js_setting {
+            self.html_provider.scripting_enabled.load(Ordering::Relaxed)
+        } else {
+            self.session.saved_settings.js_enabled
+        };
+        let settings = Settings {
+            js_enabled,
+            zoom_percent: self.zoom.percent(),
+        };
+        self.session.profile.save_settings(&settings)
+    }
+
+    fn save_session_if_allowed(&self) {
+        if self.session.defer_session_save {
+            return;
+        }
+        let failed = self.load_state.failed_page_urls();
+        let session = session_for_disk(
+            self.nav.history().entries(),
+            self.nav.history().index(),
+            &failed,
+        );
+        let _ = self.session.profile.save_session(&session);
+    }
+
+    fn on_committed_navigation(&mut self, effect: ObserveEffect, url: &str, title: &str) {
+        if matches!(
+            effect,
+            ObserveEffect::LinkNavigation | ObserveEffect::Redirect
+        ) {
+            self.session.defer_session_save = false;
+        }
+        if !matches!(
+            effect,
+            ObserveEffect::Completed | ObserveEffect::LinkNavigation | ObserveEffect::Redirect
+        ) {
+            return;
+        }
+        if self.load_state.page_load_failed(url) || !should_persist_url(url) {
+            if !self.session.defer_session_save {
+                self.save_session_if_allowed();
+            }
+            return;
+        }
+
+        let commit_kind = match effect {
+            ObserveEffect::Completed => HistoryCommitKind::Completed,
+            ObserveEffect::LinkNavigation => HistoryCommitKind::LinkNavigation,
+            ObserveEffect::Redirect => HistoryCommitKind::Redirect,
+            ObserveEffect::Unchanged => return,
+        };
+        if should_append_history_log(&mut self.history_log, commit_kind, url) {
+            let entry = HistoryEntry {
+                ts_unix: unix_now(),
+                url: url.to_string(),
+                title: title.to_string(),
+            };
+            let _ = self.session.profile.append_history(&entry);
+        }
+        if !self.session.defer_session_save {
+            self.save_session_if_allowed();
         }
     }
 
     fn sync(&mut self) {
-        let Some(view) = self.inner.windows.values_mut().next() else {
+        let Some(window_id) = self.inner.windows.keys().next().copied() else {
             return;
         };
         let mut changed = false;
-        {
+        let mut save_settings_after = false;
+        let mut committed: Option<(ObserveEffect, String, String)> = None;
+        let mut pending_history: Option<PendingHistoryCommand> = None;
+        if let Some(view) = self.inner.windows.get_mut(&window_id) {
             let mut doc = view.doc.inner_mut();
             for command in self.bus.take() {
                 changed = true;
                 match command {
                     NavCommand::Back => {
+                        self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Back);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -192,6 +381,8 @@ impl Glide {
                         }
                     }
                     NavCommand::Forward => {
+                        self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Forward);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -203,6 +394,8 @@ impl Glide {
                         }
                     }
                     NavCommand::Reload => {
+                        self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Reload);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -222,6 +415,8 @@ impl Glide {
                         }
                     }
                     NavCommand::ToggleJs => {
+                        self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Reload);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -231,8 +426,24 @@ impl Glide {
                             load_iframe(&mut doc, &url);
                             set_js_indicator(&mut doc, new);
                         }
+                        self.session.persist_js_setting = true;
+                        save_settings_after = true;
+                    }
+                    NavCommand::ToggleBookmark => {
+                        if let Some(url) = page_url(&doc)
+                            && should_persist_url(&url)
+                        {
+                            let title = page_title(&doc).unwrap_or_default();
+                            self.bookmarks.toggle(&mut doc, &url, &title, unix_now());
+                            if let Ok(mut shared) = self.bookmark_list.write() {
+                                *shared = self.bookmarks.entries().to_vec();
+                            }
+                        }
+                        changed = true;
                     }
                     NavCommand::Go(raw) => {
+                        self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Go);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -270,6 +481,16 @@ impl Glide {
                 {
                     self.find.close_bar(&mut doc);
                 }
+                self.bookmarks.sync_star(&mut doc, &actual);
+                if matches!(
+                    effect,
+                    ObserveEffect::Completed
+                        | ObserveEffect::LinkNavigation
+                        | ObserveEffect::Redirect
+                ) {
+                    let title = page_title(&doc).unwrap_or_default();
+                    committed = Some((effect, actual, title));
+                }
             }
             sync_committed_address(&mut doc, self.nav.shown(), &mut self.address_written);
             let loading = self.load_state.page_loading();
@@ -294,6 +515,20 @@ impl Glide {
                 }
             }
         }
+
+        if let Some(cmd) = pending_history {
+            self.history_log.pending_command = Some(cmd);
+        }
+        if save_settings_after {
+            let _ = self.save_settings();
+        }
+        if let Some((effect, url, title)) = committed {
+            self.on_committed_navigation(effect, &url, &title);
+        }
+
+        let Some(view) = self.inner.windows.get_mut(&window_id) else {
+            return;
+        };
         if changed {
             view.request_redraw();
         }
@@ -362,13 +597,15 @@ impl Glide {
             return false;
         };
 
-        match shortcut {
+        let mut save_zoom_settings = false;
+        let handled = match shortcut {
             keyboard::BrowserShortcut::FocusAddressBar => {
                 keyboard::focus_address_bar(view);
                 view.request_redraw();
                 true
             }
             keyboard::BrowserShortcut::CloseWindow => {
+                self.save_session_if_allowed();
                 if let Some(win) = self.inner.windows.remove(&window_id) {
                     drop(win);
                 }
@@ -378,6 +615,7 @@ impl Glide {
                 true
             }
             keyboard::BrowserShortcut::Quit => {
+                self.save_session_if_allowed();
                 self.inner.windows.clear();
                 event_loop.exit();
                 true
@@ -393,6 +631,7 @@ impl Glide {
                     let mut chrome = view.doc.inner_mut();
                     self.zoom.apply_to_chrome(&mut chrome);
                 }
+                save_zoom_settings = true;
                 view.request_redraw();
                 true
             }
@@ -402,6 +641,7 @@ impl Glide {
                     let mut chrome = view.doc.inner_mut();
                     self.zoom.apply_to_chrome(&mut chrome);
                 }
+                save_zoom_settings = true;
                 view.request_redraw();
                 true
             }
@@ -411,6 +651,7 @@ impl Glide {
                     let mut chrome = view.doc.inner_mut();
                     self.zoom.apply_to_chrome(&mut chrome);
                 }
+                save_zoom_settings = true;
                 view.request_redraw();
                 true
             }
@@ -454,7 +695,11 @@ impl Glide {
                     false
                 }
             }
+        };
+        if save_zoom_settings {
+            let _ = self.save_settings();
         }
+        handled
     }
 }
 
@@ -588,6 +833,16 @@ mod tests {
     use blitz_traits::net::NetWaker;
 
     use super::*;
+    use url::Url;
+
+    #[test]
+    fn chrome_commands_ignored_from_other_documents() {
+        assert!(!chrome_accepts_navigation(1, 5));
+        assert!(chrome_accepts_navigation(5, 5));
+        assert!(!chrome_accepts_navigation(5, 0));
+        let cmd = command_from_url(&Url::parse("glide://back").unwrap());
+        assert_eq!(cmd, Some(NavCommand::Back));
+    }
 
     #[test]
     fn initial_iframe_load_uses_glide_net_error_page() {
@@ -601,7 +856,12 @@ mod tests {
             *record2.lock().expect("lock") = Some(());
         });
         let inner = Arc::new(Provider::new(Some(waker.clone())));
-        let net = GlideNet::new(inner, load_state.clone(), waker);
+        let net = GlideNet::new(
+            inner,
+            load_state.clone(),
+            waker,
+            Arc::new(|| crate::profile::bookmarks_page_html(&[])),
+        );
 
         let html_provider = GlideHtmlProvider {
             scripting_enabled: Arc::new(AtomicBool::new(false)),
@@ -620,7 +880,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut doc = build_chrome_page_document(&start, false, &load_state, chrome_config);
+        let mut doc = build_chrome_page_document(&start, false, false, &load_state, chrome_config);
         assert_ne!(load_state.chrome_doc_id(), 0);
 
         // The error page reaches the iframe as a document event that a later

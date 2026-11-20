@@ -35,8 +35,12 @@ pub struct NavTracker {
 
 impl NavTracker {
     pub fn new(start: String) -> Self {
+        Self::from_history(History::new(start.clone()), start)
+    }
+
+    pub fn from_history(history: History, start: String) -> Self {
         Self {
-            history: History::new(start.clone()),
+            history,
             expecting: Some(start.clone()),
             last_seen: None,
             shown: start,

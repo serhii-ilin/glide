@@ -27,6 +27,7 @@ pub enum BrowserShortcut {
     Reload,
     Stop,
     ToggleJs,
+    ToggleBookmark,
     FocusAddressBar,
     CloseWindow,
     Quit,
@@ -84,6 +85,7 @@ pub fn browser_shortcut(
         KeyCode::BracketLeft if primary && !shift => return Some(BrowserShortcut::Back),
         KeyCode::BracketRight if primary && !shift => return Some(BrowserShortcut::Forward),
         KeyCode::KeyJ if primary && shift => return Some(BrowserShortcut::ToggleJs),
+        KeyCode::KeyD if primary && !shift => return Some(BrowserShortcut::ToggleBookmark),
         KeyCode::F5 if !primary && !alt => return Some(BrowserShortcut::Reload),
         KeyCode::ArrowLeft if alt && !primary => return Some(BrowserShortcut::Back),
         KeyCode::ArrowRight if alt && !primary => return Some(BrowserShortcut::Forward),
@@ -440,6 +442,7 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         BrowserShortcut::Reload => Some(NavCommand::Reload),
         BrowserShortcut::Stop => Some(NavCommand::Stop),
         BrowserShortcut::ToggleJs => Some(NavCommand::ToggleJs),
+        BrowserShortcut::ToggleBookmark => Some(NavCommand::ToggleBookmark),
         BrowserShortcut::FocusAddressBar
         | BrowserShortcut::CloseWindow
         | BrowserShortcut::Quit
@@ -745,6 +748,13 @@ mod tests {
                 Some(BrowserShortcut::ToggleJs),
             ));
             cases.extend(both(
+                &format!("{tag}+D toggle bookmark"),
+                KeyCode::KeyD,
+                prim,
+                Some(BrowserShortcut::ToggleBookmark),
+                Some(BrowserShortcut::ToggleBookmark),
+            ));
+            cases.extend(both(
                 "Shift+J not intercepted",
                 KeyCode::KeyJ,
                 shift_only,
@@ -919,6 +929,10 @@ mod tests {
         assert_eq!(
             nav_from_shortcut(BrowserShortcut::ToggleJs),
             Some(NavCommand::ToggleJs)
+        );
+        assert_eq!(
+            nav_from_shortcut(BrowserShortcut::ToggleBookmark),
+            Some(NavCommand::ToggleBookmark)
         );
         assert!(nav_from_shortcut(BrowserShortcut::FocusAddressBar).is_none());
     }
@@ -1131,7 +1145,7 @@ mod tests {
     }
 
     fn chrome_test_document() -> BaseDocument {
-        let html = chrome_document("", true);
+        let html = chrome_document("", true, false);
         let mut doc = parse::document_from_html(&html, test_document_config(), false);
         layout_doc(&mut doc);
         let url_id = doc.get_element_by_id("url").expect("url input");
@@ -1237,7 +1251,7 @@ mod tests {
     const PAGE_INPUT_FIXTURE: &str = include_str!("../tests/fixtures/input.html");
 
     fn chrome_with_page_srcdoc() -> BaseDocument {
-        let html = chrome_document("about:blank", true);
+        let html = chrome_document("about:blank", true, false);
         let mut doc = parse::document_from_html(&html, test_document_config(), false);
         layout_doc(&mut doc);
         let page_id = doc.get_element_by_id("page").expect("page iframe");
@@ -1334,7 +1348,7 @@ mod tests {
     }
 
     fn chrome_with_find_focused() -> BaseDocument {
-        let html = chrome_document("about:blank", true);
+        let html = chrome_document("about:blank", true, false);
         let mut doc = parse::document_from_html(&html, test_document_config(), false);
         layout_doc(&mut doc);
         crate::chrome::set_find_bar_open(&mut doc, true);

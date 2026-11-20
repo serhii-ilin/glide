@@ -11,6 +11,7 @@ pub enum NavCommand {
     Reload,
     Stop,
     ToggleJs,
+    ToggleBookmark,
     FindClose,
     FindNext,
     FindPrev,
@@ -26,6 +27,7 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
             Some("reload") => Some(NavCommand::Reload),
             Some("stop") => Some(NavCommand::Stop),
             Some("toggle-js") => Some(NavCommand::ToggleJs),
+            Some("bookmark") => Some(NavCommand::ToggleBookmark),
             Some("find-close") => Some(NavCommand::FindClose),
             Some("find-next") => Some(NavCommand::FindNext),
             Some("find-prev") => Some(NavCommand::FindPrev),
@@ -49,9 +51,15 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
     Some(NavCommand::Go(url.to_string()))
 }
 
-pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
+pub fn chrome_document(start_url: &str, js_enabled: bool, bookmarked: bool) -> String {
     let url = escape_attr(start_url);
     let js_label = if js_enabled { "JS on" } else { "JS off" };
+    let star = if bookmarked { "&#9733;" } else { "&#9734;" };
+    let star_title = if bookmarked {
+        "Remove bookmark"
+    } else {
+        "Add bookmark"
+    };
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -167,6 +175,7 @@ pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
     <a class="btn" href="glide://forward" title="Forward">&#8594;</a>
     <a id="reload" class="btn" href="glide://reload" title="Reload">&#8635;</a>
     <a id="js-toggle" class="btn" href="glide://toggle-js" title="Toggle JavaScript">{js_label}</a>
+    <a id="bookmark-star" class="btn" href="glide://bookmark" title="{star_title}">{star}</a>
     <span id="zoom-label"></span>
     <form action="https://glide.invalid/go" method="get">
       <input id="url" name="q" type="text" value="{url}" spellcheck="false" autocomplete="off">
@@ -317,6 +326,26 @@ pub fn set_zoom_label(doc: &mut BaseDocument, label: Option<&str>) {
     }
 }
 
+pub fn set_bookmark_star(doc: &mut BaseDocument, bookmarked: bool) {
+    let Some(id) = doc.get_element_by_id("bookmark-star") else {
+        return;
+    };
+    let star = if bookmarked { "★" } else { "☆" };
+    let title = if bookmarked {
+        "Remove bookmark"
+    } else {
+        "Add bookmark"
+    };
+    let mut m = doc.mutate();
+    m.set_attribute(id, qual_name!("title"), title);
+    let children: Vec<_> = m.child_ids(id).into_iter().collect();
+    for child in children {
+        m.remove_and_drop_node(child);
+    }
+    let text_id = m.create_text_node(star);
+    m.append_children(id, &[text_id]);
+}
+
 pub fn set_ui_scale(doc: &mut BaseDocument, ui: f32) {
     let root = doc.root_element().id;
     let style = format!("--ui: {ui}");
@@ -375,6 +404,10 @@ mod tests {
             command_from_url(&Url::parse("glide://toggle-js").unwrap()),
             Some(NavCommand::ToggleJs)
         );
+        assert_eq!(
+            command_from_url(&Url::parse("glide://bookmark").unwrap()),
+            Some(NavCommand::ToggleBookmark)
+        );
     }
 
     #[test]
@@ -407,7 +440,7 @@ mod tests {
 
     #[test]
     fn toolbar_height_stable_across_page_zoom() {
-        let html = chrome_document("about:blank", true);
+        let html = chrome_document("about:blank", true, false);
         let config = DocumentConfig {
             viewport: Some(Viewport::new(1100, 760, 1.0, ColorScheme::Light)),
             html_parser_provider: Some(Arc::new(GlideHtmlProvider::default())),

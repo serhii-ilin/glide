@@ -31,3 +31,7 @@ Each row names the feature it covers.
 | M-023 | F-024 | Press Cmd/Ctrl+F, type `alpha` | Find bar opens with focus; matches highlight and scroll into view; count shows `n of m` |
 | M-024 | F-024 | With find open, press Enter and Cmd/Ctrl+G, then Shift+Enter and Cmd/Ctrl+Shift+G | Selection moves to next/previous match and wraps around |
 | M-025 | F-024 | With find open, press Esc | Find bar closes and page selection clears |
+| M-026 | F-025 | Visit two `https://` pages, quit (Cmd/Ctrl+Q), relaunch with no URL argument | Same page as at quit; back returns to the previous page |
+| M-027 | F-025 | Toggle JS off (toolbar or Cmd/Ctrl+Shift+J), quit, relaunch with no URL | JS stays off until toggled again |
+| M-028 | F-025 | Bookmark a page (star or Cmd/Ctrl+D). In the address bar open `glide://bookmarks` and click a link | Bookmarks page lists the entry; the link navigates the page iframe |
+| M-029 | F-025 | Log into a cookie-based site, navigate to another page on that host, confirm still logged in | Session cookies work for the lifetime of one Glide process (not across restarts) |

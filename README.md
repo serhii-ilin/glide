@@ -10,7 +10,7 @@ Rust 1.91 or newer (edition 2024):
 
 ```sh
 cargo run --release -- --help
-cargo run --release
+cargo run --release                        # restores the last session when no URL is given
 cargo run --release -- https://example.com
 cargo run --release -- news.ycombinator.com
 cargo run --release -- --dump-text file://$PWD/tests/fixtures/js-toggle.html
@@ -36,6 +36,7 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Cmd/Ctrl+= / Cmd/Ctrl++ / Numpad+ | Zoom page in (10% steps, also with Shift held) |
 | Cmd/Ctrl+- / Numpad- | Zoom page out |
 | Cmd/Ctrl+0 | Reset zoom to 100% (non-100% zoom shows a **%** label in the toolbar) |
+| Cmd/Ctrl+D | Bookmark or unbookmark the current page (toolbar **☆** / **★**) |
 | Space / Shift+Space / PgUp / PgDn / Home / End / arrows | Scroll the page when no text field is focused |
 
 Text fields (address bar and in-page inputs) use normal editing shortcuts: Backspace and
@@ -45,6 +46,10 @@ Backspace because Blitz's text editor expects them on that platform. Keys are fo
 into the page `<iframe>` when it has focus.
 
 The first release build compiles Stylo and Vello, so it takes a while. Later builds are incremental.
+
+### Profile and persistence
+
+Glide stores settings, the back/forward session, a navigation log, and bookmarks under a profile directory (typically the OS app data location for **Glide**). Override it with `GLIDE_PROFILE_DIR`. JavaScript on/off and page zoom persist across restarts; `--no-js` wins for that run only and does not overwrite the saved JS setting. With no URL on the command line, the last session is restored; passing a URL starts there without replacing the saved session until you navigate elsewhere. In-memory cookies are enabled for the network stack; cookie persistence to disk is not implemented yet. Open `glide://bookmarks` (or type it in the address bar) for a list of bookmarks, newest first.
 
 ### Linux packages
 
@@ -106,14 +111,15 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 - Link clicks, in-page fragment jumps, scrolling, text selection, and form controls that Blitz implements (the address bar is one of those).
 - Back, forward, and reload. Redirects replace the current history entry. A link click pushes a new one.
 - Loading indicator, stop (Esc or the toolbar **Stop** button while a page is loading), and a readable error page when a page fails to load. **Retry** on the error page reloads the same URL.
-- Page zoom (30%–300%) and find-in-page with match highlight and scroll-into-view.
+- Page zoom (30%–300%) and find-in-page with match highlight and scroll-into-view. Zoom level persists across restarts.
+- Settings (JS on/off, zoom), session restore, bookmark star, `glide://bookmarks`, and an append-only history log on disk. Cookie jar for the current run only.
 - System fonts through Parley.
 - Experimental page JavaScript via V8 (see above). Pass `--no-js` to turn it off.
 
 ## What does not
 
 - **Full browser JavaScript.** The bootstrap is intentionally tiny; Boa in Kitesurf implements far more of the Web platform. DuckDuckGo's JS-heavy UI may still break; the HTML frontend is the default search target.
-- **Many browser features.** No multiple tabs, cookies UI, downloads, or extensions. Blitz's own gaps apply too: incomplete CSS, limited form controls, and no full navigation of frames other than the single page iframe Glide uses as the viewport.
+- **Many browser features.** No multiple tabs, persistent cookies, downloads, or extensions. Blitz's own gaps apply too: incomplete CSS, limited form controls, and no full navigation of frames other than the single page iframe Glide uses as the viewport.
 - **Find scroll target.** Find scrolls the inline root that contains the match into view, not the exact line box; tall paragraphs and scrollable subcontainers may not place the caret optimally.
 - **Stop vs. subresources.** Stopping a navigation aborts the in-flight main document load, but Blitz also aborts the previous page's subresource fetches when a new navigation starts, so images or scripts on the page you return to may stay missing until you reload.
 - **Kitesurf's Workers runtime.** No Chrome DevTools Protocol, no Dynamic Workers, no PDF export. Those live in Kitesurf's TypeScript and Wasm layers.
@@ -134,6 +140,7 @@ src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
 src/js/           V8 worker, DOM RPC, script loading
 src/parse.rs      html5ever with configurable scripting flag
 src/location.rs   URL vs. search
+src/profile.rs    on-disk settings, session, history log, bookmarks
 src/shot.rs       headless PNG
 ```
 

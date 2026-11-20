@@ -151,6 +151,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                         call_global_fn(scope, "__glide_set_current_script", &[]);
                     }
                     run_script_with_timeout(scope, &src, &format!("script-{i}"));
+                    call_global_fn(scope, "__glide_set_current_script", &[]);
                     scope.perform_microtask_checkpoint();
                     drain_glide_microtasks(scope);
                 }
@@ -283,97 +284,6 @@ fn map_dom_op(
     args: &v8::FunctionCallbackArguments,
 ) -> Result<DomRequest, String> {
     Ok(match op {
-        "getElementById" => DomRequest::GetElementById {
-            id: arg_string(scope, args, 2)?,
-            reply,
-        },
-        "querySelector" => DomRequest::QuerySelector {
-            selector: arg_string(scope, args, 2)?,
-            reply,
-        },
-        "querySelectorAll" => DomRequest::QuerySelectorAll {
-            selector: arg_string(scope, args, 2)?,
-            reply,
-        },
-        "createElement" => DomRequest::CreateElement {
-            tag: arg_string(scope, args, 2)?,
-            reply,
-        },
-        "createTextNode" => DomRequest::CreateTextNode {
-            text: arg_string(scope, args, 2)?,
-            reply,
-        },
-        "appendChild" => DomRequest::AppendChild {
-            parent: arg_handle(scope, args, 2)?,
-            child: arg_handle(scope, args, 3)?,
-            reply,
-        },
-        "removeChild" => DomRequest::RemoveChild {
-            parent: arg_handle(scope, args, 2)?,
-            child: arg_handle(scope, args, 3)?,
-            reply,
-        },
-        "insertBefore" => DomRequest::InsertBefore {
-            parent: arg_handle(scope, args, 2)?,
-            child: arg_handle(scope, args, 3)?,
-            before: arg_handle(scope, args, 4)?,
-            reply,
-        },
-        "setAttribute" => DomRequest::SetAttribute {
-            node: arg_handle(scope, args, 2)?,
-            name: arg_string(scope, args, 3)?,
-            value: arg_string(scope, args, 4)?,
-            reply,
-        },
-        "getAttribute" => DomRequest::GetAttribute {
-            node: arg_handle(scope, args, 2)?,
-            name: arg_string(scope, args, 3)?,
-            reply,
-        },
-        "removeAttribute" => DomRequest::RemoveAttribute {
-            node: arg_handle(scope, args, 2)?,
-            name: arg_string(scope, args, 3)?,
-            reply,
-        },
-        "setInnerHtml" => DomRequest::SetInnerHtml {
-            node: arg_handle(scope, args, 2)?,
-            html: arg_string(scope, args, 3)?,
-            reply,
-        },
-        "getTextContent" => DomRequest::GetTextContent {
-            node: arg_handle(scope, args, 2)?,
-            reply,
-        },
-        "setTextContent" => DomRequest::SetTextContent {
-            node: arg_handle(scope, args, 2)?,
-            text: arg_string(scope, args, 3)?,
-            reply,
-        },
-        "classAdd" => DomRequest::ClassListAdd {
-            node: arg_handle(scope, args, 2)?,
-            token: arg_string(scope, args, 3)?,
-            reply,
-        },
-        "classRemove" => DomRequest::ClassListRemove {
-            node: arg_handle(scope, args, 2)?,
-            token: arg_string(scope, args, 3)?,
-            reply,
-        },
-        "classContains" => DomRequest::ClassListContains {
-            node: arg_handle(scope, args, 2)?,
-            token: arg_string(scope, args, 3)?,
-            reply,
-        },
-        "styleSet" => DomRequest::StyleSet {
-            node: arg_handle(scope, args, 2)?,
-            name: arg_string(scope, args, 3)?,
-            value: arg_string(scope, args, 4)?,
-            reply,
-        },
-        "parentId" => DomRequest::ParentId {
-            node: arg_handle(scope, args, 2)?,
-            reply,
-        },
         "fetch" => DomRequest::Fetch {
             url: arg_string(scope, args, 2)?,
             reply,
@@ -411,6 +321,7 @@ fn map_dom_op(
             url: arg_string(scope, args, 2)?,
             reply,
         },
+        "nodeCount" => DomRequest::NodeCount { reply },
         other => return Err(format!("unknown dom op {other}")),
     })
 }
@@ -451,16 +362,7 @@ fn dom_value_to_v8<'s>(
 ) -> v8::Local<'s, v8::Value> {
     match value {
         DomValue::Null => v8::null(scope).into(),
-        DomValue::Bool(b) => v8::Boolean::new(scope, *b).into(),
         DomValue::String(s) => v8::String::new(scope, s).unwrap().into(),
-        DomValue::NodeId(id) => v8::String::new(scope, &id.to_string()).unwrap().into(),
-        DomValue::NodeList(ids) => {
-            let elements: Vec<v8::Local<v8::Value>> = ids
-                .iter()
-                .map(|id| v8::String::new(scope, &id.to_string()).unwrap().into())
-                .collect();
-            v8::Array::new_with_elements(scope, &elements).into()
-        }
         DomValue::Number(n) => v8::Number::new(scope, *n).into(),
         DomValue::Json(v) => json_value_to_v8(scope, v),
         DomValue::Error(err) => v8_error_object(scope, err),
@@ -519,13 +421,16 @@ fn url_parse_callback(
         let _ = obj.set(scope, key.into(), v.into());
     };
     set("href", url.as_str());
-    set("protocol", url.scheme());
-    set(
-        "host",
-        &url.host().map(|h| h.to_string()).unwrap_or_default(),
-    );
-    set("hostname", url.host_str().unwrap_or(""));
+    set("protocol", &format!("{}:", url.scheme()));
+    let hostname = url.host_str().unwrap_or("");
     let port = url.port().map(|p| p.to_string()).unwrap_or_default();
+    let host = if port.is_empty() {
+        hostname.to_string()
+    } else {
+        format!("{hostname}:{port}")
+    };
+    set("host", &host);
+    set("hostname", hostname);
     set("port", &port);
     set("pathname", url.path());
     let search = url.query().map(|q| format!("?{q}")).unwrap_or_default();

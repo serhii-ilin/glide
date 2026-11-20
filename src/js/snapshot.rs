@@ -25,7 +25,7 @@ fn snapshot_node(doc: &BaseDocument, id: NodeId) -> Value {
                 .iter()
                 .map(|c| snapshot_node(doc, *c))
                 .collect();
-            json!([handle, 9, "#document", null, children])
+            json!([handle, 9, "#document", null, children, null])
         }
         NodeData::Element(el) | NodeData::AnonymousBlock(el) => {
             let tag = el.name.local.to_string();
@@ -45,10 +45,10 @@ fn snapshot_node(doc: &BaseDocument, id: NodeId) -> Value {
                 .iter()
                 .map(|c| snapshot_node(doc, *c))
                 .collect();
-            json!([handle, 1, tag, attrs, children])
+            json!([handle, 1, tag, attrs, children, el.name.ns.to_string()])
         }
-        NodeData::Text(data) => json!([handle, 3, data.content, null, []]),
-        NodeData::Comment { contents } => json!([handle, 8, contents, null, []]),
+        NodeData::Text(data) => json!([handle, 3, data.content, null, [], null]),
+        NodeData::Comment { contents } => json!([handle, 8, contents, null, [], null]),
     }
 }
 
@@ -92,6 +92,21 @@ mod tests {
         let text = span[4].as_array().unwrap()[0].as_array().unwrap();
         assert_eq!(text[1], 3);
         assert_eq!(text[2], "z");
+    }
+
+    #[test]
+    fn snapshot_keeps_svg_namespace() {
+        let doc = parse::document_from_html(
+            "<!DOCTYPE html><html><body><svg><circle></circle></svg></body></html>",
+            DocumentConfig::default(),
+            true,
+        );
+        let tree = snapshot_tree(&doc);
+        let svg = find_tag(&tree, "svg").expect("svg");
+        let arr = svg.as_array().unwrap();
+        assert_eq!(arr[5], "http://www.w3.org/2000/svg");
+        let circle = find_tag(svg, "circle").expect("circle");
+        assert_eq!(circle.as_array().unwrap()[5], "http://www.w3.org/2000/svg");
     }
 
     fn find_tag<'a>(v: &'a Value, tag: &str) -> Option<&'a Value> {

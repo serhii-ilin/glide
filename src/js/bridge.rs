@@ -4,99 +4,12 @@ use blitz_dom::BaseDocument;
 use blitz_traits::node_id::NodeId;
 
 /// Requests the UI thread applies against a page [`BaseDocument`](blitz_dom::BaseDocument).
+///
+/// Page scripts talk to Blitz through domino. The only mutation entry point is
+/// [`DomRequest::BatchMutate`]. Per-node wrappers (`appendChild`, `setInnerHtml`, …)
+/// are intentionally absent so page code cannot bypass domino and desync the trees.
 #[derive(Debug, Clone)]
 pub enum DomRequest {
-    GetElementById {
-        id: String,
-        reply: u64,
-    },
-    QuerySelector {
-        selector: String,
-        reply: u64,
-    },
-    QuerySelectorAll {
-        selector: String,
-        reply: u64,
-    },
-    CreateElement {
-        tag: String,
-        reply: u64,
-    },
-    CreateTextNode {
-        text: String,
-        reply: u64,
-    },
-    AppendChild {
-        parent: u64,
-        child: u64,
-        reply: u64,
-    },
-    RemoveChild {
-        parent: u64,
-        child: u64,
-        reply: u64,
-    },
-    InsertBefore {
-        parent: u64,
-        child: u64,
-        before: u64,
-        reply: u64,
-    },
-    SetAttribute {
-        node: u64,
-        name: String,
-        value: String,
-        reply: u64,
-    },
-    GetAttribute {
-        node: u64,
-        name: String,
-        reply: u64,
-    },
-    RemoveAttribute {
-        node: u64,
-        name: String,
-        reply: u64,
-    },
-    SetInnerHtml {
-        node: u64,
-        html: String,
-        reply: u64,
-    },
-    GetTextContent {
-        node: u64,
-        reply: u64,
-    },
-    SetTextContent {
-        node: u64,
-        text: String,
-        reply: u64,
-    },
-    ClassListAdd {
-        node: u64,
-        token: String,
-        reply: u64,
-    },
-    ClassListRemove {
-        node: u64,
-        token: String,
-        reply: u64,
-    },
-    ClassListContains {
-        node: u64,
-        token: String,
-        reply: u64,
-    },
-    StyleSet {
-        node: u64,
-        name: String,
-        value: String,
-        reply: u64,
-    },
-    ParentId {
-        node: u64,
-        reply: u64,
-    },
     Fetch {
         url: String,
         reply: u64,
@@ -134,15 +47,16 @@ pub enum DomRequest {
         event_type: String,
         reply: u64,
     },
+    /// Test hook: number of live Blitz nodes (version-1 slotmap slots).
+    NodeCount {
+        reply: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum DomValue {
     Null,
-    Bool(bool),
     String(String),
-    NodeId(u64),
-    NodeList(Vec<u64>),
     Number(f64),
     Json(serde_json::Value),
     Error(String),

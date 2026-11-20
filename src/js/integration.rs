@@ -131,6 +131,120 @@ fn window_onload_property_runs() {
 }
 
 #[test]
+fn instanceof_node_works() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var n = document.createElement('div');
+      var ok = n instanceof Node && n instanceof Element && document.body instanceof HTMLElement;
+      document.getElementById('t').textContent = ok ? 'yes' : 'no';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "yes");
+}
+
+#[test]
+fn identity_is_stable() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var a = document.getElementById('t');
+      var b = document.querySelector('#t');
+      document.getElementById('t').textContent = (a === b) ? 'same' : 'diff';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "same");
+}
+
+#[test]
+fn get_bounding_client_rect_from_blitz() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div id="box" style="width:40px;height:10px"></div><p id="t">x</p>
+      <script>
+        var r = document.getElementById('box').getBoundingClientRect();
+        document.getElementById('t').textContent = String(Math.round(r.width));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "40");
+}
+
+#[test]
+fn click_event_reaches_domino_listener() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <button id="b">go</button><p id="t">no</p>
+      <script>
+        document.getElementById('b').addEventListener('click', function () {
+          document.getElementById('t').textContent = 'yes';
+        });
+        document.getElementById('b').click();
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "yes");
+}
+
+#[test]
+fn url_global_parses_relative() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var u = new URL('/a?b=1', 'https://example.test/x');
+      var ok = u.protocol === 'https:' && u.pathname === '/a' &&
+        u.search === '?b=1' && u.searchParams.get('b') === '1' &&
+        String(window) === '[object Window]';
+      document.getElementById('t').textContent = ok ? 'yes' : 'no';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "yes");
+}
+
+#[test]
+fn search_params_round_trip() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var q = new URLSearchParams('a=1&b=two');
+      q.append('a', '3');
+      document.getElementById('t').textContent = q.get('a') + '|' + q.get('b');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "1|two");
+}
+
+#[test]
+fn dom_parser_parses_html() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var d = new DOMParser().parseFromString('<p id="z">hi</p>', 'text/html');
+      var node = d.getElementById('z');
+      document.getElementById('t').textContent = node ? node.textContent : 'missing';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "hi");
+}
+
+#[test]
+fn tree_walker_walks_elements() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><div id="a"><span id="b"></span></div>
+      <script>
+        var w = document.createTreeWalker(document.body, 1);
+        var names = [];
+        for (var n = w.currentNode; n; n = w.nextNode()) {
+          if (n.nodeType === 1 && n.id) names.push(n.id);
+        }
+        document.getElementById('t').textContent = names.join(',');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert!(
+        result.final_text.contains('a') && result.final_text.contains('b'),
+        "walker ids: {}",
+        result.final_text
+    );
+}
+
+#[test]
+fn inline_handler_does_not_leak_parameter_names() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <button id="b" onclick="document.getElementById('t').textContent =
+        (typeof element)+':'+(typeof defaultView)+':'+(typeof form)+':'+(this.id)"></button>
+      <p id="t">x</p>
+      <script>document.getElementById('b').click();</script>
+    </body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "undefined:undefined:undefined:b");
+}
+
+#[test]
 fn failed_external_script_does_not_panic() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

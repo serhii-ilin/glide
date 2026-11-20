@@ -29,6 +29,11 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Ctrl+L or Cmd+L | Focus the address bar |
 | Cmd/Ctrl+W | Close the window |
 | Cmd/Ctrl+Q | Quit |
+| Cmd/Ctrl+F | Find in page |
+| Enter / Cmd/Ctrl+G (find bar open) | Next match |
+| Shift+Enter / Cmd/Ctrl+Shift+G (find bar open) | Previous match |
+| Esc (in the find field) | Close find and clear selection |
+| Cmd/Ctrl+= / Cmd/Ctrl+- / Cmd/Ctrl+0 | Zoom page in / out / reset (30%–300%) |
 | Space / Shift+Space / PgUp / PgDn / Home / End / arrows | Scroll the page when no text field is focused |
 
 Text fields (address bar and in-page inputs) use normal editing shortcuts: Backspace and

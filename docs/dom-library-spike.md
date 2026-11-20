@@ -87,7 +87,7 @@ A single minified IIFE is not feasible without upstream domino changes.
 - Trade-offs: no `MutationObserver`, no `DOMParser` / `Range` (Acid3 / modern APIs), weak
   `getComputedStyle`, and **no working single-file bundle**.
 
-**Secondary: happy-dom** if the project prioritizes standards surface area (`MutationObserver`,
+**Secondary (rejected after review, see below): happy-dom** if the project prioritizes standards surface area (`MutationObserver`,
 `DOMParser`, layout hook overrides) over raw WPT score (53.8% here). Still needs a deliberate
 bundle story (esbuild IIFE + shims; size larger than linkedom).
 
@@ -105,6 +105,33 @@ common DOM mutation tests, no `document.write`.
    VM caps used here.
 5. **Glide shim gap:** today’s hand-written DOM is far below all three libraries; replacing it
    is a large embed + snapshot + mirror project (out of scope for T9a).
+
+## Orchestrator review (verified after the spike)
+
+Spot checks run by hand in a single bare `vm` context (one realm, the way Glide's isolate
+works) changed parts of the conclusions above.
+
+- **Pass percentages run high.** Files that captured no subtests are excluded from the
+  denominator. The ranking holds, but use Glide's compat runner for the real numbers.
+- **domino's bundle failure is narrow.** An esbuild browser IIFE (with a
+  `var global = globalThis;` banner and timer globals) loads, parses HTML, and supports
+  `getElementById`, `querySelectorAll` and `innerHTML`. One difference remains: the bundled
+  `domino.impl` has all 96 keys, but `HTMLElement` is `undefined`; in Node it is a function.
+  `impl.js` assembles exports with `utils.merge` across a cycle of requires, and the bundlers
+  evaluate that cycle differently from Node. Either fix works: ship `lib/*.js` with a small
+  loader that reproduces Node's CommonJS semantics (module cache, partial exports during cycles),
+  or patch the export assembly order. A minified bundle also breaks inside the parser
+  (`instanceof impl.HTMLTemplateElement`), so do not minify.
+- **happy-dom cannot run in a bare isolate.** Its `Window` builds its global object with Node's
+  `vm.Script` / `vm.createContext` at load time. It also needs `Buffer`, `stream` and a WHATWG
+  `URL` at module init. Using it would mean emulating Node's `vm` module from Rust.
+  **Rejected.**
+- **Glide's isolate has no `URL`.** Any choice needs a `URL` implementation; one option is
+  binding the Rust `url` crate.
+
+**Decision (user-approved, 2026-11-20):** domino, vendored unminified with a CommonJS loader.
+Add `DOMParser`, `TreeWalker` and `NodeIterator` as a thin layer. `Range` is the main gap
+for Acid3.
 
 ## See also
 

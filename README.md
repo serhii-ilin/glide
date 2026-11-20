@@ -9,6 +9,7 @@ Glide is a small desktop web browser. One window, one address bar, back, forward
 Rust 1.91 or newer (edition 2024):
 
 ```sh
+cargo run --release -- --help
 cargo run --release
 cargo run --release -- https://example.com
 cargo run --release -- news.ycombinator.com
@@ -108,7 +109,11 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 The chrome is an HTML document drawn by Blitz. Back, forward, and reload are links (`glide://back` and similar). The address field is a form whose submit is intercepted. The page is an `<iframe>`; clicks inside it stay in Blitz, and Glide records the iframe's URL as history.
 
 ```
-src/main.rs       window, history, keyboard shortcuts, JS pump
+src/lib.rs        crate modules and library entry points
+src/main.rs       CLI dispatch (window, screenshot, help)
+src/app.rs        window, history sync, keyboard shortcuts, JS pump
+src/history.rs    back/forward stack
+src/args.rs       CLI parsing
 src/chrome.rs     chrome markup and navigation commands
 src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
 src/js/           V8 worker, DOM RPC, script loading

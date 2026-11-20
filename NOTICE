@@ -87,7 +87,7 @@ upstream repository.
 --------------------------------------------------------------------------------
 domino
 https://github.com/fgnass/domino
-Copyright Felix Gnass and contributors
+Copyright (c) 2011 The Mozilla Foundation.
 License: BSD-2-Clause
 Version used by Glide: 2.1.9 (vendored under third_party/domino/, embedded in src/js/vendor/domino.js)
 

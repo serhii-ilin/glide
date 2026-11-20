@@ -784,6 +784,68 @@ fn write_results(path: &Path, results: &[TestResult]) -> Result<(), String> {
     std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
+/// File and subtest totals for vendored testharness pages.
+///
+/// A file with no captured subtests counts as a failed file and as one failed
+/// subtest. Pass rates that drop those files overstate coverage.
+fn testharness_section(results: &[TestResult]) -> String {
+    let mut files = 0_u64;
+    let mut full = 0_u64;
+    let mut no_results = 0_u64;
+    let mut sub_pass = 0_u64;
+    let mut sub_total = 0_u64;
+    for r in results {
+        if r.kind != "testharness" || !r.path.starts_with("dom/nodes/") {
+            continue;
+        }
+        files += 1;
+        let Some(metrics) = &r.metrics else {
+            no_results += 1;
+            sub_total += 1;
+            continue;
+        };
+        let passed = metrics.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
+        let failed = metrics.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+        let timeout = metrics.get("timeout").and_then(|v| v.as_u64()).unwrap_or(0);
+        let reported = passed + failed + timeout;
+        if reported == 0 {
+            no_results += 1;
+            sub_total += 1;
+            continue;
+        }
+        sub_pass += passed;
+        sub_total += reported;
+        if r.status == "pass" && failed == 0 && timeout == 0 {
+            full += 1;
+        }
+    }
+    let pct = if sub_total == 0 {
+        0.0
+    } else {
+        (sub_pass as f64) * 100.0 / (sub_total as f64)
+    };
+    let file_pct = if files == 0 {
+        0.0
+    } else {
+        (full as f64) * 100.0 / (files as f64)
+    };
+    format!(
+        "\
+## Testharness (`dom/nodes`)
+
+Files with no subtest results count as failures (one failed subtest each). The pass rate includes those files; it is not computed only over files that produced a harness report.
+
+| | Pass | Total | Rate |
+| --- | ---: | ---: | ---: |
+| Files fully passing | {full} | {files} | {file_pct:.1}% |
+| Subtests | {sub_pass} | {sub_total} | {pct:.1}% |
+
+Files with no results: {no_results}.
+
+"
+    )
+}
+
 fn write_report(cfg: &RunnerConfig, results: &[TestResult]) -> Result<(), String> {
     let date = chrono_lite_date();
     let commit = git_short_head(&cfg.repo_root).unwrap_or_else(|| "unknown".into());
@@ -811,6 +873,7 @@ fn write_report(cfg: &RunnerConfig, results: &[TestResult]) -> Result<(), String
         ));
     }
     md.push('\n');
+    md.push_str(&testharness_section(results));
 
     md.push_str("## Super-critical\n\n");
     let critical: Vec<_> = results

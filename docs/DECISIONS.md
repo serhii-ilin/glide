@@ -8,7 +8,7 @@
 
 **Decision:** Keep the **5 s** watchdog (`50 × 100 ms`). The earlier 30 s raise was unnecessary; slowness came from mirroring every domino mutation during snapshot construction (synchronous RPC per node), not from JS parse/compile.
 
-**Follow-up:** Mutation mirroring stays off until `__glide_init_page` finishes the snapshot. Runtime mirroring uses a synchronous `scheduleFlush()` (RPC batch per mutation batch); disabling mirroring during bootstrap avoids flooding the UI thread while the domino tree is built.
+**Follow-up:** Mutation mirroring stays off until `__glide_init_page` finishes the snapshot. After that, domino records each mutation into one queue. The queue is flushed **once per task** — after a classic script, a timer callback, an animation-frame callback, an event dispatch, and the load / `DOMContentLoaded` firing — and also immediately before a layout read (`offsetWidth`, `getBoundingClientRect`, `getComputedStyle`). Nodes created in that queue carry a client id (`cid`) so later ops in the same batch can name them before Blitz has assigned a node id. One RPC round trip covers the whole task.
 
 ## Page `globalThis` is the window (2026-11-20)
 

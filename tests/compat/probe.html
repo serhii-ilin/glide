@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Glide API probe</title>
+</head>
+<body>
+<pre id="probe-json"></pre>
+<script>
+function typePath(path) {
+  try {
+    const parts = path.split(".");
+    let cur = globalThis;
+    for (const part of parts) {
+      if (cur == null) return "undefined";
+      cur = cur[part];
+    }
+    return typeof cur;
+  } catch (e) {
+    return "undefined";
+  }
+}
+const keys = [
+  "document.querySelector",
+  "document.addEventListener",
+  "CustomEvent",
+  "MutationObserver",
+  "localStorage",
+  "sessionStorage",
+  "XMLHttpRequest",
+  "fetch",
+  "Promise",
+  "URL",
+  "URLSearchParams",
+  "TextEncoder",
+  "CSS.supports",
+  "getComputedStyle",
+  "requestAnimationFrame",
+  "history.pushState",
+  "location",
+  "navigator.userAgent",
+  "matchMedia",
+  "IntersectionObserver",
+  "ResizeObserver",
+  "customElements",
+  "Element.prototype.attachShadow",
+  "structuredClone",
+  "crypto.getRandomValues",
+  "WebSocket",
+  "Worker",
+  "indexedDB",
+  "FormData",
+  "Blob",
+  "FileReader",
+  "DOMParser",
+  "Element.prototype.closest",
+  "document.documentElement.classList",
+  "document.documentElement.dataset",
+  "document.documentElement.innerHTML",
+  "Element.prototype.insertAdjacentHTML",
+  "document.documentElement.cloneNode",
+  "document.documentElement.getBoundingClientRect",
+  "document.documentElement.scrollIntoView",
+  "document.documentElement.focus",
+  "document.dispatchEvent",
+  "queueMicrotask",
+  "Reflect",
+  "Map",
+  "Set",
+  "Symbol",
+  "WeakMap",
+  "Proxy",
+  "Array.prototype.at",
+  "Object.hasOwn",
+  "Intl",
+  "console",
+  "performance",
+  "navigator",
+  "document",
+  "window",
+];
+const out = {};
+for (const k of keys) out[k] = typePath(k);
+const pre = document.getElementById("probe-json");
+if (pre) pre.textContent = JSON.stringify(out);
+</script>
+</body>
+</html>

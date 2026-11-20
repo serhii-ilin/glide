@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script src="../resources/testharness.js"></script>
+<script src="../resources/glide-testharnessreport.js"></script>
+</head>
+<body>
+<script>
+test(function() {
+  assert_true(true, "always passes");
+}, "minimal pass");
+test(function() {
+  assert_unreached("expected failure");
+}, "minimal fail");
+</script>
+</body>
+</html>

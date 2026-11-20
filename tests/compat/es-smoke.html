@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html><body><p id="out"></p><script>
+class C { m() { return 1; } }
+const o = { x: 1 };
+const y = o?.x;
+const z = [1, 2, 3].at(-1);
+const bi = 1n + 2n;
+const intl = new Intl.DateTimeFormat("en").format(new Date(0));
+const c = new C();
+const ok = c.m() === 1 && y === 1 && z === 3 && bi === 3n && intl.length > 0;
+const p = document.getElementById("out");
+if (p) p.textContent = ok ? "ES_SMOKE_OK" : "ES_SMOKE_FAIL";
+</script></body></html>

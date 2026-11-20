@@ -6,7 +6,9 @@
 //! embedder setups never receive those callbacks reliably, and keyboard events are not
 //! forwarded into iframe sub-documents. Glide closes both gaps here.
 
-use blitz_dom::{BaseDocument, Document};
+use blitz_dom::BaseDocument;
+#[cfg(target_os = "macos")]
+use blitz_dom::Document;
 use blitz_shell::View;
 #[cfg(target_os = "macos")]
 use blitz_traits::SmolStr;
@@ -524,7 +526,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use blitz_dom::{DocumentConfig, qual_name};
+    use blitz_dom::{Document, DocumentConfig, qual_name};
     use blitz_traits::shell::{ColorScheme, Viewport};
     use keyboard_types::{Code, Key, NamedKey};
     use winit::keyboard::ModifiersState;

@@ -12,6 +12,10 @@ publish = false
 name = "glide"
 path = "src/main.rs"
 
+[[bin]]
+name = "compat"
+path = "src/bin/compat.rs"
+
 [dependencies]
 anyrender = "0.14"
 anyrender_vello_cpu = { version = "0.18", features = ["softbuffer_window_renderer"] }

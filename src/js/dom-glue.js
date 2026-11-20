@@ -10,10 +10,10 @@
   let blitzToNode = new Map();
   let nodeToBlitz = new WeakMap();
   let pendingBatch = [];
-  let batchScheduled = false;
   let documentLoaded = false;
   let pageWindow = null;
   let pageDocument = null;
+  const pendingOnHandlers = [];
 
   function rpc(op, ...args) {
     const reply = nextReply++;
@@ -44,13 +44,10 @@
   }
 
   function scheduleFlush() {
-    if (batchScheduled) return;
-    batchScheduled = true;
-    queueMicrotask(flushMutations);
+    flushMutations();
   }
 
   function flushMutations() {
-    batchScheduled = false;
     if (!pendingBatch.length) return;
     const ops = pendingBatch;
     pendingBatch = [];
@@ -93,6 +90,9 @@
             node.setAttribute(n, v);
           } else {
             try { node.setAttributeNS(a[2], n, v); } catch (_) { node.setAttribute(n, v); }
+          }
+          if (/^on/i.test(n)) {
+            pendingOnHandlers.push([node, n.toLowerCase(), v]);
           }
         }
       }
@@ -186,6 +186,10 @@
         const a = rec.attr;
         pendingBatch.push({ t: 'attr', id, name: a.localName, value: a.value });
         scheduleFlush();
+        const aname = String(a.localName || a.name || '').toLowerCase();
+        if (aname.startsWith('on')) {
+          applyOnAttribute(rec.target, aname, a.value);
+        }
         break;
       }
       case MUTATE.REMOVE_ATTR: {
@@ -193,6 +197,16 @@
         if (id == null) return;
         pendingBatch.push({ t: 'attr', id, name: rec.attr.localName, value: null });
         scheduleFlush();
+        const aname = String(rec.attr.localName || rec.attr.name || '').toLowerCase();
+        if (aname.startsWith('on')) {
+          const type = aname.slice(2);
+          const win = rec.target.ownerDocument && rec.target.ownerDocument.defaultView;
+          if (rec.target.localName === 'body' && BODY_WINDOW_EVENTS.has(type) && win) {
+            win._setEventHandler(type, null);
+          } else {
+            rec.target._setEventHandler(type, null);
+          }
+        }
         break;
       }
       case MUTATE.VALUE: {
@@ -243,8 +257,81 @@
     };
   }
 
+  const BODY_WINDOW_EVENTS = new Set([
+    'afterprint', 'beforeprint', 'beforeunload', 'blur', 'error', 'focus', 'hashchange',
+    'load', 'message', 'offline', 'online', 'pagehide', 'pageshow', 'popstate', 'resize',
+    'scroll', 'storage', 'unload',
+  ]);
+
+  function defineRo(w, name, get) {
+    try {
+      Object.defineProperty(w, name, { get, configurable: true });
+    } catch (_) { /* noop */ }
+  }
+
+  function installBrowsingContext(win) {
+    defineRo(global, 'self', () => win);
+    defineRo(global, 'window', () => win);
+    defineRo(global, 'parent', () => win);
+    defineRo(global, 'top', () => win);
+    defineRo(global, 'frames', () => win);
+    defineRo(win, 'parent', () => win);
+    defineRo(win, 'top', () => win);
+    defineRo(win, 'frames', () => win);
+    defineRo(win, 'self', () => win);
+    defineRo(win, 'window', () => win);
+    defineRo(win, 'opener', () => null);
+    defineRo(win, 'frameElement', () => null);
+    defineRo(win, 'length', () => 0);
+  }
+
+  function compileInlineHandler(code, doc, el) {
+    const defaultView = doc.defaultView || pageWindow || global;
+    const form = (el.form) || Object.create(null);
+    const element = el;
+    try {
+      const fn = new Function(
+        'defaultView', 'document', 'form', 'element', 'event',
+        'with(defaultView)with(document)with(form)with(element){' + String(code) + '};',
+      );
+      return fn.bind(el, defaultView, doc, form, element);
+    } catch (err) {
+      return function () { throw err; };
+    }
+  }
+
+  function applyOnAttribute(el, attrName, value) {
+    if (!value) return;
+    const type = attrName.slice(2).toLowerCase();
+    const handler = compileInlineHandler(value, el.ownerDocument, el);
+    if (el.localName === 'body' && BODY_WINDOW_EVENTS.has(type)) {
+      const win = el.ownerDocument.defaultView || pageWindow || global;
+      win._setEventHandler(type, handler);
+    } else {
+      el._setEventHandler(type, handler);
+    }
+  }
+
+  function activateAttributeHandlers(root) {
+    if (!root) return;
+    if (root.nodeType === 1) {
+      for (const attr of root.attributes || []) {
+        if (/^on/i.test(attr.name) && attr.value) {
+          applyOnAttribute(root, attr.name.toLowerCase(), attr.value);
+        }
+      }
+      for (let c = root.firstChild; c; c = c.nextSibling) {
+        activateAttributeHandlers(c);
+      }
+    } else if (root.nodeType === 9) {
+      for (let c = root.firstChild; c; c = c.nextSibling) {
+        activateAttributeHandlers(c);
+      }
+    }
+  }
+
   function installGlobals(win, pageUrl) {
-    global.self = global.window = global;
+    installBrowsingContext(win);
     global.document = win.document;
     global.navigator = win.navigator;
     const impl = domino.impl;
@@ -301,6 +388,7 @@
   }
 
   global.__glide_init_page = function (snapshotJson, pageUrl) {
+    pendingOnHandlers.length = 0;
     const tree = typeof snapshotJson === 'string' ? JSON.parse(snapshotJson) : snapshotJson;
     pageWindow = domino.createWindow('');
     pageDocument = pageWindow.document;
@@ -312,11 +400,19 @@
       pageDocument.appendChild(buildFromSnapshot(child, pageDocument));
     }
     pageDocument._setMutationHandler(onMutation);
+    Object.defineProperty(pageDocument, 'defaultView', {
+      get: () => pageWindow,
+      configurable: true,
+    });
     installGlobals(pageWindow, pageUrl || 'about:blank');
+    activateAttributeHandlers(pageDocument);
+    for (const [node, name, val] of pendingOnHandlers) {
+      applyOnAttribute(node, name, val);
+    }
+    pendingOnHandlers.length = 0;
     global.addEventListener = pageDocument.addEventListener.bind(pageDocument);
     global.removeEventListener = pageDocument.removeEventListener.bind(pageDocument);
     global.dispatchEvent = pageDocument.dispatchEvent.bind(pageDocument);
-    Object.defineProperty(pageDocument, 'defaultView', { get: () => pageWindow });
     Object.defineProperty(pageDocument, 'currentScript', {
       get: () => global.__glideCurrentScript || null,
     });
@@ -328,6 +424,14 @@
 
   global.__glide_mark_document_loaded = function () {
     documentLoaded = true;
+  };
+
+  global.__glide_fire_page_load = function () {
+    flushMutations();
+  pageDocument.dispatchEvent(new domino.impl.Event('DOMContentLoaded', { bubbles: true }));
+    const win = pageWindow || global;
+    win.dispatchEvent(new domino.impl.Event('load', { bubbles: false }));
+    flushMutations();
   };
 
   global.__glide_dispatch_bubble = function (path, type) {

@@ -5205,5 +5205,6 @@ table#results span.actual {\
 }\
 ";
 
-})(self);
+// Glide: bind harness APIs on V8 globalThis (domino `self` is not the script global).
+})(globalThis);
 // vim: set expandtab shiftwidth=4 tabstop=4:

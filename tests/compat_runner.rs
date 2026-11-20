@@ -35,11 +35,8 @@ fn compat_runner_filter_integration_offline() {
         .iter()
         .find(|r| r.path == "integration/harness-minimal.html")
         .expect("harness-minimal result");
-    assert_eq!(harness.status, "fail");
-    let reason = harness.reason.as_deref().expect("harness failure reason");
-    assert!(reason.contains("harness did not load:"));
-    assert!(
-        reason.contains("ReferenceError") || reason.contains("TypeError"),
-        "unexpected harness failure: {reason}"
-    );
+    assert_eq!(harness.status, "fail", "one subtest is meant to fail");
+    let metrics = harness.metrics.as_ref().expect("harness metrics json");
+    assert_eq!(metrics["passed"], 1);
+    assert_eq!(metrics["failed"], 1);
 }

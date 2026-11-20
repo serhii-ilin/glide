@@ -100,8 +100,12 @@
 
   function fireLoaded() {
     if (global.__glide_mark_document_loaded) global.__glide_mark_document_loaded();
-    document.dispatchEvent(new Event('DOMContentLoaded'));
-    global.dispatchEvent(new Event('load'));
+    if (global.__glide_fire_page_load) {
+      global.__glide_fire_page_load();
+    } else {
+      document.dispatchEvent(new Event('DOMContentLoaded'));
+      global.dispatchEvent(new Event('load'));
+    }
     runMicrotasks();
   }
 

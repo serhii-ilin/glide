@@ -560,7 +560,7 @@ fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
     let done_flag = done.clone();
     let handle = scope.thread_safe_handle();
     thread::spawn(move || {
-        for _ in 0..50 {
+        for _ in 0..300 {
             if done_flag.load(Ordering::SeqCst) {
                 return;
             }

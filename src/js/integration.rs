@@ -58,6 +58,61 @@ fn create_append_after_text_clear() {
 }
 
 #[test]
+fn window_parent_and_top_are_self() {
+    let html = r#"<!DOCTYPE html><html><body><script>
+      if (self.parent !== self || self.top !== self || self.frames !== self) {
+        throw new Error('bad browsing context');
+      }
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "");
+}
+
+#[test]
+fn body_onload_attribute_runs() {
+    let html = r#"<!DOCTYPE html><html>
+    <body onload="document.getElementById('t').textContent='ran'"><p id="t">x</p>
+    </body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(120));
+    assert_eq!(result.final_text, "ran");
+}
+
+#[test]
+fn onclick_attribute_runs_with_this_element() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <button id="b" onclick="if (this.id !== 'b') throw new Error('bad this');
+      document.getElementById('t').textContent='ok'"></button><p id="t">x</p>
+    <script>document.getElementById('b').click();</script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(120));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn set_attribute_onclick_registers_handler() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <div id="t">x</div><div id="b"></div>
+    <script>
+      var b = document.getElementById('b');
+      b.setAttribute('onclick', "document.getElementById('t').textContent='setattr'");
+      b.click();
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(120));
+    assert_eq!(result.final_text, "setattr");
+}
+
+#[test]
+fn window_onload_property_runs() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p>
+    <script>
+      window.onload = function () {
+        document.getElementById('t').textContent = 'win';
+      };
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(120));
+    assert_eq!(result.final_text, "win");
+}
+
+#[test]
 fn failed_external_script_does_not_panic() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

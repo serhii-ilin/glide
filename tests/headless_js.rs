@@ -35,6 +35,18 @@ fn js_off_keeps_static_text() {
 }
 
 #[test]
+fn text_content_on_attached_element_mirrors() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = fixture_url("mirror.html");
+    let text = dump_text(&url, true).expect("load");
+    assert!(
+        text.contains("ATTACHED-TEXT"),
+        "expected mirrored text in blitz dump, got: {text}"
+    );
+}
+
+#[test]
 fn counter_fixture_runs_with_js() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

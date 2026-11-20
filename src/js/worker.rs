@@ -556,11 +556,13 @@ fn v8_error_object<'s>(scope: &mut v8::PinScope<'s, '_>, msg: &str) -> v8::Local
 }
 
 fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name: &str) {
+    let measure = source.len() > 100_000 && std::env::var_os("GLIDE_MEASURE_SCRIPTS").is_some();
+    let started = measure.then(std::time::Instant::now);
     let done = Arc::new(AtomicBool::new(false));
     let done_flag = done.clone();
     let handle = scope.thread_safe_handle();
     thread::spawn(move || {
-        for _ in 0..300 {
+        for _ in 0..50 {
             if done_flag.load(Ordering::SeqCst) {
                 return;
             }
@@ -578,6 +580,13 @@ fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
     run_script(scope, code, name);
     done.store(true, Ordering::SeqCst);
     scope.cancel_terminate_execution();
+    if let Some(t0) = started {
+        eprintln!(
+            "GLIDE script timing: {name} {} bytes in {:.3}s",
+            source.len(),
+            t0.elapsed().as_secs_f64()
+        );
+    }
 }
 
 fn run_script(scope: &mut v8::PinScope<'_, '_>, source: v8::Local<v8::String>, name: &str) {

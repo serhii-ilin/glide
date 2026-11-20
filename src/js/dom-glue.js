@@ -11,8 +11,8 @@
   let nodeToBlitz = new WeakMap();
   let pendingBatch = [];
   let documentLoaded = false;
-  let pageWindow = null;
   let pageDocument = null;
+  let mirroringEnabled = false;
   const pendingOnHandlers = [];
 
   function rpc(op, ...args) {
@@ -44,6 +44,11 @@
   }
 
   function scheduleFlush() {
+    if (!mirroringEnabled) return;
+    flushMutations();
+  }
+
+  function flushMutationsSync() {
     flushMutations();
   }
 
@@ -152,6 +157,7 @@
   }
 
   function onMutation(rec) {
+    if (!mirroringEnabled) return;
     switch (rec.type) {
       case MUTATE.INSERT: {
         const parent = blitzId(rec.target);
@@ -181,7 +187,11 @@
         break;
       }
       case MUTATE.ATTR: {
-        const id = blitzId(rec.target);
+        let id = blitzId(rec.target);
+        if (id == null) {
+          flushMutationsSync();
+          id = blitzId(rec.target);
+        }
         if (id == null) return;
         const a = rec.attr;
         pendingBatch.push({ t: 'attr', id, name: a.localName, value: a.value });
@@ -210,7 +220,11 @@
         break;
       }
       case MUTATE.VALUE: {
-        const id = blitzId(rec.target);
+        let id = blitzId(rec.target);
+        if (id == null) {
+          flushMutationsSync();
+          id = blitzId(rec.target);
+        }
         if (id == null) return;
         pendingBatch.push({ t: 'text', id, value: rec.data });
         scheduleFlush();
@@ -223,7 +237,7 @@
 
   function patchLayout(elProto) {
     elProto.getBoundingClientRect = function () {
-      flushMutations();
+      flushMutationsSync();
       const id = blitzId(this);
       if (id == null) return new domino.impl.Element().getBoundingClientRect.call(this);
       return rpc('boundingRect', String(id));
@@ -231,7 +245,7 @@
     ['offsetWidth', 'offsetHeight', 'offsetTop', 'offsetLeft', 'clientWidth', 'clientHeight'].forEach((f) => {
       Object.defineProperty(elProto, f, {
         get: function () {
-          flushMutations();
+          flushMutationsSync();
           const id = blitzId(this);
           if (id == null) return 0;
           return rpc('layoutField', String(id), f);
@@ -263,30 +277,32 @@
     'scroll', 'storage', 'unload',
   ]);
 
-  function defineRo(w, name, get) {
-    try {
-      Object.defineProperty(w, name, { get, configurable: true });
-    } catch (_) { /* noop */ }
-  }
-
-  function installBrowsingContext(win) {
-    defineRo(global, 'self', () => win);
-    defineRo(global, 'window', () => win);
-    defineRo(global, 'parent', () => win);
-    defineRo(global, 'top', () => win);
-    defineRo(global, 'frames', () => win);
-    defineRo(win, 'parent', () => win);
-    defineRo(win, 'top', () => win);
-    defineRo(win, 'frames', () => win);
-    defineRo(win, 'self', () => win);
-    defineRo(win, 'window', () => win);
-    defineRo(win, 'opener', () => null);
-    defineRo(win, 'frameElement', () => null);
-    defineRo(win, 'length', () => 0);
+  function mergeDominoWindowOntoGlobal(domWin) {
+    const winProto = Object.getPrototypeOf(domWin);
+    if (Object.getPrototypeOf(global) !== winProto) {
+      Object.setPrototypeOf(global, winProto);
+    }
+    const skip = new Set([
+      'document', 'self', 'window', 'parent', 'top', 'frames',
+      'opener', 'frameElement', 'length', 'getComputedStyle',
+      'location', 'navigator',
+    ]);
+    Object.getOwnPropertyNames(domWin).forEach((name) => {
+      if (skip.has(name)) return;
+      const desc = Object.getOwnPropertyDescriptor(domWin, name);
+      if (!desc) return;
+      try {
+        Object.defineProperty(global, name, desc);
+      } catch (_) { /* noop */ }
+    });
+    if (!Object.getOwnPropertyDescriptor(global, 'self')) {
+      global.self = global;
+      global.window = global;
+    }
   }
 
   function compileInlineHandler(code, doc, el) {
-    const defaultView = doc.defaultView || pageWindow || global;
+    const defaultView = doc.defaultView || global;
     const form = (el.form) || Object.create(null);
     const element = el;
     try {
@@ -305,7 +321,7 @@
     const type = attrName.slice(2).toLowerCase();
     const handler = compileInlineHandler(value, el.ownerDocument, el);
     if (el.localName === 'body' && BODY_WINDOW_EVENTS.has(type)) {
-      const win = el.ownerDocument.defaultView || pageWindow || global;
+      const win = el.ownerDocument.defaultView || global;
       win._setEventHandler(type, handler);
     } else {
       el._setEventHandler(type, handler);
@@ -330,10 +346,11 @@
     }
   }
 
-  function installGlobals(win, pageUrl) {
-    installBrowsingContext(win);
-    global.document = win.document;
-    global.navigator = win.navigator;
+  function installGlobals(pageUrl) {
+    global.document = pageDocument;
+    if (global.navigator == null) {
+      global.navigator = { userAgent: 'Glide' };
+    }
     const impl = domino.impl;
     Object.keys(impl).forEach((k) => {
       if (k !== 'Window' && typeof impl[k] === 'function') {
@@ -347,33 +364,26 @@
     global.CustomEvent = impl.CustomEvent;
     global.MouseEvent = impl.MouseEvent;
     patchLayout(global.Element.prototype);
-    const gcs = win.getComputedStyle.bind(win);
-    try {
-      Object.defineProperty(win, 'getComputedStyle', {
-        value: function (el) {
-          flushMutations();
-          const id = blitzId(el);
-          if (id == null) return gcs(el);
-          return {
-            getPropertyValue(prop) {
-              return rpc('computedStyle', String(id), prop);
-            },
-          };
-        },
-      });
-    } catch (_) {
-      win.getComputedStyle = function (el) {
-      flushMutations();
+    const fallbackGcs = (el) => (el && el.style) || {};
+    const gcsImpl = function (el) {
+      flushMutationsSync();
       const id = blitzId(el);
-      if (id == null) return gcs(el);
+      if (id == null) return fallbackGcs(el);
       return {
         getPropertyValue(prop) {
           return rpc('computedStyle', String(id), prop);
         },
       };
-      };
+    };
+    try {
+      Object.defineProperty(global, 'getComputedStyle', {
+        value: gcsImpl,
+        writable: true,
+        configurable: true,
+      });
+    } catch (_) {
+      global.__glide_getComputedStyle = gcsImpl;
     }
-    global.getComputedStyle = win.getComputedStyle;
     patchDomParser();
     global.location = {
       href: pageUrl || 'about:blank',
@@ -390,8 +400,8 @@
   global.__glide_init_page = function (snapshotJson, pageUrl) {
     pendingOnHandlers.length = 0;
     const tree = typeof snapshotJson === 'string' ? JSON.parse(snapshotJson) : snapshotJson;
-    pageWindow = domino.createWindow('');
-    pageDocument = pageWindow.document;
+    const domWin = domino.createWindow('');
+    pageDocument = domWin.document;
     while (pageDocument.lastChild) {
       pageDocument.removeChild(pageDocument.lastChild);
     }
@@ -399,20 +409,27 @@
     for (const child of kids) {
       pageDocument.appendChild(buildFromSnapshot(child, pageDocument));
     }
-    pageDocument._setMutationHandler(onMutation);
+    mergeDominoWindowOntoGlobal(domWin);
+  pageDocument._setMutationHandler(onMutation);
     Object.defineProperty(pageDocument, 'defaultView', {
-      get: () => pageWindow,
+      get: () => global,
       configurable: true,
     });
-    installGlobals(pageWindow, pageUrl || 'about:blank');
+    installGlobals(pageUrl || 'about:blank');
     activateAttributeHandlers(pageDocument);
     for (const [node, name, val] of pendingOnHandlers) {
       applyOnAttribute(node, name, val);
     }
     pendingOnHandlers.length = 0;
-    global.addEventListener = pageDocument.addEventListener.bind(pageDocument);
-    global.removeEventListener = pageDocument.removeEventListener.bind(pageDocument);
-    global.dispatchEvent = pageDocument.dispatchEvent.bind(pageDocument);
+    mirroringEnabled = true;
+    ['addEventListener', 'removeEventListener', 'dispatchEvent'].forEach((name) => {
+      const fn = global[name];
+      if (typeof fn === 'function') {
+        try {
+          Object.defineProperty(global, name, { value: fn.bind(global), writable: true, configurable: true });
+        } catch (_) { /* noop */ }
+      }
+    });
     Object.defineProperty(pageDocument, 'currentScript', {
       get: () => global.__glideCurrentScript || null,
     });
@@ -427,25 +444,24 @@
   };
 
   global.__glide_fire_page_load = function () {
-    flushMutations();
-  pageDocument.dispatchEvent(new domino.impl.Event('DOMContentLoaded', { bubbles: true }));
-    const win = pageWindow || global;
-    win.dispatchEvent(new domino.impl.Event('load', { bubbles: false }));
-    flushMutations();
+    flushMutationsSync();
+    pageDocument.dispatchEvent(new domino.impl.Event('DOMContentLoaded', { bubbles: true }));
+    global.dispatchEvent(new domino.impl.Event('load', { bubbles: false }));
+    flushMutationsSync();
   };
 
   global.__glide_dispatch_bubble = function (path, type) {
-    flushMutations();
+    flushMutationsSync();
     if (!path || !path.length) return;
     const target = blitzToNode.get(String(path[0]));
     if (!target || !pageDocument) return;
     const evt = new domino.impl.Event(type, { bubbles: true, cancelable: true });
     Object.defineProperty(evt, 'target', { value: target });
     target.dispatchEvent(evt);
-    flushMutations();
+    flushMutationsSync();
   };
 
-  global.__glide_flush_dom = flushMutations;
+  global.__glide_flush_dom = flushMutationsSync;
 
   global.__glide_wrap_node = function (id) {
     return blitzToNode.get(String(id)) || null;

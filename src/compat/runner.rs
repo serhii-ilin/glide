@@ -55,6 +55,8 @@ pub struct TestResult {
 pub struct RunnerConfig {
     pub suite: Suite,
     pub filter: Option<String>,
+    /// When set, only these manifest paths are run (WPT subset gate).
+    pub only_paths: Option<Vec<String>>,
     pub jobs: usize,
     pub glide_bin: PathBuf,
     pub repo_root: PathBuf,
@@ -327,6 +329,11 @@ fn run_wpt_suite(cfg: &RunnerConfig) -> Result<Vec<TestResult>, String> {
         }
         if let Some(filter) = &cfg.filter
             && !path.contains(filter)
+        {
+            continue;
+        }
+        if let Some(only) = &cfg.only_paths
+            && !only.iter().any(|p| p == path)
         {
             continue;
         }

@@ -1,7 +1,7 @@
 # Glide compatibility report
 
 Date: 2026-11-20
-Git: `7624f35`
+Git: `da97a2b`
 OS: macos
 
 ## Summary
@@ -9,7 +9,7 @@ OS: macos
 | Suite | Pass | Fail | Other | Total |
 | --- | ---: | ---: | ---: | ---: |
 | acid | 1 | 1 | 2 | 4 |
-| wpt | 79 | 49 | 0 | 128 |
+| wpt | 77 | 51 | 0 | 128 |
 | probe | 36 | 22 | 0 | 58 |
 
 ## Super-critical
@@ -21,18 +21,19 @@ None recorded.
 - wpt:reftest — rendering differs (pixel diff): 32
 - probe:api — Web API missing (undefined typeof): 22
 - wpt:testharness — missing __glide_results JSON in dump-text: 3
+- wpt:testharness — 1 failed, 0 timeout: 3
 - wpt:testharness — 2 failed, 0 timeout: 2
 - wpt:testharness — harness did not load (ReferenceError: async_test is not defined): 2
-- wpt:testharness — 1 failed, 0 timeout: 2
-- wpt:testharness — 47 failed, 0 timeout: 1
-- wpt:testharness — 5 failed, 0 timeout: 1
-- wpt:testharness — 148 failed, 0 timeout: 1
-- wpt:testharness — harness did not load (INVALID_CHARACTER_ERR: INVALID_CHARACTER_ERR (5): the string contains invalid characters): 1
-- wpt:testharness — harness did not load (ReferenceError: setup is not defined): 1
-- acid:reftest — Acid2 test page vs reference (expected differences): 1
 - wpt:testharness — harness did not load (Error: assert_throws_dom: function "() => document.createCDATASection("foo")" threw object "TypeError: document.createCDATASection is not a function" that is not a DOMException NotSupportedError: property "code" is equal to undefined, expected 9): 1
-- wpt:testharness — 117 failed, 0 timeout: 1
+- wpt:testharness — 1 failed, 1 timeout: 1
 - wpt:testharness — 3 failed, 0 timeout: 1
+- wpt:testharness — harness did not load (INVALID_CHARACTER_ERR: INVALID_CHARACTER_ERR (5): the string contains invalid characters): 1
+- wpt:testharness — 6 failed, 1 timeout: 1
+- wpt:testharness — 5 failed, 0 timeout: 1
+- acid:reftest — Acid2 test page vs reference (expected differences): 1
+- wpt:testharness — 13 failed, 1 timeout: 1
+- wpt:testharness — harness did not load (ReferenceError: setup is not defined): 1
+- wpt:testharness — 0 failed, 0 timeout: 1
 
 ## API probe
 

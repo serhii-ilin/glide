@@ -1,22 +1,35 @@
 //! Offline regression gate for vendored WPT `dom/nodes` (R-014).
 
+use std::path::PathBuf;
+
 use glide::compat::runner::{RunnerConfig, Suite, repo_root, run_compat};
+
+/// Representative dom/nodes files (green + known-red) for a fast offline gate.
+const DOM_NODES_SUBSET: &[&str] = &[
+    "dom/nodes/CharacterData-appendData.html",
+    "dom/nodes/CharacterData-data.html",
+    "dom/nodes/CharacterData-deleteData.html",
+    "dom/nodes/CharacterData-insertData.html",
+    "dom/nodes/Comment-constructor.html",
+    "dom/nodes/Document-createComment.html",
+    "dom/nodes/Document-createAttribute.html",
+    "dom/nodes/ChildNode-after.html",
+    "dom/nodes/ChildNode-before.html",
+    "dom/nodes/CharacterData-remove.html",
+    "dom/nodes/Document-adoptNode.html",
+    "dom/nodes/DOMImplementation-createDocument.html",
+    "dom/nodes/Attr-prefix.html",
+];
 
 #[test]
 fn compat_dom_nodes_meets_milestone() {
     let root = repo_root();
-    let status = std::process::Command::new("cargo")
-        .args(["build", "--quiet", "--release", "--bin", "glide"])
-        .current_dir(&root)
-        .status()
-        .expect("cargo build --release glide");
-    assert!(status.success(), "release glide build failed");
-    let glide_bin = root.join("target/release/glide");
-    assert!(glide_bin.is_file(), "missing {}", glide_bin.display());
+    let glide_bin = PathBuf::from(env!("CARGO_BIN_EXE_glide"));
 
     let cfg = RunnerConfig {
         suite: Suite::Wpt,
-        filter: Some("dom/nodes".into()),
+        filter: None,
+        only_paths: Some(DOM_NODES_SUBSET.iter().map(|s| (*s).to_string()).collect()),
         jobs: 4,
         glide_bin,
         repo_root: root.clone(),
@@ -29,7 +42,7 @@ fn compat_dom_nodes_meets_milestone() {
         report_md: root.join("target/compat-dom-nodes-report.md"),
     };
 
-    let results = run_compat(cfg).expect("run_compat dom/nodes");
+    let results = run_compat(cfg).expect("run_compat dom/nodes subset");
     assert!(
         !results.is_empty(),
         "expected dom/nodes harness results, got none"

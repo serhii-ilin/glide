@@ -51,6 +51,7 @@ fn run_main() -> Result<(), String> {
     let cfg = RunnerConfig {
         suite,
         filter,
+        only_paths: None,
         jobs,
         glide_bin,
         repo_root: root.clone(),

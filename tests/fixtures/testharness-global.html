@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script src="../compat/wpt/resources/testharness.js"></script>
+</head>
+<body>
+<p id="t">pending</p>
+<script>
+var ok = (self === globalThis) && (window === globalThis) &&
+  (document.defaultView === globalThis) && (typeof test === 'function');
+document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+</script>
+</body>
+</html>

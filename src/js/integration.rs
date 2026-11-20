@@ -58,14 +58,32 @@ fn create_append_after_text_clear() {
 }
 
 #[test]
-fn window_parent_and_top_are_self() {
-    let html = r#"<!DOCTYPE html><html><body><script>
-      if (self.parent !== self || self.top !== self || self.frames !== self) {
-        throw new Error('bad browsing context');
-      }
+fn self_and_window_are_global_this() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var ok = (self === globalThis) && (window === globalThis) &&
+        (document.defaultView === globalThis) && (self.parent === self) &&
+        (self.top === self) && (self.frames === self);
+      document.getElementById('t').textContent = ok ? 'ok' : 'bad';
     </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(80));
-    assert_eq!(result.final_text, "");
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn testharness_defines_test_on_global() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/testharness-global.html");
+    let url = format!("file://{}", path.display());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio");
+    let _guard = rt.enter();
+    let text = crate::headless::dump_text(&url, true).expect("load harness fixture");
+    assert!(
+        text.contains("ok"),
+        "expected testharness on globalThis, dump: {text}"
+    );
 }
 
 #[test]

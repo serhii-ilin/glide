@@ -1,19 +1,17 @@
 //! Integration test: run compat runner offline on vendored integration fixtures.
 
-use glide::compat::runner::{RunnerConfig, Suite, repo_root, resolve_glide_binary, run_compat};
+use std::path::PathBuf;
+
+use glide::compat::runner::{RunnerConfig, Suite, repo_root, run_compat};
 
 #[test]
 fn compat_runner_filter_integration_offline() {
     let root = repo_root();
-    let _ = std::process::Command::new("cargo")
-        .args(["build", "--quiet", "--bin", "glide"])
-        .current_dir(&root)
-        .status()
-        .expect("cargo build glide");
-    let glide_bin = resolve_glide_binary().expect("build glide binary first");
+    let glide_bin = PathBuf::from(env!("CARGO_BIN_EXE_glide"));
     let cfg = RunnerConfig {
         suite: Suite::Wpt,
         filter: Some("integration".into()),
+        only_paths: None,
         jobs: 1,
         glide_bin,
         repo_root: root.clone(),

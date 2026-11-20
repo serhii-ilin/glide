@@ -10,6 +10,7 @@ use once_cell::sync::OnceCell;
 
 use super::bridge::{DomRequest, DomValue};
 use super::host::DomRpc;
+use url::Url;
 
 static V8_INIT: OnceCell<()> = OnceCell::new();
 
@@ -24,11 +25,22 @@ pub struct JsWorker {
 
 #[derive(Debug)]
 enum WorkerMessage {
-    RunScripts { sources: Vec<String> },
+    InitPage {
+        snapshot_json: String,
+        page_url: String,
+    },
+    RunScripts {
+        sources: Vec<(String, Option<u64>)>,
+    },
     FireDomContentLoaded,
-    Pump { now_ms: u64 },
+    Pump {
+        now_ms: u64,
+    },
     FlushRaf,
-    DispatchBubble { path: Vec<u64>, event_type: String },
+    DispatchBubble {
+        path: Vec<u64>,
+        event_type: String,
+    },
     Shutdown,
 }
 
@@ -46,7 +58,14 @@ impl JsWorker {
         }
     }
 
-    pub fn run_scripts(&self, sources: Vec<String>) {
+    pub fn init_page(&self, snapshot_json: String, page_url: String) {
+        let _ = self.tx.send(WorkerMessage::InitPage {
+            snapshot_json,
+            page_url,
+        });
+    }
+
+    pub fn run_scripts(&self, sources: Vec<(String, Option<u64>)>) {
         let _ = self.tx.send(WorkerMessage::RunScripts { sources });
     }
 
@@ -96,20 +115,41 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
         {
             let scope = &mut v8::ContextScope::new(hs, context);
             install_bindings(scope, context);
-            let source =
-                v8::String::new(scope, include_str!("bootstrap.js")).expect("bootstrap source");
-            run_script(scope, source, "<bootstrap>");
+            let vendor = load_embedded_script_in_scope(scope, "vendor");
+            run_script(scope, vendor, "<domino-vendor>");
+            let glue = load_embedded_script_in_scope(scope, "dom-glue");
+            run_script(scope, glue, "<dom-glue>");
+            let bootstrap = load_embedded_script_in_scope(scope, "bootstrap");
+            run_script(scope, bootstrap, "<bootstrap>");
         }
         v8::Global::new(hs, context)
     };
 
     while let Ok(msg) = cmd_rx.recv() {
         match msg {
+            WorkerMessage::InitPage {
+                snapshot_json,
+                page_url,
+            } => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
+                let snap = v8::String::new(scope, &snapshot_json).unwrap();
+                let url = v8::String::new(scope, &page_url).unwrap();
+                call_global_fn(scope, "__glide_init_page", &[snap.into(), url.into()]);
+                drain_glide_microtasks(scope);
+            }
             WorkerMessage::RunScripts { sources } => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
-                for (i, src) in sources.into_iter().enumerate() {
+                for (i, (src, script_id)) in sources.into_iter().enumerate() {
+                    if let Some(id) = script_id {
+                        let sid = v8::String::new(scope, &id.to_string()).unwrap();
+                        call_global_fn(scope, "__glide_set_current_script", &[sid.into()]);
+                    } else {
+                        call_global_fn(scope, "__glide_set_current_script", &[]);
+                    }
                     run_script_with_timeout(scope, &src, &format!("script-{i}"));
                     scope.perform_microtask_checkpoint();
                     drain_glide_microtasks(scope);
@@ -160,6 +200,18 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
     DOM_TX.with(|slot| *slot.borrow_mut() = None);
 }
 
+fn load_embedded_script_in_scope<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    which: &str,
+) -> v8::Local<'s, v8::String> {
+    let text = match which {
+        "vendor" => include_str!("vendor/domino.js"),
+        "dom-glue" => include_str!("dom-glue.js"),
+        _ => include_str!("bootstrap.js"),
+    };
+    v8::String::new(scope, text).expect("embed source")
+}
+
 fn install_bindings(scope: &mut v8::PinScope<'_, '_>, context: v8::Local<v8::Context>) {
     let global = context.global(scope);
     let dom_fn = v8::Function::new(scope, dom_sync_callback).expect("dom fn");
@@ -169,6 +221,10 @@ fn install_bindings(scope: &mut v8::PinScope<'_, '_>, context: v8::Local<v8::Con
     let console_fn = v8::Function::new(scope, console_callback).expect("console fn");
     let console_key = v8::String::new(scope, "__glide_console").unwrap();
     global.set(scope, console_key.into(), console_fn.into());
+
+    let url_fn = v8::Function::new(scope, url_parse_callback).expect("url fn");
+    let url_key = v8::String::new(scope, "__glide_url_parse").unwrap();
+    global.set(scope, url_key.into(), url_fn.into());
 }
 
 fn dom_sync_callback(
@@ -323,10 +379,38 @@ fn map_dom_op(
             reply,
         },
         "listen" => {
-            arg_handle(scope, args, 2)?;
-            arg_string(scope, args, 3)?;
-            DomRequest::Listen { reply }
+            let node = arg_handle(scope, args, 2)?;
+            let event_type = arg_string(scope, args, 3)?;
+            DomRequest::ListenTarget {
+                node,
+                event_type,
+                reply,
+            }
         }
+        "snapshotTree" => DomRequest::SnapshotTree { reply },
+        "batchMutate" => DomRequest::BatchMutate {
+            json: arg_string(scope, args, 2)?,
+            reply,
+        },
+        "boundingRect" => DomRequest::BoundingRect {
+            node: arg_handle(scope, args, 2)?,
+            reply,
+        },
+        "computedStyle" => DomRequest::ComputedStyle {
+            node: arg_handle(scope, args, 2)?,
+            prop: arg_string(scope, args, 3)?,
+            reply,
+        },
+        "layoutField" => DomRequest::LayoutField {
+            node: arg_handle(scope, args, 2)?,
+            field: arg_string(scope, args, 3)?,
+            reply,
+        },
+        "pageUrl" => DomRequest::PageUrl { reply },
+        "navigate" => DomRequest::Navigate {
+            url: arg_string(scope, args, 2)?,
+            reply,
+        },
         other => return Err(format!("unknown dom op {other}")),
     })
 }
@@ -377,8 +461,90 @@ fn dom_value_to_v8<'s>(
                 .collect();
             v8::Array::new_with_elements(scope, &elements).into()
         }
+        DomValue::Number(n) => v8::Number::new(scope, *n).into(),
+        DomValue::Json(v) => json_value_to_v8(scope, v),
         DomValue::Error(err) => v8_error_object(scope, err),
     }
+}
+
+fn json_value_to_v8<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: &serde_json::Value,
+) -> v8::Local<'s, v8::Value> {
+    match value {
+        serde_json::Value::Null => v8::null(scope).into(),
+        serde_json::Value::Bool(b) => v8::Boolean::new(scope, *b).into(),
+        serde_json::Value::Number(n) => v8::Number::new(scope, n.as_f64().unwrap_or(0.0)).into(),
+        serde_json::Value::String(s) => v8::String::new(scope, s).unwrap().into(),
+        serde_json::Value::Array(arr) => {
+            let elems: Vec<v8::Local<v8::Value>> =
+                arr.iter().map(|v| json_value_to_v8(scope, v)).collect();
+            v8::Array::new_with_elements(scope, &elems).into()
+        }
+        serde_json::Value::Object(map) => {
+            let obj = v8::Object::new(scope);
+            for (k, v) in map {
+                let val = json_value_to_v8(scope, v);
+                let key = v8::String::new(scope, k).unwrap();
+                let _ = obj.set(scope, key.into(), val);
+            }
+            obj.into()
+        }
+    }
+}
+
+fn url_parse_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let href = args.get(0).to_rust_string_lossy(scope);
+    let base = if args.length() > 1 {
+        Some(args.get(1).to_rust_string_lossy(scope))
+    } else {
+        None
+    };
+    let resolved = match base {
+        Some(b) => Url::parse(&b).and_then(|u| u.join(&href)),
+        None => Url::parse(&href),
+    };
+    let Ok(url) = resolved else {
+        rv.set(v8::undefined(scope).into());
+        return;
+    };
+    let obj = v8::Object::new(scope);
+    let set = |name: &str, val: &str| {
+        let key = v8::String::new(scope, name).unwrap();
+        let v = v8::String::new(scope, val).unwrap();
+        let _ = obj.set(scope, key.into(), v.into());
+    };
+    set("href", url.as_str());
+    set("protocol", url.scheme());
+    set(
+        "host",
+        &url.host().map(|h| h.to_string()).unwrap_or_default(),
+    );
+    set("hostname", url.host_str().unwrap_or(""));
+    let port = url.port().map(|p| p.to_string()).unwrap_or_default();
+    set("port", &port);
+    set("pathname", url.path());
+    let search = url.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let hash = url.fragment().map(|h| format!("#{h}")).unwrap_or_default();
+    set("search", &search);
+    set("hash", &hash);
+    let origin = if url.scheme() == "file" || url.host_str().is_none() {
+        "null".into()
+    } else {
+        let host = url.host_str().unwrap_or("");
+        format!(
+            "{}://{}{}",
+            url.scheme(),
+            host,
+            url.port().map(|p| format!(":{}", p)).unwrap_or_default()
+        )
+    };
+    set("origin", &origin);
+    rv.set(obj.into());
 }
 
 fn v8_error_object<'s>(scope: &mut v8::PinScope<'s, '_>, msg: &str) -> v8::Local<'s, v8::Value> {
@@ -440,4 +606,36 @@ fn call_global_fn(scope: &mut v8::PinScope<'_, '_>, name: &str, argv: &[v8::Loca
     }
     let func = unsafe { v8::Local::<v8::Function>::cast_unchecked(func_val) };
     let _ = func.call(scope, global.into(), argv);
+}
+
+#[cfg(test)]
+mod vendor_tests {
+    use super::*;
+
+    #[test]
+    fn domino_vendor_exports_htmlelement() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
+        v8::scope!(let hs, isolate);
+        let context = v8::Context::new(hs, Default::default());
+        let scope = &mut v8::ContextScope::new(hs, context);
+        install_bindings(scope, context);
+        let vendor = load_embedded_script_in_scope(scope, "vendor");
+        run_script(scope, vendor, "<domino-vendor-test>");
+        let global = context.global(scope);
+        let key = v8::String::new(scope, "__glide_domino").unwrap();
+        let val = global.get(scope, key.into()).expect("domino export");
+        assert!(val.is_object());
+        let check = v8::String::new(
+            scope,
+            r#"(function(d){
+            return d && typeof d.impl.HTMLElement === 'function'
+              && d.createDocument('<p id=x>', true).getElementById('x') != null;
+          })(__glide_domino)"#,
+        )
+        .unwrap();
+        let script = v8::Script::compile(scope, check, None).expect("compile");
+        let result = script.run(scope).expect("run");
+        assert!(result.is_true());
+    }
 }

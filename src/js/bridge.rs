@@ -97,11 +97,41 @@ pub enum DomRequest {
         node: u64,
         reply: u64,
     },
-    Listen {
-        reply: u64,
-    },
     Fetch {
         url: String,
+        reply: u64,
+    },
+    SnapshotTree {
+        reply: u64,
+    },
+    BatchMutate {
+        json: String,
+        reply: u64,
+    },
+    BoundingRect {
+        node: u64,
+        reply: u64,
+    },
+    ComputedStyle {
+        node: u64,
+        prop: String,
+        reply: u64,
+    },
+    LayoutField {
+        node: u64,
+        field: String,
+        reply: u64,
+    },
+    PageUrl {
+        reply: u64,
+    },
+    Navigate {
+        url: String,
+        reply: u64,
+    },
+    ListenTarget {
+        node: u64,
+        event_type: String,
         reply: u64,
     },
 }
@@ -113,6 +143,8 @@ pub enum DomValue {
     String(String),
     NodeId(u64),
     NodeList(Vec<u64>),
+    Number(f64),
+    Json(serde_json::Value),
     Error(String),
 }
 

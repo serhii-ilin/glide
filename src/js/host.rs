@@ -12,8 +12,9 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use super::apply::apply_request;
 use super::bridge::{DomRequest, DomResponse, bubble_handles};
 use super::scripts::{
-    ScriptSource, collect_scripts, execution_plan, source_body, spawn_resolve_sources,
+    ScriptSource, ScriptSpec, collect_scripts, execution_plan, source_body, spawn_resolve_sources,
 };
+use super::snapshot;
 use super::tap::JsTap;
 use super::worker::JsWorker;
 
@@ -34,6 +35,7 @@ pub struct JsHost {
     clock: Instant,
     pending_sources: Option<Receiver<Vec<ScriptSource>>>,
     pending_indices: Option<(Vec<usize>, Vec<usize>, Vec<usize>)>,
+    script_specs: Vec<ScriptSpec>,
 }
 
 impl JsHost {
@@ -50,6 +52,7 @@ impl JsHost {
             clock: Instant::now(),
             pending_sources: None,
             pending_indices: None,
+            script_specs: Vec::new(),
         }
     }
 
@@ -68,6 +71,7 @@ impl JsHost {
         self.started_for = None;
         self.pending_sources = None;
         self.pending_indices = None;
+        self.script_specs.clear();
     }
 
     fn mark_stale_page(&mut self, chrome: &BaseDocument) {
@@ -98,6 +102,7 @@ impl JsHost {
         }
         let specs =
             with_page_subdoc(chrome, collect_scripts).unwrap_or_else(|| collect_scripts(chrome));
+        self.script_specs = specs.clone();
         self.base_url = page_url.to_string();
         self.started_for = Some((current_doc_id, page_url.to_string()));
         self.stale_page_doc_id = None;
@@ -106,6 +111,12 @@ impl JsHost {
         let (dom_tx, dom_rx) = unbounded();
         self.dom_rx = dom_rx;
         let worker = JsWorker::spawn(dom_tx);
+        let snapshot_json = serde_json::to_string(
+            &with_page_subdoc(chrome, snapshot::snapshot_tree)
+                .unwrap_or_else(|| snapshot::snapshot_tree(chrome)),
+        )
+        .unwrap_or_else(|_| "[]".into());
+        worker.init_page(snapshot_json, page_url.to_string());
         self.worker = Some(worker);
 
         let plan = execution_plan(&specs);
@@ -136,9 +147,13 @@ impl JsHost {
             Some(w) => w,
             None => return,
         };
-        let pick = |idxs: &[usize]| -> Vec<String> {
+        let specs = self.script_specs.clone();
+        let pick = |idxs: &[usize]| -> Vec<(String, Option<u64>)> {
             idxs.iter()
-                .filter_map(|&i| source_body(&sources[i]))
+                .filter_map(|&i| {
+                    source_body(&sources[i])
+                        .map(|body| (body, specs.get(i).and_then(|s| s.element)))
+                })
                 .collect()
         };
         let classic_bodies = pick(&classic);
@@ -152,7 +167,8 @@ impl JsHost {
         worker.fire_dom_content_loaded();
         for idx in async_scripts {
             if let Some(body) = source_body(&sources[idx]) {
-                worker.run_scripts(vec![body]);
+                let script_id = specs.get(idx).and_then(|s| s.element);
+                worker.run_scripts(vec![(body, script_id)]);
             }
         }
     }

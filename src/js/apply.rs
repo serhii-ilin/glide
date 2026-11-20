@@ -48,8 +48,15 @@ fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::ClassListContains { reply, .. }
         | DomRequest::StyleSet { reply, .. }
         | DomRequest::ParentId { reply, .. }
-        | DomRequest::Listen { reply, .. }
-        | DomRequest::Fetch { reply, .. } => *reply,
+        | DomRequest::Fetch { reply, .. }
+        | DomRequest::SnapshotTree { reply }
+        | DomRequest::BatchMutate { reply, .. }
+        | DomRequest::BoundingRect { reply, .. }
+        | DomRequest::ComputedStyle { reply, .. }
+        | DomRequest::LayoutField { reply, .. }
+        | DomRequest::PageUrl { reply }
+        | DomRequest::Navigate { reply, .. }
+        | DomRequest::ListenTarget { reply, .. } => *reply,
     }
 }
 
@@ -60,6 +67,35 @@ fn apply_inner(
     req: DomRequest,
 ) -> DomResponse {
     match req {
+        DomRequest::SnapshotTree { reply } => {
+            let tree = super::snapshot::snapshot_tree(doc);
+            DomResponse::ok(reply, DomValue::Json(tree))
+        }
+        DomRequest::BatchMutate { json, reply } => super::batch::apply_batch(doc, &json, reply),
+        DomRequest::BoundingRect { node, reply } => {
+            super::batch::reply_bounding_rect(doc, node, reply)
+        }
+        DomRequest::ComputedStyle { node, prop, reply } => {
+            super::batch::reply_computed_style(doc, node, &prop, reply)
+        }
+        DomRequest::LayoutField { node, field, reply } => {
+            super::batch::reply_layout_number(doc, node, &field, reply)
+        }
+        DomRequest::PageUrl { reply } => {
+            DomResponse::ok(reply, DomValue::String(base_url.to_string()))
+        }
+        DomRequest::Navigate { url, reply } => {
+            let _ = url;
+            DomResponse::ok(reply, DomValue::Null)
+        }
+        DomRequest::ListenTarget {
+            node,
+            event_type,
+            reply,
+        } => {
+            let _ = (node, event_type);
+            DomResponse::ok(reply, DomValue::Null)
+        }
         DomRequest::GetElementById { id, reply } => {
             let value = doc
                 .get_element_by_id(&id)
@@ -272,7 +308,6 @@ fn apply_inner(
                 .unwrap_or(DomValue::Null);
             DomResponse::ok(reply, value)
         }
-        DomRequest::Listen { reply } => DomResponse::ok(reply, DomValue::Null),
         DomRequest::Fetch { url, reply } => {
             if let Some(body) = data_url_body(&url) {
                 return DomResponse::ok(reply, DomValue::String(body));
@@ -319,7 +354,7 @@ fn apply_inner(
     }
 }
 
-fn html_qual(name: &str) -> QualName {
+pub(crate) fn html_qual(name: &str) -> QualName {
     QualName::new(None, html5ever::ns!(html), LocalName::from(name))
 }
 
@@ -385,7 +420,7 @@ fn data_url_body(url: &str) -> Option<String> {
     Some(payload.to_string())
 }
 
-fn camel_to_kebab(name: &str) -> String {
+pub(crate) fn camel_to_kebab(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     for ch in name.chars() {
         if ch.is_ascii_uppercase() {

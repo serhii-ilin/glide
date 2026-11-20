@@ -38,5 +38,8 @@ fn compat_runner_filter_integration_offline() {
     assert_eq!(harness.status, "fail");
     let reason = harness.reason.as_deref().expect("harness failure reason");
     assert!(reason.contains("harness did not load:"));
-    assert!(reason.contains("ReferenceError"));
+    assert!(
+        reason.contains("ReferenceError") || reason.contains("TypeError"),
+        "unexpected harness failure: {reason}"
+    );
 }

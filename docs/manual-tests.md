@@ -22,3 +22,5 @@ Each row names the feature it covers.
 | M-014 | F-006 | Focus the address bar, type `hello`, Cmd/Ctrl+A, Cmd/Ctrl+C, move caret to end, Cmd/Ctrl+V | Field shows `hellohello` |
 | M-015 | F-006 | On macOS: type `one two`, Option+Left/Right moves by word; Option+Backspace deletes the word before the caret | Caret and text follow macOS editing conventions |
 | M-016 | F-007 | Open `tests/fixtures/input.html`, click the input (a first click on the page may only focus the iframe), type `x` | Characters appear in the page input, not the address bar |
+| M-017 | F-022 | Open `tests/fixtures/js-toggle.html`. Press Cmd/Ctrl+Shift+J twice | After first toggle: toolbar **JS off**, page shows `static` and `no-js-fallback`. After second: **JS on**, page shows `scripted` |
+| M-018 | F-022 | Open `tests/fixtures/counter.html`. Confirm `#count` shows `ready`. Toggle JS off then on | With JS off, count stays `0`; after turning JS on, count shows `ready` again |

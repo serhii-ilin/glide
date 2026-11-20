@@ -7,6 +7,7 @@
 mod app;
 pub mod args;
 pub mod chrome;
+pub mod headless;
 pub mod history;
 pub mod html;
 pub mod js;

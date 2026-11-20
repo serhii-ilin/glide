@@ -29,7 +29,8 @@ pub struct JsHost {
     tap: JsTap,
     base_url: String,
     net: Option<Arc<Provider>>,
-    started_for_url: Option<String>,
+    started_for: Option<(usize, String)>,
+    stale_page_doc_id: Option<usize>,
     clock: Instant,
     pending_sources: Option<Receiver<Vec<ScriptSource>>>,
     pending_indices: Option<(Vec<usize>, Vec<usize>, Vec<usize>)>,
@@ -44,7 +45,8 @@ impl JsHost {
             tap,
             base_url: String::new(),
             net,
-            started_for_url: None,
+            started_for: None,
+            stale_page_doc_id: None,
             clock: Instant::now(),
             pending_sources: None,
             pending_indices: None,
@@ -55,11 +57,21 @@ impl JsHost {
         self.enabled.load(Ordering::Relaxed)
     }
 
-    pub fn set_enabled(&mut self, on: bool) {
+    pub fn set_enabled(&mut self, on: bool, chrome: &BaseDocument) {
         self.enabled.store(on, Ordering::Relaxed);
-        if !on {
-            self.worker = None;
-        }
+        self.mark_stale_page(chrome);
+        self.reset_page_js_state();
+    }
+
+    fn reset_page_js_state(&mut self) {
+        self.worker = None;
+        self.started_for = None;
+        self.pending_sources = None;
+        self.pending_indices = None;
+    }
+
+    fn mark_stale_page(&mut self, chrome: &BaseDocument) {
+        self.stale_page_doc_id = Some(page_document_id(chrome));
     }
 
     pub fn now_ms(&self) -> u64 {
@@ -75,13 +87,20 @@ impl JsHost {
         if !self.is_enabled() {
             return;
         }
-        if self.started_for_url.as_deref() == Some(page_url) {
+        let current_doc_id = page_document_id(chrome);
+        if !should_start_page(
+            self.stale_page_doc_id,
+            self.started_for.as_ref(),
+            current_doc_id,
+            page_url,
+        ) {
             return;
         }
         let specs =
             with_page_subdoc(chrome, collect_scripts).unwrap_or_else(|| collect_scripts(chrome));
         self.base_url = page_url.to_string();
-        self.started_for_url = Some(page_url.to_string());
+        self.started_for = Some((current_doc_id, page_url.to_string()));
+        self.stale_page_doc_id = None;
         self.clock = Instant::now();
 
         let (dom_tx, dom_rx) = unbounded();
@@ -210,11 +229,14 @@ impl JsHost {
         }
     }
 
-    pub fn on_navigation(&mut self, _url: &str) {
-        self.worker = None;
-        self.started_for_url = None;
-        self.pending_sources = None;
-        self.pending_indices = None;
+    pub fn on_navigation(&mut self, chrome: &BaseDocument, _url: &str) {
+        self.mark_stale_page(chrome);
+        self.reset_page_js_state();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn started_for_doc(&self) -> Option<(usize, String)> {
+        self.started_for.clone()
     }
 
     /// Headless/tests: resolve script sources on a worker thread and run when ready.
@@ -288,6 +310,23 @@ fn ui_event_target(
     }
 }
 
+/// Whether the JS worker may start for this page sub-document and URL.
+pub(crate) fn should_start_page(
+    stale_page_doc_id: Option<usize>,
+    started_for: Option<&(usize, String)>,
+    current_doc_id: usize,
+    page_url: &str,
+) -> bool {
+    if stale_page_doc_id == Some(current_doc_id) {
+        return false;
+    }
+    !matches!(started_for, Some((id, url)) if *id == current_doc_id && url == page_url)
+}
+
+fn page_document_id(chrome: &BaseDocument) -> usize {
+    with_page_subdoc(chrome, |doc| doc.id()).unwrap_or_else(|| chrome.id())
+}
+
 fn with_page_subdoc<R>(chrome: &BaseDocument, f: impl FnOnce(&BaseDocument) -> R) -> Option<R> {
     let page_id = chrome.get_element_by_id("page")?;
     let sub = chrome.get_node(page_id)?.subdoc()?;
@@ -307,5 +346,100 @@ fn page_subdoc_mut(chrome: &mut BaseDocument) -> Option<&mut BaseDocument> {
         blitz_dom::DocGuardMut::RefCell(_)
         | blitz_dom::DocGuardMut::RwLock(_)
         | blitz_dom::DocGuardMut::Mutex(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_dom::DocumentConfig;
+
+    use crate::parse;
+
+    const PAGE: &str = r#"<!DOCTYPE html><html><body>
+    <script>document.title = 'x';</script></body></html>"#;
+
+    fn page_doc(scripting: bool) -> BaseDocument {
+        let config = DocumentConfig {
+            base_url: Some("https://example.test/page".into()),
+            ..Default::default()
+        };
+        parse::document_from_html(PAGE, config, scripting)
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+    }
+
+    #[test]
+    fn should_start_rejects_stale_and_duplicate() {
+        assert!(!should_start_page(Some(1), None, 1, "https://a/"));
+        assert!(!should_start_page(
+            None,
+            Some(&(1, "https://a/".into())),
+            1,
+            "https://a/",
+        ));
+        assert!(should_start_page(
+            Some(1),
+            Some(&(1, "https://a/".into())),
+            2,
+            "https://a/",
+        ));
+        assert!(should_start_page(None, None, 5, "https://b/"));
+    }
+
+    #[test]
+    fn restart_requires_new_subdocument_after_reload() {
+        let doc_a = page_doc(true);
+        let doc_b = page_doc(true);
+        assert_ne!(doc_a.id(), doc_b.id());
+        let url = "https://example.test/page";
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+
+        host.maybe_start_page(&doc_a, url, handle);
+        assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_a.id()));
+
+        host.on_navigation(&doc_a, url);
+        assert!(host.started_for_doc().is_none());
+
+        host.maybe_start_page(&doc_a, url, handle);
+        assert!(host.started_for_doc().is_none());
+
+        host.maybe_start_page(&doc_b, url, handle);
+        assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
+    }
+
+    #[test]
+    fn set_enabled_off_then_on_restarts_for_new_document() {
+        let doc_a = page_doc(true);
+        let doc_b = page_doc(true);
+        let url = "https://example.test/page";
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+
+        host.maybe_start_page(&doc_a, url, handle);
+        assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_a.id()));
+
+        host.set_enabled(false, &doc_a);
+        assert!(host.started_for_doc().is_none());
+
+        host.maybe_start_page(&doc_a, url, handle);
+        assert!(host.started_for_doc().is_none());
+
+        host.set_enabled(true, &doc_a);
+        host.maybe_start_page(&doc_a, url, handle);
+        assert!(host.started_for_doc().is_none());
+
+        host.maybe_start_page(&doc_b, url, handle);
+        assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
     }
 }

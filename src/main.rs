@@ -1,7 +1,7 @@
-//! `glide` binary entry: parse CLI args and run the window or headless screenshot.
+//! `glide` binary entry: parse CLI args and run the window, headless screenshot, or --dump-text.
 
 use glide::args::{RunMode, parse, usage};
-use glide::{run_window, shot, tokio_runtime};
+use glide::{headless, run_window, shot, tokio_runtime};
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -25,6 +25,17 @@ fn main() {
                 Ok(()) => println!("wrote {output}"),
                 Err(err) => {
                     eprintln!("screenshot failed: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Ok(RunMode::DumpText { url, js_enabled }) => {
+            let runtime = tokio_runtime();
+            let _guard = runtime.enter();
+            match headless::dump_text(&url, js_enabled) {
+                Ok(text) => print!("{text}"),
+                Err(err) => {
+                    eprintln!("dump-text failed: {err}");
                     std::process::exit(1);
                 }
             }

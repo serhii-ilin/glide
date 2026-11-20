@@ -9,6 +9,7 @@ pub enum NavCommand {
     Back,
     Forward,
     Reload,
+    ToggleJs,
     /// Raw address-bar text, not yet classified as a URL or a search.
     Go(String),
 }
@@ -19,6 +20,7 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
             Some("back") => Some(NavCommand::Back),
             Some("forward") => Some(NavCommand::Forward),
             Some("reload") => Some(NavCommand::Reload),
+            Some("toggle-js") => Some(NavCommand::ToggleJs),
             _ => None,
         };
     }
@@ -39,8 +41,9 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
     Some(NavCommand::Go(url.to_string()))
 }
 
-pub fn chrome_document(start_url: &str) -> String {
+pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
     let url = escape_attr(start_url);
+    let js_label = if js_enabled { "JS on" } else { "JS off" };
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -68,8 +71,9 @@ pub fn chrome_document(start_url: &str) -> String {
     border-bottom: 1px solid #e4ddd0;
   }}
   a.btn {{
-    width: 32px;
+    min-width: 32px;
     height: 32px;
+    padding: 0 8px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -109,6 +113,7 @@ pub fn chrome_document(start_url: &str) -> String {
     <a class="btn" href="glide://back" title="Back">&#8592;</a>
     <a class="btn" href="glide://forward" title="Forward">&#8594;</a>
     <a class="btn" href="glide://reload" title="Reload">&#8635;</a>
+    <a id="js-toggle" class="btn" href="glide://toggle-js" title="Toggle JavaScript">{js_label}</a>
     <form action="https://glide.invalid/go" method="get">
       <input id="url" name="q" type="text" value="{url}" spellcheck="false" autocomplete="off">
     </form>
@@ -145,6 +150,10 @@ mod tests {
         assert_eq!(
             command_from_url(&Url::parse("glide://reload").unwrap()),
             Some(NavCommand::Reload)
+        );
+        assert_eq!(
+            command_from_url(&Url::parse("glide://toggle-js").unwrap()),
+            Some(NavCommand::ToggleJs)
         );
     }
 

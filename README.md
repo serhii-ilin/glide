@@ -13,6 +13,7 @@ cargo run --release -- --help
 cargo run --release
 cargo run --release -- https://example.com
 cargo run --release -- news.ycombinator.com
+cargo run --release -- --dump-text file://$PWD/tests/fixtures/js-toggle.html
 ```
 
 A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML frontend (`https://duckduckgo.com/html/`), which does not need page JavaScript. `file://` URLs open local files.
@@ -23,6 +24,7 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Alt+Left / Alt+Right (Option on macOS) | Back / forward |
 | Cmd/Ctrl+[ / Cmd/Ctrl+] | Back / forward |
 | Ctrl+R or F5 (Cmd+R on macOS) | Reload |
+| Cmd/Ctrl+Shift+J | Turn page JavaScript on or off (reloads the page) |
 | Ctrl+L or Cmd+L | Focus the address bar |
 | Cmd/Ctrl+W | Close the window |
 | Cmd/Ctrl+Q | Quit |
@@ -80,7 +82,7 @@ Kitesurf patches those crates (box-shadow performance, gradient LUTs, iframe sce
 
 ## Page JavaScript
 
-Glide runs page scripts with the [V8](https://v8.dev/) crate on a dedicated `glide-js` thread. The UI thread owns the DOM; scripts call through a small synchronous RPC (`src/js/`). Each navigation tears down the isolate and starts a new one. `--no-js` disables parsing `<script>` tags, skipping the worker entirely.
+Glide runs page scripts with the [V8](https://v8.dev/) crate on a dedicated `glide-js` thread. The UI thread owns the DOM; scripts call through a small synchronous RPC (`src/js/`). Each navigation tears down the isolate and starts a new one. `--no-js` disables parsing `<script>` tags, skipping the worker entirely. While the window is open, use the **JS on** / **JS off** toolbar pill or Cmd/Ctrl+Shift+J to flip scripting and reload the current page.
 
 Supported in the bootstrap shim today: `document` queries and mutations, inline/defer/async classic scripts, `setTimeout` / `setInterval`, `requestAnimationFrame`, `fetch` (via `blitz-net`), and `console.log`. DOM events are stored in JS; clicks are forwarded from the UI thread when possible.
 

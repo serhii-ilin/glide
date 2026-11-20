@@ -8,7 +8,7 @@ use blitz_dom::{
     HtmlParserProvider, NodeId,
 };
 
-use crate::js::JsTap;
+use crate::js::{JsHost, JsTap};
 use crate::parse;
 
 #[derive(Clone)]
@@ -24,6 +24,18 @@ impl Default for GlideHtmlProvider {
             js_tap: JsTap::new_disabled(),
         }
     }
+}
+
+/// Apply a runtime JS on/off choice to the shared HTML provider and JS host.
+pub fn set_js_runtime_mode(
+    provider: &GlideHtmlProvider,
+    host: &mut JsHost,
+    chrome: &BaseDocument,
+    on: bool,
+) {
+    provider.scripting_enabled.store(on, Ordering::Relaxed);
+    provider.js_tap.set_enabled(on);
+    host.set_enabled(on, chrome);
 }
 
 impl HtmlParserProvider for GlideHtmlProvider {
@@ -91,5 +103,40 @@ impl Document for JsPageDocument {
 
     fn id(&self) -> usize {
         self.inner.id()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use crate::parse;
+
+    #[test]
+    fn set_js_runtime_mode_updates_shared_flags() {
+        let tap = JsTap::new_enabled();
+        let provider = GlideHtmlProvider {
+            scripting_enabled: Arc::new(AtomicBool::new(true)),
+            js_tap: tap.clone(),
+        };
+        let mut host = JsHost::new(true, tap.clone(), None);
+        let chrome = parse::document_from_html(
+            "<!DOCTYPE html><html><body></body></html>",
+            DocumentConfig::default(),
+            false,
+        );
+        assert!(provider.js_tap.enabled());
+
+        set_js_runtime_mode(&provider, &mut host, &chrome, false);
+        assert!(!provider.scripting_enabled.load(Ordering::Relaxed));
+        assert!(!provider.js_tap.enabled());
+        assert!(!host.is_enabled());
+
+        set_js_runtime_mode(&provider, &mut host, &chrome, true);
+        assert!(provider.scripting_enabled.load(Ordering::Relaxed));
+        assert!(provider.js_tap.enabled());
+        assert!(host.is_enabled());
     }
 }

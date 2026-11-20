@@ -49,7 +49,7 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | F-021 | T2 Keyboard verification: table tests for every README shortcut, manual checklist | done | R-005 | `keyboard::tests::*`, `docs/manual-tests.md` M-004–M-016 | |
 | F-022 | T3 Runtime JS toggle (toolbar + Cmd/Ctrl+Shift+J) and `--dump-text` headless mode | done | R-008, R-004 | `args::tests::dump_text_*`, `headless_js::*`, `html::tests::set_js_runtime_mode_updates_shared_flags`, `chrome::tests::classifies_chrome_actions`, `keyboard::tests::*` | manual M-017–M-018 |
 | F-029 | Headless `--dump-text` (compatibility runner hook) | done | R-004, R-012 | `headless_js::*`, `args::tests::dump_text_*` | shares `headless::load` with screenshot |
-| F-023 | T4 Loading indicator, error page with retry, stop button | done | R-009 | `net::tests::*`, `chrome::tests::classifies_chrome_actions`, `keyboard::tests::readme_shortcut_table`, `keyboard::tests::nav_from_shortcut_maps_history`, manual M-019–M-021 | `src/net.rs` wraps top-level fetches |
+| F-023 | T4 Loading indicator, error page with retry, stop button | done | R-009 | `net::tests::*`, `app::tests::initial_iframe_load_uses_glide_net_error_page`, `chrome::tests::*`, `history::tests::stop_after_go_restores_previous_entry`, `keyboard::tests::*`, manual M-019–M-021 | Retry is the failed URL; Stop UI tracks page loads only |
 | F-024 | T5 Page-only zoom (Cmd/Ctrl +/-/0) and find in page (Cmd/Ctrl+F) | planned | R-010 | | |
 | F-025 | T6 Profile dir, settings, session restore, history file, bookmarks, in-memory cookies | planned | R-011 | | |
 | F-026 | Cookies persisted to disk | deferred | R-011 | | blitz-net builds its own reqwest client; needs a custom NetProvider |

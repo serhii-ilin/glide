@@ -47,6 +47,19 @@ impl History {
     pub fn replace_current(&mut self, url: String) {
         self.entries[self.index] = url;
     }
+
+    /// Undo a [`push`] when navigation was stopped before the page URL changed.
+    pub fn cancel_pending_entry(&mut self, displayed_url: &str) {
+        if self.current() == displayed_url {
+            return;
+        }
+        if self.index > 0 {
+            self.entries.pop();
+            self.index -= 1;
+        } else {
+            self.replace_current(displayed_url.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -119,5 +132,15 @@ mod tests {
         assert_eq!(h.back().as_deref(), Some("https://a/"));
         assert_eq!(h.forward().as_deref(), Some("https://b/"));
         assert_eq!(h.current(), "https://b/");
+    }
+
+    #[test]
+    fn stop_after_go_restores_previous_entry() {
+        let mut h = History::new("https://a/".into());
+        h.push("https://b/".into());
+        assert_eq!(h.current(), "https://b/");
+        h.cancel_pending_entry("https://a/");
+        assert_eq!(h.current(), "https://a/");
+        assert_eq!(h.entries.len(), 1);
     }
 }

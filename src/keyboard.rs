@@ -408,6 +408,11 @@ fn scroll_chrome_viewport(chrome: &mut BaseDocument, action: ScrollAction) -> bo
     true
 }
 
+/// Whether Glide should consume a Stop shortcut (Esc / toolbar) instead of forwarding it.
+pub fn consume_stop_shortcut(shortcut: BrowserShortcut, page_loading: bool) -> bool {
+    matches!(shortcut, BrowserShortcut::Stop) && page_loading
+}
+
 pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
     match shortcut {
         BrowserShortcut::Back => Some(NavCommand::Back),
@@ -748,6 +753,13 @@ mod tests {
             Some(NavCommand::ToggleJs)
         );
         assert!(nav_from_shortcut(BrowserShortcut::FocusAddressBar).is_none());
+    }
+
+    #[test]
+    fn consume_stop_only_while_page_loading() {
+        assert!(consume_stop_shortcut(BrowserShortcut::Stop, true));
+        assert!(!consume_stop_shortcut(BrowserShortcut::Stop, false));
+        assert!(!consume_stop_shortcut(BrowserShortcut::Reload, true));
     }
 
     #[test]

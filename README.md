@@ -98,7 +98,7 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 - http, https, and file pages, plus stylesheets, images, and web fonts.
 - Link clicks, in-page fragment jumps, scrolling, text selection, and form controls that Blitz implements (the address bar is one of those).
 - Back, forward, and reload. Redirects replace the current history entry. A link click pushes a new one.
-- Loading indicator, stop (Esc or the toolbar button while loading), and a readable error page when a page fails to load (with **Retry**).
+- Loading indicator, stop (Esc or the toolbar **Stop** button while a page is loading), and a readable error page when a page fails to load. **Retry** on the error page reloads the same URL.
 - System fonts through Parley.
 - Experimental page JavaScript via V8 (see above). Pass `--no-js` to turn it off.
 
@@ -106,6 +106,7 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 
 - **Full browser JavaScript.** The bootstrap is intentionally tiny; Boa in Kitesurf implements far more of the Web platform. DuckDuckGo's JS-heavy UI may still break; the HTML frontend is the default search target.
 - **Many browser features.** No multiple tabs, cookies UI, downloads, find-in-page, or extensions. Blitz's own gaps apply too: incomplete CSS, limited form controls, and no full navigation of frames other than the single page iframe Glide uses as the viewport.
+- **Stop vs. subresources.** Stopping a navigation aborts the in-flight main document load, but Blitz also aborts the previous page's subresource fetches when a new navigation starts, so images or scripts on the page you return to may stay missing until you reload.
 - **Kitesurf's Workers runtime.** No Chrome DevTools Protocol, no Dynamic Workers, no PDF export. Those live in Kitesurf's TypeScript and Wasm layers.
 
 ## Layout

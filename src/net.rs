@@ -1,12 +1,15 @@
 //! Glide network layer: error pages for failed top-level loads, loading state, and stop.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
+
 use blitz_net::{Provider, ProviderError};
 use blitz_traits::net::{
     AbortController, AbortSignal, Bytes, NetHandler, NetProvider, NetWaker, Request,
 };
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use tokio::sync::Notify;
 
 /// Tracks in-flight page and subresource loads for chrome UI and stop.
 #[derive(Default)]
@@ -14,9 +17,22 @@ pub struct LoadState {
     chrome_doc_id: AtomicUsize,
     page_in_flight: AtomicU32,
     subresource_in_flight: AtomicU32,
-    page_cancel: Mutex<Option<AbortController>>,
+    load_generation: AtomicU64,
+    page_cancel: Mutex<Option<ActivePageLoad>>,
     #[cfg(test)]
     pub(crate) test_page_delay_ms: AtomicUsize,
+}
+
+struct ActivePageLoad {
+    generation: u64,
+    controller: AbortController,
+    notify: Arc<Notify>,
+}
+
+struct PageLoadToken {
+    generation: u64,
+    glide_signal: AbortSignal,
+    notify: Arc<Notify>,
 }
 
 impl LoadState {
@@ -28,34 +44,54 @@ impl LoadState {
         self.chrome_doc_id.load(Ordering::Acquire)
     }
 
-    pub fn is_loading(&self) -> bool {
+    pub fn page_loading(&self) -> bool {
         self.page_in_flight.load(Ordering::Relaxed) > 0
-            || self.subresource_in_flight.load(Ordering::Relaxed) > 0
     }
 
     pub fn stop_page_load(&self) {
         let mut guard = lock_cancel(&self.page_cancel);
-        if let Some(controller) = guard.take() {
+        if let Some(active) = guard.as_mut() {
+            let controller = std::mem::take(&mut active.controller);
             controller.abort();
+            active.notify.notify_waiters();
         }
     }
 
-    fn page_load_started(&self) -> AbortSignal {
-        let mut guard = lock_cancel(&self.page_cancel);
-        if let Some(controller) = guard.take() {
-            controller.abort();
-        }
+    fn begin_page_load(&self) -> PageLoadToken {
+        let generation = self.load_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let notify = Arc::new(Notify::new());
         let controller = AbortController::default();
-        let signal = controller.signal.clone();
-        *guard = Some(controller);
+        let glide_signal = controller.signal.clone();
+
+        let mut guard = lock_cancel(&self.page_cancel);
+        if let Some(mut prev) = guard.take() {
+            let controller = std::mem::take(&mut prev.controller);
+            controller.abort();
+            prev.notify.notify_waiters();
+        }
+        *guard = Some(ActivePageLoad {
+            generation,
+            controller,
+            notify: notify.clone(),
+        });
         self.page_in_flight.fetch_add(1, Ordering::Relaxed);
-        signal
+
+        PageLoadToken {
+            generation,
+            glide_signal,
+            notify,
+        }
     }
 
-    fn page_load_finished(&self) {
+    fn finish_page_load(&self, generation: u64) {
         self.page_in_flight.fetch_sub(1, Ordering::Relaxed);
         let mut guard = lock_cancel(&self.page_cancel);
-        guard.take();
+        if guard
+            .as_ref()
+            .is_some_and(|active| active.generation == generation)
+        {
+            guard.take();
+        }
     }
 
     fn subresource_started(&self) {
@@ -67,7 +103,7 @@ impl LoadState {
     }
 }
 
-fn lock_cancel(m: &Mutex<Option<AbortController>>) -> MutexGuard<'_, Option<AbortController>> {
+fn lock_cancel(m: &Mutex<Option<ActivePageLoad>>) -> MutexGuard<'_, Option<ActivePageLoad>> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -87,49 +123,55 @@ impl GlideNet {
         })
     }
 
-    pub fn load_state(&self) -> &Arc<LoadState> {
-        &self.state
-    }
-
-    pub fn inner_provider(&self) -> &Arc<Provider> {
-        &self.inner
-    }
-
     fn fetch_page(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
+        if request.url.scheme() == "glide" {
+            let token = self.state.begin_page_load();
+            let state = self.state.clone();
+            let waker = self.waker.clone();
+            let load_gen = token.generation;
+            tokio::spawn(async move {
+                let _guard = PageLoadGuard {
+                    state: &state,
+                    generation: load_gen,
+                    doc_id,
+                    waker: &waker,
+                };
+                drop(handler);
+            });
+            return;
+        }
+
         let original_url = request.url.to_string();
         let blitz_abort = request.signal.clone();
-        let glide_abort = self.state.page_load_started();
+        let token = self.state.begin_page_load();
         let inner = self.inner.clone();
         let waker = self.waker.clone();
         let state = self.state.clone();
-
+        let generation = token.generation;
+        let glide_signal = token.glide_signal;
+        let cancel_notify = token.notify;
         #[cfg(test)]
         let test_delay_ms = state.test_page_delay_ms.load(Ordering::Relaxed);
+        #[cfg(not(test))]
+        let test_delay_ms = 0;
 
         tokio::spawn(async move {
-            #[cfg(test)]
-            if test_delay_ms > 0 {
-                let abort = wait_for_abort(blitz_abort.as_ref(), Some(&glide_abort));
-                tokio::pin!(abort);
-                tokio::select! {
-                    () = tokio::time::sleep(std::time::Duration::from_millis(
-                        test_delay_ms as u64,
-                    )) => {}
-                    () = &mut abort => {
-                        waker.wake(doc_id);
-                        state.page_load_finished();
-                        drop(handler);
-                        return;
-                    }
-                }
-            }
+            let _guard = PageLoadGuard {
+                state: &state,
+                generation,
+                doc_id,
+                waker: &waker,
+            };
 
-            let result =
-                fetch_racing_aborts(&inner, request, blitz_abort.as_ref(), Some(&glide_abort))
-                    .await;
-
-            waker.wake(doc_id);
-            state.page_load_finished();
+            let result = fetch_racing_aborts(
+                &inner,
+                request,
+                blitz_abort.as_ref(),
+                &glide_signal,
+                &cancel_notify,
+                test_delay_ms,
+            )
+            .await;
 
             match result {
                 Ok((url, bytes)) => handler.bytes(url, bytes),
@@ -144,6 +186,20 @@ impl GlideNet {
     }
 }
 
+struct PageLoadGuard<'a> {
+    state: &'a LoadState,
+    generation: u64,
+    doc_id: usize,
+    waker: &'a Arc<dyn NetWaker>,
+}
+
+impl Drop for PageLoadGuard<'_> {
+    fn drop(&mut self) {
+        self.state.finish_page_load(self.generation);
+        self.waker.wake(self.doc_id);
+    }
+}
+
 impl NetProvider for GlideNet {
     fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let chrome_id = self.state.chrome_doc_id();
@@ -154,9 +210,12 @@ impl NetProvider for GlideNet {
 
         self.state.subresource_started();
         let state = self.state.clone();
+        let waker = self.waker.clone();
         let wrapped = Box::new(SubresourceHandler {
             state,
             inner: Some(handler),
+            waker,
+            doc_id,
         });
         self.inner.fetch(doc_id, request, wrapped);
     }
@@ -165,12 +224,23 @@ impl NetProvider for GlideNet {
 struct SubresourceHandler {
     state: Arc<LoadState>,
     inner: Option<Box<dyn NetHandler>>,
+    waker: Arc<dyn NetWaker>,
+    doc_id: usize,
+}
+
+impl SubresourceHandler {
+    fn finish_counting(&self) {
+        self.state.subresource_finished();
+        if self.state.subresource_in_flight.load(Ordering::Relaxed) == 0 {
+            self.waker.wake(self.doc_id);
+        }
+    }
 }
 
 impl NetHandler for SubresourceHandler {
     fn bytes(mut self: Box<Self>, resolved_url: String, bytes: Bytes) {
         if self.inner.is_some() {
-            self.state.subresource_finished();
+            self.finish_counting();
         }
         if let Some(inner) = self.inner.take() {
             inner.bytes(resolved_url, bytes);
@@ -181,7 +251,7 @@ impl NetHandler for SubresourceHandler {
 impl Drop for SubresourceHandler {
     fn drop(&mut self) {
         if self.inner.is_some() {
-            self.state.subresource_finished();
+            self.finish_counting();
         }
     }
 }
@@ -190,20 +260,45 @@ async fn fetch_racing_aborts(
     provider: &Provider,
     request: Request,
     blitz: Option<&AbortSignal>,
-    glide: Option<&AbortSignal>,
+    glide_signal: &AbortSignal,
+    cancel_notify: &Notify,
+    test_delay_ms: usize,
 ) -> Result<(String, Bytes), ProviderError> {
+    let fetch_fut = page_fetch(provider, request, test_delay_ms);
+    tokio::pin!(fetch_fut);
     tokio::select! {
-        res = provider.fetch_async(request) => res,
-        () = wait_for_abort(blitz, glide) => Err(ProviderError::Abort),
+        res = &mut fetch_fut => res,
+        () = wait_for_cancel(blitz, glide_signal, cancel_notify) => Err(ProviderError::Abort),
     }
 }
 
-async fn wait_for_abort(blitz: Option<&AbortSignal>, glide: Option<&AbortSignal>) {
+async fn page_fetch(
+    provider: &Provider,
+    request: Request,
+    test_delay_ms: usize,
+) -> Result<(String, Bytes), ProviderError> {
+    if test_delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
+    }
+    provider.fetch_async(request).await
+}
+
+async fn wait_for_cancel(
+    blitz: Option<&AbortSignal>,
+    glide_signal: &AbortSignal,
+    cancel_notify: &Notify,
+) {
+    let mut interval = tokio::time::interval(Duration::from_millis(50));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        if blitz.is_some_and(AbortSignal::aborted) || glide.is_some_and(AbortSignal::aborted) {
-            return;
+        tokio::select! {
+            () = cancel_notify.notified() => return,
+            _ = interval.tick() => {
+                if blitz.is_some_and(AbortSignal::aborted) || glide_signal.aborted() {
+                    return;
+                }
+            }
         }
-        tokio::task::yield_now().await;
     }
 }
 
@@ -218,12 +313,10 @@ pub fn provider_error_reason(err: &ProviderError) -> String {
             "File not found".to_string()
         }
         ProviderError::Io(_) => "Couldn't read file".to_string(),
-        ProviderError::ReqwestError(e) if e.is_connect() || e.is_timeout() || e.is_request() => {
-            "Couldn't reach host".to_string()
-        }
         ProviderError::ReqwestError(_) => "Couldn't reach host".to_string(),
-        ProviderError::DataUrl(_) => "Invalid data URL".to_string(),
-        ProviderError::DataUrlBase64(_) => "Invalid data URL".to_string(),
+        ProviderError::DataUrl(_) | ProviderError::DataUrlBase64(_) => {
+            "Invalid data URL".to_string()
+        }
         ProviderError::Abort => "Request stopped".to_string(),
     }
 }
@@ -249,7 +342,7 @@ pub fn error_page_html(url: &str, reason: &str) -> String {
 <h1>Can&apos;t open page</h1>
 <p class="url">{url_esc}</p>
 <p>{reason_esc}</p>
-<p><a href="glide://reload" target="_top">Retry</a></p>
+<p><a href="{url_esc}">Retry</a></p>
 </body>
 </html>
 "#
@@ -270,7 +363,6 @@ mod tests {
     use std::time::Duration;
 
     use blitz_traits::net::Request;
-    use reqwest::StatusCode;
     use url::Url;
 
     use super::*;
@@ -296,14 +388,14 @@ mod tests {
         let html = error_page_html(url, reason);
         assert!(html.contains("https://evil.example/&lt;script&gt;"));
         assert!(html.contains("Oops&lt;script&gt;"));
-        assert!(html.contains("glide://reload"));
-        assert!(html.contains("Retry"));
+        assert!(html.contains(r#"<a href="https://evil.example/&lt;script&gt;">Retry</a>"#));
     }
 
     #[test]
     fn maps_http_status_to_reason() {
+        let status = blitz_traits::net::http::StatusCode::from_u16(404).expect("404");
         let err = ProviderError::HttpStatus {
-            status: StatusCode::NOT_FOUND,
+            status,
             url: "https://example.com/missing".into(),
         };
         assert_eq!(provider_error_reason(&err), "Server answered 404 Not Found");
@@ -360,7 +452,7 @@ mod tests {
         net.fetch(chrome_id, Request::get(missing), handler);
 
         for _ in 0..200 {
-            if record.lock().expect("record").is_some() && !state.is_loading() {
+            if record.lock().expect("record").is_some() && !state.page_loading() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -375,8 +467,37 @@ mod tests {
             .clone();
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("File not found"));
-        assert!(!state.is_loading());
+        assert!(!state.page_loading());
         assert!(wake_count.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn glide_scheme_page_load_delivers_nothing() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(3);
+        let net = GlideNet::new(inner, state.clone(), waker);
+
+        let record = Arc::new(StdMutex::new(None));
+        let handler = Box::new(RecordHandler {
+            done: record.clone(),
+        });
+        let url = Url::parse("glide://reload").expect("glide url");
+        net.fetch(3, Request::get(url), handler);
+
+        for _ in 0..200 {
+            if !state.page_loading() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(record.lock().expect("record").is_none());
+        assert!(!state.page_loading());
     }
 
     #[test]
@@ -436,14 +557,13 @@ mod tests {
         net.fetch(99, Request::get(missing), handler);
 
         for _ in 0..200 {
-            if !state.is_loading() {
+            if !state.page_loading() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
         assert!(record.lock().expect("record").is_none());
-        assert!(!state.is_loading());
     }
 
     #[test]
@@ -471,23 +591,70 @@ mod tests {
         );
 
         for _ in 0..100 {
-            if state.is_loading() {
+            if state.page_loading() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(state.is_loading());
+        assert!(state.page_loading());
 
         state.stop_page_load();
 
         for _ in 0..200 {
-            if !state.is_loading() {
+            if !state.page_loading() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        assert!(!state.is_loading());
+        assert!(!state.page_loading());
         assert!(record.lock().expect("record").is_none());
+    }
+
+    #[test]
+    fn finishing_old_load_keeps_new_load_cancellable() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(8);
+        state.test_page_delay_ms.store(5_000, Ordering::Relaxed);
+        let net = GlideNet::new(inner, state.clone(), waker);
+
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/input.html");
+        let req = || Request::get(file_url(path.to_str().expect("utf8")));
+
+        net.fetch(
+            8,
+            req(),
+            Box::new(RecordHandler {
+                done: Arc::new(StdMutex::new(None)),
+            }),
+        );
+        std::thread::sleep(Duration::from_millis(50));
+
+        net.fetch(
+            8,
+            req(),
+            Box::new(RecordHandler {
+                done: Arc::new(StdMutex::new(None)),
+            }),
+        );
+
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(state.page_loading());
+
+        state.stop_page_load();
+
+        for _ in 0..200 {
+            if !state.page_loading() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!state.page_loading());
     }
 }

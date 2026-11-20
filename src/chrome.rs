@@ -147,10 +147,17 @@ pub fn address_bar_focused(doc: &BaseDocument) -> bool {
     doc.get_focussed_node_id() == Some(url_id)
 }
 
+/// Whether the committed URL should be written into the address field.
+pub fn should_write_committed_address(focused: bool, written: &str, shown: &str) -> bool {
+    !focused && written != shown
+}
+
 /// Update the committed URL when the user is not editing the address bar.
-pub fn sync_committed_address(doc: &mut BaseDocument, url: &str) {
-    if !address_bar_focused(doc) {
+pub fn sync_committed_address(doc: &mut BaseDocument, url: &str, address_written: &mut String) {
+    let focused = address_bar_focused(doc);
+    if should_write_committed_address(focused, address_written, url) {
         set_address(doc, url);
+        *address_written = url.to_string();
     }
 }
 
@@ -199,7 +206,7 @@ fn escape_attr(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{NavCommand, command_from_url};
+    use super::{NavCommand, command_from_url, should_write_committed_address};
     use url::Url;
 
     #[test]
@@ -224,6 +231,25 @@ mod tests {
             command_from_url(&Url::parse("glide://toggle-js").unwrap()),
             Some(NavCommand::ToggleJs)
         );
+    }
+
+    #[test]
+    fn address_sync_skips_when_focused_writes_when_stale() {
+        assert!(!should_write_committed_address(
+            true,
+            "https://a/",
+            "https://b/"
+        ));
+        assert!(should_write_committed_address(
+            false,
+            "https://a/",
+            "https://b/"
+        ));
+        assert!(!should_write_committed_address(
+            false,
+            "https://b/",
+            "https://b/"
+        ));
     }
 
     #[test]

@@ -7,6 +7,7 @@
 mod app;
 pub mod args;
 pub mod chrome;
+pub mod find;
 pub mod headless;
 pub mod history;
 pub mod html;
@@ -18,6 +19,7 @@ pub mod net;
 pub mod parse;
 mod runtime;
 pub mod shot;
+pub mod zoom;
 
 pub use app::run_window;
 pub use runtime::tokio_runtime;

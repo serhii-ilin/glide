@@ -11,6 +11,9 @@ pub enum NavCommand {
     Reload,
     Stop,
     ToggleJs,
+    FindClose,
+    FindNext,
+    FindPrev,
     /// Raw address-bar text, not yet classified as a URL or a search.
     Go(String),
 }
@@ -23,6 +26,9 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
             Some("reload") => Some(NavCommand::Reload),
             Some("stop") => Some(NavCommand::Stop),
             Some("toggle-js") => Some(NavCommand::ToggleJs),
+            Some("find-close") => Some(NavCommand::FindClose),
+            Some("find-next") => Some(NavCommand::FindNext),
+            Some("find-prev") => Some(NavCommand::FindPrev),
             _ => None,
         };
     }
@@ -53,6 +59,9 @@ pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
 <meta charset="utf-8">
 <title>Glide</title>
 <style>
+  html {{
+    --ui: 1;
+  }}
   html, body {{
     margin: 0;
     height: 100%;
@@ -64,27 +73,38 @@ pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
     display: flex;
     flex-direction: column;
   }}
-  nav {{
+  nav#toolbar {{
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 10px;
+    gap: calc(6px * var(--ui));
+    padding: calc(8px * var(--ui)) calc(10px * var(--ui));
     background: #f7f4ee;
-    border-bottom: 1px solid #e4ddd0;
+    border-bottom: calc(1px * var(--ui)) solid #e4ddd0;
+    flex: none;
   }}
   a.btn {{
-    min-width: 32px;
-    height: 32px;
-    padding: 0 8px;
+    min-width: calc(32px * var(--ui));
+    height: calc(32px * var(--ui));
+    padding: 0 calc(8px * var(--ui));
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 8px;
+    border-radius: calc(8px * var(--ui));
     background: #fff;
-    border: 1px solid #e4ddd0;
+    border: calc(1px * var(--ui)) solid #e4ddd0;
     color: #1c1915;
     text-decoration: none;
-    font-size: 16px;
+    font-size: calc(16px * var(--ui));
+  }}
+  #zoom-label {{
+    min-width: calc(44px * var(--ui));
+    text-align: center;
+    font-size: calc(12px * var(--ui));
+    color: #6b6358;
+    display: none;
+  }}
+  #zoom-label.visible {{
+    display: block;
   }}
   form {{
     flex: 1;
@@ -93,13 +113,35 @@ pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
   }}
   input {{
     width: 100%;
-    height: 32px;
-    border: 1px solid #e4ddd0;
+    height: calc(32px * var(--ui));
+    border: calc(1px * var(--ui)) solid #e4ddd0;
     border-radius: 999px;
-    padding: 0 14px;
+    padding: 0 calc(14px * var(--ui));
     background: #fff;
     color: #1c1915;
-    font-size: 14px;
+    font-size: calc(14px * var(--ui));
+  }}
+  #find-bar {{
+    display: none;
+    align-items: center;
+    gap: calc(6px * var(--ui));
+    padding: calc(6px * var(--ui)) calc(10px * var(--ui));
+    background: #faf7f0;
+    border-bottom: calc(1px * var(--ui)) solid #e4ddd0;
+    flex: none;
+  }}
+  #find-bar.open {{
+    display: flex;
+  }}
+  #find-input {{
+    flex: 1;
+    width: auto;
+  }}
+  #find-count {{
+    font-size: calc(12px * var(--ui));
+    color: #6b6358;
+    min-width: calc(72px * var(--ui));
+    text-align: center;
   }}
   iframe {{
     flex: 1;
@@ -109,7 +151,7 @@ pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
     min-height: 0;
   }}
   #loading {{
-    height: 2px;
+    height: calc(2px * var(--ui));
     background: #3b82f6;
     flex: none;
     display: none;
@@ -120,15 +162,23 @@ pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
 </style>
 </head>
 <body>
-  <nav>
+  <nav id="toolbar">
     <a class="btn" href="glide://back" title="Back">&#8592;</a>
     <a class="btn" href="glide://forward" title="Forward">&#8594;</a>
     <a id="reload" class="btn" href="glide://reload" title="Reload">&#8635;</a>
     <a id="js-toggle" class="btn" href="glide://toggle-js" title="Toggle JavaScript">{js_label}</a>
+    <span id="zoom-label"></span>
     <form action="https://glide.invalid/go" method="get">
       <input id="url" name="q" type="text" value="{url}" spellcheck="false" autocomplete="off">
     </form>
   </nav>
+  <div id="find-bar">
+    <input id="find-input" type="text" spellcheck="false" autocomplete="off" placeholder="Find in page">
+    <span id="find-count"></span>
+    <a class="btn" href="glide://find-prev" title="Previous match">&#8593;</a>
+    <a class="btn" href="glide://find-next" title="Next match">&#8595;</a>
+    <a class="btn" href="glide://find-close" title="Close find">&#10005;</a>
+  </div>
   <div id="loading"></div>
   <iframe id="page" src="{url}"></iframe>
 </body>
@@ -137,7 +187,7 @@ pub fn chrome_document(start_url: &str, js_enabled: bool) -> String {
     )
 }
 
-use blitz_dom::{BaseDocument, qual_name};
+use blitz_dom::{BaseDocument, local_name, qual_name};
 
 /// Whether the address bar currently has keyboard focus.
 pub fn address_bar_focused(doc: &BaseDocument) -> bool {
@@ -197,6 +247,89 @@ pub fn set_loading_ui(doc: &mut BaseDocument, loading: bool) {
     }
 }
 
+pub fn find_bar_open(doc: &BaseDocument) -> bool {
+    doc.get_element_by_id("find-bar").is_some_and(|id| {
+        doc.get_node(id)
+            .and_then(|n| n.attr(local_name!("class")))
+            .is_some_and(|c| c.split_whitespace().any(|part| part == "open"))
+    })
+}
+
+pub fn find_input_focused(doc: &BaseDocument) -> bool {
+    let Some(id) = doc.get_element_by_id("find-input") else {
+        return false;
+    };
+    doc.get_focussed_node_id() == Some(id)
+}
+
+pub fn find_input_value(doc: &BaseDocument) -> Option<String> {
+    let id = doc.get_element_by_id("find-input")?;
+    let input = doc.get_node(id)?.element_data()?.text_input_data()?;
+    Some(input.editor.text().to_string())
+}
+
+pub fn set_find_bar_open(doc: &mut BaseDocument, open: bool) {
+    let Some(id) = doc.get_element_by_id("find-bar") else {
+        return;
+    };
+    let class = if open { "open" } else { "" };
+    doc.mutate().set_attribute(id, qual_name!("class"), class);
+}
+
+pub fn focus_find_input(doc: &mut BaseDocument) {
+    if let Some(id) = doc.get_element_by_id("find-input") {
+        doc.set_focus_to(id);
+    }
+}
+
+pub fn set_find_count(doc: &mut BaseDocument, current: usize, total: usize) {
+    let Some(id) = doc.get_element_by_id("find-count") else {
+        return;
+    };
+    let text = if total == 0 {
+        String::new()
+    } else {
+        format!("{current} of {total}")
+    };
+    let mut m = doc.mutate();
+    let children: Vec<_> = m.child_ids(id).into_iter().collect();
+    for child in children {
+        m.remove_and_drop_node(child);
+    }
+    let text_id = m.create_text_node(&text);
+    m.append_children(id, &[text_id]);
+}
+
+pub fn set_zoom_label(doc: &mut BaseDocument, label: Option<&str>) {
+    let Some(id) = doc.get_element_by_id("zoom-label") else {
+        return;
+    };
+    let mut m = doc.mutate();
+    let class = if label.is_some() { "visible" } else { "" };
+    m.set_attribute(id, qual_name!("class"), class);
+    let children: Vec<_> = m.child_ids(id).into_iter().collect();
+    for child in children {
+        m.remove_and_drop_node(child);
+    }
+    if let Some(label) = label {
+        let text_id = m.create_text_node(label);
+        m.append_children(id, &[text_id]);
+    }
+}
+
+pub fn set_ui_scale(doc: &mut BaseDocument, ui: f32) {
+    let root = doc.root_element().id;
+    let style = format!("--ui: {ui}");
+    doc.mutate()
+        .set_attribute(root, qual_name!("style"), &style);
+}
+
+pub fn toolbar_layout_height(doc: &BaseDocument) -> Option<f32> {
+    doc.get_element_by_id("toolbar")
+        .and_then(|id| doc.get_node(id))
+        .map(|n| n.final_layout().size.height)
+}
+
 fn escape_attr(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -206,8 +339,19 @@ fn escape_attr(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{NavCommand, command_from_url, should_write_committed_address};
+    use std::sync::Arc;
+
+    use super::{
+        NavCommand, command_from_url, set_ui_scale, should_write_committed_address,
+        toolbar_layout_height,
+    };
+    use blitz_dom::DocumentConfig;
+    use blitz_traits::shell::{ColorScheme, Viewport};
     use url::Url;
+
+    use crate::chrome::chrome_document;
+    use crate::html::GlideHtmlProvider;
+    use crate::parse;
 
     #[test]
     fn classifies_chrome_actions() {
@@ -258,6 +402,34 @@ mod tests {
         assert_eq!(
             command_from_url(&url),
             Some(NavCommand::Go("example.com".into()))
+        );
+    }
+
+    #[test]
+    fn toolbar_height_stable_across_page_zoom() {
+        let html = chrome_document("about:blank", true);
+        let config = DocumentConfig {
+            viewport: Some(Viewport::new(1100, 760, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(GlideHtmlProvider::default())),
+            ..DocumentConfig::default()
+        };
+        let mut doc = parse::document_from_html(&html, config, false);
+        doc.resolve(0.0);
+        let zoom_at_100 = doc.viewport().zoom();
+        let visual_h100 =
+            toolbar_layout_height(&doc).expect("toolbar height at 100%") * zoom_at_100;
+        {
+            let mut vp = doc.viewport_mut();
+            vp.set_zoom(2.0);
+        }
+        set_ui_scale(&mut doc, 0.5);
+        doc.resolve(0.0);
+        let zoom_at_200 = doc.viewport().zoom();
+        let visual_h200 =
+            toolbar_layout_height(&doc).expect("toolbar height at 200% zoom") * zoom_at_200;
+        assert!(
+            (visual_h100 - visual_h200).abs() < 2.0,
+            "toolbar visual height should stay stable: {visual_h100} vs {visual_h200}"
         );
     }
 }

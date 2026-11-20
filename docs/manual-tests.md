@@ -27,3 +27,7 @@ Each row names the feature it covers.
 | M-019 | F-023 | Open `https://nonexistent.invalid` | Error page shows the URL, a reason, and **Retry**; **Retry** requests the same URL again (no `glide://` navigation) |
 | M-020 | F-023 | Open a slow `https://` page (or throttle locally) | Blue loading bar and **Stop** show only during the main document load; both clear when the load finishes |
 | M-021 | F-023 | With a slow load in progress, press Esc or click Stop (■) | Load stops; previous page stays visible; history and address bar match the displayed page |
+| M-022 | F-024 | Open a long local page (`tests/fixtures/find.html`). Press Cmd/Ctrl+= several times, then Cmd/Ctrl+-, then Cmd/Ctrl+0 | Page zooms in 10% steps between 30% and 300%; reset returns to 100%; toolbar stays the same visual size |
+| M-023 | F-024 | Press Cmd/Ctrl+F, type `alpha` | Find bar opens with focus; matches highlight and scroll into view; count shows `n of m` |
+| M-024 | F-024 | With find open, press Enter and Cmd/Ctrl+G, then Shift+Enter and Cmd/Ctrl+Shift+G | Selection moves to next/previous match and wraps around |
+| M-025 | F-024 | With find open, press Esc | Find bar closes and page selection clears |

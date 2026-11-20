@@ -21,13 +21,15 @@ use crate::chrome::{
     NavCommand, chrome_document, command_from_url, set_address, set_loading_ui,
     sync_committed_address,
 };
+use crate::find::FindSession;
 use crate::html::{GlideHtmlProvider, HtmlPageDocument, set_js_runtime_mode};
 use crate::js::{JsHost, JsTap};
 use crate::keyboard;
 use crate::location::resolve_location;
-use crate::nav::{NavKind, NavTracker};
+use crate::nav::{NavKind, NavTracker, ObserveEffect};
 use crate::net::{GlideNet, LoadState};
 use crate::parse;
+use crate::zoom::PageZoom;
 
 const CHROME_BASE: &str = "https://glide.invalid/chrome";
 
@@ -125,6 +127,8 @@ struct Glide {
     load_state: Arc<LoadState>,
     chrome_loading: bool,
     address_written: String,
+    zoom: PageZoom,
+    find: FindSession,
 }
 
 fn build_chrome_page_document(
@@ -161,6 +165,8 @@ impl Glide {
             load_state,
             chrome_loading: false,
             address_written: start,
+            zoom: PageZoom::new(),
+            find: FindSession::default(),
         }
     }
 
@@ -175,6 +181,9 @@ impl Glide {
                 changed = true;
                 match command {
                     NavCommand::Back => {
+                        if self.find.open {
+                            self.find.close_bar(&mut doc);
+                        }
                         if let Some(url) = self.nav.navigate(NavKind::Back, None) {
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
@@ -183,6 +192,9 @@ impl Glide {
                         }
                     }
                     NavCommand::Forward => {
+                        if self.find.open {
+                            self.find.close_bar(&mut doc);
+                        }
                         if let Some(url) = self.nav.navigate(NavKind::Forward, None) {
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
@@ -191,6 +203,9 @@ impl Glide {
                         }
                     }
                     NavCommand::Reload => {
+                        if self.find.open {
+                            self.find.close_bar(&mut doc);
+                        }
                         if let Some(url) = self.nav.navigate(NavKind::Reload, None) {
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
@@ -207,6 +222,9 @@ impl Glide {
                         }
                     }
                     NavCommand::ToggleJs => {
+                        if self.find.open {
+                            self.find.close_bar(&mut doc);
+                        }
                         let new = !self.html_provider.scripting_enabled.load(Ordering::Relaxed);
                         set_js_runtime_mode(&self.html_provider, &mut self.js, &doc, new);
                         if let Some(url) = self.nav.navigate(NavKind::Reload, None) {
@@ -215,6 +233,9 @@ impl Glide {
                         }
                     }
                     NavCommand::Go(raw) => {
+                        if self.find.open {
+                            self.find.close_bar(&mut doc);
+                        }
                         let url = resolve_location(&raw);
                         self.js.on_navigation(&doc, &url);
                         load_iframe(&mut doc, &url);
@@ -223,17 +244,42 @@ impl Glide {
                             self.address_written = self.nav.shown().to_string();
                         }
                     }
+                    NavCommand::FindClose => {
+                        self.find.close_bar(&mut doc);
+                        changed = true;
+                    }
+                    NavCommand::FindNext => {
+                        self.find.step(&mut doc, true);
+                        changed = true;
+                    }
+                    NavCommand::FindPrev => {
+                        self.find.step(&mut doc, false);
+                        changed = true;
+                    }
                 }
             }
 
+            self.find.sync_from_input(&mut doc);
+
             if let Some(actual) = page_url(&doc) {
-                let _ = self.nav.observe(&actual);
+                let effect = self.nav.observe(&actual);
+                if matches!(
+                    effect,
+                    ObserveEffect::LinkNavigation | ObserveEffect::Redirect
+                ) && self.find.open
+                {
+                    self.find.close_bar(&mut doc);
+                }
             }
             sync_committed_address(&mut doc, self.nav.shown(), &mut self.address_written);
             let loading = self.load_state.page_loading();
             if loading != self.chrome_loading {
+                let was_loading = self.chrome_loading;
                 self.chrome_loading = loading;
                 set_loading_ui(&mut doc, loading);
+                if was_loading && !loading {
+                    self.find.rerun_search_after_load(&mut doc);
+                }
                 changed = true;
             }
             if let Some(title) = page_title(&doc) {
@@ -284,11 +330,37 @@ impl Glide {
         let Some(shortcut) = keyboard::try_browser_shortcut(view, event) else {
             return false;
         };
+        self.apply_browser_shortcut(event_loop, window_id, shortcut)
+    }
+
+    fn handle_browser_shortcut_value(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        shortcut: keyboard::BrowserShortcut,
+    ) {
+        if self.apply_browser_shortcut(event_loop, window_id, shortcut) {
+            self.inner
+                .proxy
+                .send_event(BlitzShellEvent::Poll { window_id });
+            self.sync();
+        }
+    }
+
+    fn apply_browser_shortcut(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        shortcut: keyboard::BrowserShortcut,
+    ) -> bool {
         if !keyboard::consume_stop_shortcut(&shortcut, self.load_state.page_loading())
             && matches!(shortcut, keyboard::BrowserShortcut::Stop)
         {
             return false;
         }
+        let Some(view) = self.inner.windows.get_mut(&window_id) else {
+            return false;
+        };
 
         match shortcut {
             keyboard::BrowserShortcut::FocusAddressBar => {
@@ -312,6 +384,65 @@ impl Glide {
             }
             keyboard::BrowserShortcut::Scroll(action) => {
                 keyboard::scroll_page(view, action);
+                view.request_redraw();
+                true
+            }
+            keyboard::BrowserShortcut::ZoomIn => {
+                self.zoom.zoom_in();
+                {
+                    let mut chrome = view.doc.inner_mut();
+                    self.zoom.apply_to_chrome(&mut chrome);
+                }
+                view.request_redraw();
+                true
+            }
+            keyboard::BrowserShortcut::ZoomOut => {
+                self.zoom.zoom_out();
+                {
+                    let mut chrome = view.doc.inner_mut();
+                    self.zoom.apply_to_chrome(&mut chrome);
+                }
+                view.request_redraw();
+                true
+            }
+            keyboard::BrowserShortcut::ZoomReset => {
+                self.zoom.reset();
+                {
+                    let mut chrome = view.doc.inner_mut();
+                    self.zoom.apply_to_chrome(&mut chrome);
+                }
+                view.request_redraw();
+                true
+            }
+            keyboard::BrowserShortcut::Find => {
+                {
+                    let mut chrome = view.doc.inner_mut();
+                    self.find.open_bar(&mut chrome);
+                }
+                view.request_redraw();
+                true
+            }
+            keyboard::BrowserShortcut::FindClose => {
+                {
+                    let mut chrome = view.doc.inner_mut();
+                    self.find.close_bar(&mut chrome);
+                }
+                view.request_redraw();
+                true
+            }
+            keyboard::BrowserShortcut::FindNext => {
+                {
+                    let mut chrome = view.doc.inner_mut();
+                    self.find.step(&mut chrome, true);
+                }
+                view.request_redraw();
+                true
+            }
+            keyboard::BrowserShortcut::FindPrev => {
+                {
+                    let mut chrome = view.doc.inner_mut();
+                    self.find.step(&mut chrome, false);
+                }
                 view.request_redraw();
                 true
             }
@@ -394,6 +525,21 @@ impl ApplicationHandler for Glide {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && let Some(view) = self.inner.windows.get_mut(&window_id)
+        {
+            let find_open = crate::chrome::find_bar_open(&view.doc.inner());
+            let mods = view.keyboard_modifiers.state();
+            let mut chrome = view.doc.inner_mut();
+            if let Some(shortcut) =
+                keyboard::dispatch_find_field_keys(&mut chrome, event, mods, find_open)
+            {
+                drop(chrome);
+                self.handle_browser_shortcut_value(event_loop, window_id, shortcut);
+                return;
+            }
+        }
+
         if self.handle_browser_shortcut(event_loop, window_id, &event) {
             self.inner
                 .proxy

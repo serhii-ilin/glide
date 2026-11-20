@@ -16,6 +16,8 @@ src/chrome.rs     chrome markup (HTML) and navigation commands
 src/net.rs        loading state, stop, and error pages for failed loads
 src/nav.rs        navigation pending vs. iframe URL observations
 src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
+src/find.rs       find-in-page text search and chrome find UI state
+src/zoom.rs       page zoom level and chrome toolbar counter-scale
 src/js/           V8 worker thread, DOM RPC, script loading
 src/parse.rs      html5ever with configurable scripting flag
 src/location.rs   URL vs. search

@@ -30,6 +30,13 @@ pub enum BrowserShortcut {
     FocusAddressBar,
     CloseWindow,
     Quit,
+    Find,
+    FindClose,
+    FindNext,
+    FindPrev,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
     Scroll(ScrollAction),
 }
 
@@ -51,12 +58,25 @@ pub fn browser_shortcut(
     code: KeyCode,
     modifiers: ModifiersState,
     text_input_focused: bool,
+    find_bar_open: bool,
 ) -> Option<BrowserShortcut> {
     let primary = modifiers.control_key() || modifiers.meta_key();
     let alt = modifiers.alt_key();
     let shift = modifiers.shift_key();
 
     match code {
+        KeyCode::Equal if primary => return Some(BrowserShortcut::ZoomIn),
+        KeyCode::NumpadAdd if primary => return Some(BrowserShortcut::ZoomIn),
+        KeyCode::Minus if primary => return Some(BrowserShortcut::ZoomOut),
+        KeyCode::NumpadSubtract if primary => return Some(BrowserShortcut::ZoomOut),
+        KeyCode::Digit0 if primary => return Some(BrowserShortcut::ZoomReset),
+        KeyCode::KeyF if primary && !shift => return Some(BrowserShortcut::Find),
+        KeyCode::KeyG if primary && find_bar_open => {
+            if shift {
+                return Some(BrowserShortcut::FindPrev);
+            }
+            return Some(BrowserShortcut::FindNext);
+        }
         KeyCode::KeyL if primary && !shift => return Some(BrowserShortcut::FocusAddressBar),
         KeyCode::KeyR if primary && !shift => return Some(BrowserShortcut::Reload),
         KeyCode::KeyW if primary && !shift => return Some(BrowserShortcut::CloseWindow),
@@ -269,7 +289,7 @@ pub(crate) fn forward_page_iframe_key(
         return Some(false);
     };
     let pressed = event.state.is_pressed();
-    if pressed && browser_shortcut(code, modifiers, false).is_some() {
+    if pressed && browser_shortcut(code, modifiers, false, false).is_some() {
         return Some(false);
     }
     let page_id = page_iframe_id(chrome).expect("page iframe is focused");
@@ -420,9 +440,16 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         BrowserShortcut::Reload => Some(NavCommand::Reload),
         BrowserShortcut::Stop => Some(NavCommand::Stop),
         BrowserShortcut::ToggleJs => Some(NavCommand::ToggleJs),
-        BrowserShortcut::FocusAddressBar | BrowserShortcut::CloseWindow | BrowserShortcut::Quit => {
-            None
-        }
+        BrowserShortcut::FocusAddressBar
+        | BrowserShortcut::CloseWindow
+        | BrowserShortcut::Quit
+        | BrowserShortcut::Find
+        | BrowserShortcut::FindClose
+        | BrowserShortcut::FindNext
+        | BrowserShortcut::FindPrev
+        | BrowserShortcut::ZoomIn
+        | BrowserShortcut::ZoomOut
+        | BrowserShortcut::ZoomReset => None,
         BrowserShortcut::Scroll(_) => None,
     }
 }
@@ -442,7 +469,43 @@ pub fn try_browser_shortcut(
     };
     let chrome = view.doc.inner();
     let text_focused = text_input_focused(&chrome);
-    browser_shortcut(code, view.keyboard_modifiers.state(), text_focused)
+    let find_open = crate::chrome::find_bar_open(&chrome);
+    browser_shortcut(
+        code,
+        view.keyboard_modifiers.state(),
+        text_focused,
+        find_open,
+    )
+}
+
+/// Find-field keys (Enter, Shift+Enter, Esc) before Blitz handles them.
+pub fn dispatch_find_field_keys(
+    chrome: &mut BaseDocument,
+    event: &KeyEvent,
+    modifiers: ModifiersState,
+    find_open: bool,
+) -> Option<BrowserShortcut> {
+    if !find_open || !event.state.is_pressed() {
+        return None;
+    }
+    if !crate::chrome::find_input_focused(chrome) {
+        return None;
+    }
+    let PhysicalKey::Code(code) = event.physical_key else {
+        return None;
+    };
+    match code {
+        KeyCode::Enter | KeyCode::NumpadEnter => {
+            let shift = modifiers.shift_key();
+            if shift {
+                Some(BrowserShortcut::FindPrev)
+            } else {
+                Some(BrowserShortcut::FindNext)
+            }
+        }
+        KeyCode::Escape => Some(BrowserShortcut::FindClose),
+        _ => None,
+    }
 }
 
 /// Focus the chrome address field (`#url`).
@@ -496,6 +559,7 @@ mod tests {
         code: KeyCode,
         modifiers: ModifiersState,
         text_focused: bool,
+        find_bar_open: bool,
         expected: Option<BrowserShortcut>,
     }
 
@@ -504,6 +568,7 @@ mod tests {
         code: KeyCode,
         modifiers: ModifiersState,
         text_focused: bool,
+        find_bar_open: bool,
         expected: Option<BrowserShortcut>,
     ) -> ShortcutCase {
         ShortcutCase {
@@ -511,6 +576,7 @@ mod tests {
             code,
             modifiers,
             text_focused,
+            find_bar_open,
             expected,
         }
     }
@@ -523,15 +589,76 @@ mod tests {
         expected_focused: Option<BrowserShortcut>,
     ) -> [ShortcutCase; 2] {
         [
-            case(row, code, modifiers, false, expected_unfocused),
+            case(row, code, modifiers, false, false, expected_unfocused),
             case(
                 format!("{row} (text focused)"),
                 code,
                 modifiers,
                 true,
+                false,
                 expected_focused,
             ),
         ]
+    }
+
+    fn zoom_cases() -> Vec<ShortcutCase> {
+        let mut out = Vec::new();
+        for (prim, tag) in ctrl_meta_mods() {
+            let shift = prim | ModifiersState::SHIFT;
+            for (row, code, modifiers, expected) in [
+                (
+                    format!("{tag}+= zoom in"),
+                    KeyCode::Equal,
+                    prim,
+                    BrowserShortcut::ZoomIn,
+                ),
+                (
+                    format!("{tag}+Shift+= zoom in (plus)"),
+                    KeyCode::Equal,
+                    shift,
+                    BrowserShortcut::ZoomIn,
+                ),
+                (
+                    format!("{tag}+- zoom out"),
+                    KeyCode::Minus,
+                    prim,
+                    BrowserShortcut::ZoomOut,
+                ),
+                (
+                    format!("{tag}+Shift+- zoom out"),
+                    KeyCode::Minus,
+                    shift,
+                    BrowserShortcut::ZoomOut,
+                ),
+                (
+                    format!("{tag}+0 zoom reset"),
+                    KeyCode::Digit0,
+                    prim,
+                    BrowserShortcut::ZoomReset,
+                ),
+                (
+                    format!("{tag}+Shift+0 zoom reset"),
+                    KeyCode::Digit0,
+                    shift,
+                    BrowserShortcut::ZoomReset,
+                ),
+                (
+                    format!("{tag}+NumpadAdd zoom in"),
+                    KeyCode::NumpadAdd,
+                    prim,
+                    BrowserShortcut::ZoomIn,
+                ),
+                (
+                    format!("{tag}+NumpadSubtract zoom out"),
+                    KeyCode::NumpadSubtract,
+                    prim,
+                    BrowserShortcut::ZoomOut,
+                ),
+            ] {
+                out.push(case(row, code, modifiers, false, false, Some(expected)));
+            }
+        }
+        out
     }
 
     fn readme_shortcut_cases() -> Vec<ShortcutCase> {
@@ -540,6 +667,32 @@ mod tests {
         let none = ModifiersState::empty();
         let mut cases = Vec::new();
 
+        for (prim, tag) in ctrl_meta_mods() {
+            cases.extend(both(
+                &format!("{tag}+F find"),
+                KeyCode::KeyF,
+                prim,
+                Some(BrowserShortcut::Find),
+                Some(BrowserShortcut::Find),
+            ));
+            cases.push(case(
+                format!("{tag}+G find next (bar open)"),
+                KeyCode::KeyG,
+                prim,
+                false,
+                true,
+                Some(BrowserShortcut::FindNext),
+            ));
+            cases.push(case(
+                format!("{tag}+Shift+G find prev (bar open)"),
+                KeyCode::KeyG,
+                prim | ModifiersState::SHIFT,
+                false,
+                true,
+                Some(BrowserShortcut::FindPrev),
+            ));
+        }
+        cases.extend(zoom_cases());
         cases.extend(both(
             "Enter (not a browser shortcut)",
             KeyCode::Enter,
@@ -624,6 +777,7 @@ mod tests {
                 KeyCode::KeyR,
                 prim | ModifiersState::SHIFT,
                 false,
+                false,
                 None,
             ));
             for (suffix, code) in [
@@ -632,7 +786,14 @@ mod tests {
                 ("X not intercepted", KeyCode::KeyX),
                 ("A not intercepted", KeyCode::KeyA),
             ] {
-                cases.push(case(format!("{tag}+{suffix}"), code, prim, true, None));
+                cases.push(case(
+                    format!("{tag}+{suffix}"),
+                    code,
+                    prim,
+                    true,
+                    false,
+                    None,
+                ));
             }
         }
 
@@ -654,6 +815,7 @@ mod tests {
             "plain letter not intercepted",
             KeyCode::KeyA,
             none,
+            false,
             false,
             None,
         ));
@@ -709,12 +871,13 @@ mod tests {
             ),
         ];
         for (row, code, modifiers, expected) in scroll_cases {
-            cases.push(case(row, code, modifiers, false, Some(expected)));
+            cases.push(case(row, code, modifiers, false, false, Some(expected)));
             cases.push(case(
                 format!("{row} (text focused)"),
                 code,
                 modifiers,
                 true,
+                false,
                 None,
             ));
         }
@@ -725,7 +888,12 @@ mod tests {
     #[test]
     fn readme_shortcut_table() {
         for case in readme_shortcut_cases() {
-            let got = browser_shortcut(case.code, case.modifiers, case.text_focused);
+            let got = browser_shortcut(
+                case.code,
+                case.modifiers,
+                case.text_focused,
+                case.find_bar_open,
+            );
             assert_eq!(
                 got, case.expected,
                 "README shortcut row failed: {}",
@@ -1162,6 +1330,65 @@ mod tests {
         assert_eq!(
             forward_page_iframe_key(&mut doc, &event, ModifiersState::empty()),
             None
+        );
+    }
+
+    fn chrome_with_find_focused() -> BaseDocument {
+        let html = chrome_document("about:blank", true);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        layout_doc(&mut doc);
+        crate::chrome::set_find_bar_open(&mut doc, true);
+        crate::chrome::focus_find_input(&mut doc);
+        doc
+    }
+
+    #[test]
+    fn dispatch_find_field_keys_enter_and_shift_enter() {
+        let mut doc = chrome_with_find_focused();
+        let enter = test_key_event(
+            KeyCode::Enter,
+            ElementState::Pressed,
+            WinitKey::Named(winit::keyboard::NamedKey::Enter),
+        );
+        assert_eq!(
+            dispatch_find_field_keys(&mut doc, &enter, ModifiersState::empty(), true),
+            Some(BrowserShortcut::FindNext)
+        );
+        let shift = mods(false, false, true, false);
+        assert_eq!(
+            dispatch_find_field_keys(&mut doc, &enter, shift, true),
+            Some(BrowserShortcut::FindPrev)
+        );
+    }
+
+    #[test]
+    fn dispatch_find_field_keys_esc_closes_find() {
+        let mut doc = chrome_with_find_focused();
+        let esc = test_key_event(
+            KeyCode::Escape,
+            ElementState::Pressed,
+            WinitKey::Named(winit::keyboard::NamedKey::Escape),
+        );
+        assert_eq!(
+            dispatch_find_field_keys(&mut doc, &esc, ModifiersState::empty(), true),
+            Some(BrowserShortcut::FindClose)
+        );
+        assert!(
+            browser_shortcut(KeyCode::Escape, ModifiersState::empty(), true, true).is_none(),
+            "Esc in find field must not become Stop"
+        );
+    }
+
+    #[test]
+    fn dispatch_find_field_keys_ignores_closed_bar() {
+        let mut doc = chrome_with_find_focused();
+        let enter = test_key_event(
+            KeyCode::Enter,
+            ElementState::Pressed,
+            WinitKey::Named(winit::keyboard::NamedKey::Enter),
+        );
+        assert!(
+            dispatch_find_field_keys(&mut doc, &enter, ModifiersState::empty(), false).is_none()
         );
     }
 }

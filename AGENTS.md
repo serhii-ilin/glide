@@ -13,6 +13,7 @@ src/app.rs        window, history sync, keyboard shortcuts, JS pump
 src/history.rs    back/forward stack
 src/args.rs       CLI parsing
 src/chrome.rs     chrome markup (HTML) and navigation commands
+src/net.rs        loading state, stop, and error pages for failed loads
 src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
 src/js/           V8 worker thread, DOM RPC, script loading
 src/parse.rs      html5ever with configurable scripting flag

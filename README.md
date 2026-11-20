@@ -24,6 +24,7 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Alt+Left / Alt+Right (Option on macOS) | Back / forward |
 | Cmd/Ctrl+[ / Cmd/Ctrl+] | Back / forward |
 | Ctrl+R or F5 (Cmd+R on macOS) | Reload |
+| Esc (when no text field is focused) | Stop the in-flight page load |
 | Cmd/Ctrl+Shift+J | Turn page JavaScript on or off (reloads the page) |
 | Ctrl+L or Cmd+L | Focus the address bar |
 | Cmd/Ctrl+W | Close the window |
@@ -97,6 +98,7 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 - http, https, and file pages, plus stylesheets, images, and web fonts.
 - Link clicks, in-page fragment jumps, scrolling, text selection, and form controls that Blitz implements (the address bar is one of those).
 - Back, forward, and reload. Redirects replace the current history entry. A link click pushes a new one.
+- Loading indicator, stop (Esc or the toolbar button while loading), and a readable error page when a page fails to load (with **Retry**).
 - System fonts through Parley.
 - Experimental page JavaScript via V8 (see above). Pass `--no-js` to turn it off.
 
@@ -117,6 +119,7 @@ src/app.rs        window, history sync, keyboard shortcuts, JS pump
 src/history.rs    back/forward stack
 src/args.rs       CLI parsing
 src/chrome.rs     chrome markup and navigation commands
+src/net.rs        loading state, stop, and error pages for failed loads
 src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
 src/js/           V8 worker, DOM RPC, script loading
 src/parse.rs      html5ever with configurable scripting flag

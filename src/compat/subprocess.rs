@@ -8,6 +8,21 @@ pub enum RunFailureKind {
     Hang,
 }
 
+/// First `Uncaught …` JavaScript error line from headless `glide` stderr, if any.
+pub fn first_uncaught_js_error(stderr: &str) -> Option<String> {
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        let Some(idx) = trimmed.find("Uncaught ") else {
+            continue;
+        };
+        let msg = trimmed[idx + "Uncaught ".len()..].trim();
+        if !msg.is_empty() {
+            return Some(msg.to_string());
+        }
+    }
+    None
+}
+
 /// Classify a completed or timed-out subprocess run.
 pub fn classify_run(
     timed_out: bool,
@@ -61,5 +76,14 @@ mod tests {
     #[test]
     fn success_is_none() {
         assert_eq!(classify_run(false, Some(0), ""), None);
+    }
+
+    #[test]
+    fn first_uncaught_from_glide_stderr() {
+        let err = "script run failed in script-0\n\n<unknown>:1: Uncaught ReferenceError: self is not defined\n";
+        assert_eq!(
+            first_uncaught_js_error(err),
+            Some("ReferenceError: self is not defined".into())
+        );
     }
 }

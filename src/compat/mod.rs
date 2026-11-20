@@ -12,4 +12,4 @@ pub use parse::{
 pub use png::{
     MAX_DIFF_FRACTION, decode_png, diff_pixels, png_diff_fraction, reftest_images_match,
 };
-pub use subprocess::{RunFailureKind, classify_run};
+pub use subprocess::{RunFailureKind, classify_run, first_uncaught_js_error};

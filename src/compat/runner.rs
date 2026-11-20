@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::parse::{ReftestKind, parse_acid3_score, parse_reftest_link, parse_testharness_json};
 use super::png::{MAX_DIFF_FRACTION, reftest_images_match};
-use super::subprocess::{RunFailureKind, classify_run};
+use super::subprocess::{RunFailureKind, classify_run, first_uncaught_js_error};
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const STDERR_TAIL: usize = 2048;
@@ -162,7 +162,7 @@ fn run_acid1(cfg: &RunnerConfig) -> Result<TestResult, String> {
             "reftest",
             "unreachable",
             None,
-            Some(reason),
+            Some(acid1_unreachable_reason(&reason)),
             None,
         ));
     }
@@ -285,10 +285,19 @@ fn run_acid3(cfg: &RunnerConfig) -> Result<Vec<TestResult>, String> {
             continue;
         }
         let score = parse_acid3_score(&run.stdout);
-        let status = if no_js || score.is_some() {
-            "pass"
+        let (status, reason) = if no_js {
+            (
+                "info",
+                Some(match score {
+                    Some(s) => format!("no-JS baseline (parsed score {s}/100)"),
+                    None => "no-JS baseline (score not parsed)".into(),
+                }),
+            )
+        } else if score.is_some() {
+            ("pass", None)
         } else {
-            "fail"
+            let msg = acid3_score_failure_reason(&run);
+            ("fail", Some(msg))
         };
         out.push(TestResult {
             suite: "acid".into(),
@@ -296,11 +305,7 @@ fn run_acid3(cfg: &RunnerConfig) -> Result<Vec<TestResult>, String> {
             kind: "score".into(),
             status: status.into(),
             metrics: score.map(|s| serde_json::json!({"acid3_score": s})),
-            reason: if score.is_none() && !no_js {
-                Some("could not parse NN/100 score".into())
-            } else {
-                None
-            },
+            reason,
             reproduce: Some(repro_dump(cfg, url, !no_js)),
         });
     }
@@ -529,7 +534,7 @@ fn run_wpt_harness(cfg: &RunnerConfig, path: &str) -> Result<TestResult, String>
             "testharness",
             "fail",
             None,
-            Some(err),
+            Some(harness_missing_results_reason(&run, &err)),
             Some(repro_dump(cfg, &url, true)),
         )),
     }
@@ -829,18 +834,31 @@ fn write_report(cfg: &RunnerConfig, results: &[TestResult]) -> Result<(), String
     md.push('\n');
 
     md.push_str("## API probe\n\n");
-    md.push_str("| API | typeof |\n| --- | --- |\n");
-    for r in results
+    md.push_str(
+        "Rows marked **available** for language built-ins (e.g. `Map`, `Set`, `Proxy`, `Intl`, `Reflect`, `Symbol`, `WeakMap`) reflect ECMAScript globals from V8, not host Web APIs.\n\n",
+    );
+    md.push_str("| API | Status |\n| --- | --- |\n");
+    let mut probe_apis: Vec<_> = results
         .iter()
         .filter(|r| r.suite == "probe" && r.kind == "api" && r.path != "__summary__")
-    {
+        .collect();
+    probe_apis.sort_by(|a, b| {
+        let ord = |r: &TestResult| if r.status == "fail" { 0 } else { 1 };
+        ord(a).cmp(&ord(b)).then_with(|| a.path.cmp(&b.path))
+    });
+    for r in probe_apis {
         let ty = r
             .metrics
             .as_ref()
             .and_then(|m| m.get("typeof"))
             .and_then(|v| v.as_str())
             .unwrap_or("?");
-        md.push_str(&format!("| {} | {} |\n", r.path, ty));
+        let label = if r.status == "fail" {
+            format!("missing ({ty})")
+        } else {
+            format!("available ({ty})")
+        };
+        md.push_str(&format!("| {} | {} |\n", r.path, label));
     }
     md.push('\n');
 
@@ -871,6 +889,15 @@ fn write_report(cfg: &RunnerConfig, results: &[TestResult]) -> Result<(), String
     md.push_str("- **css3test.com / html5test**: JS-heavy feature probes; deferred (overlap with probe + WPT).\n");
     md.push_str("- **test262**: V8 responsibility; not re-run here.\n");
     md.push_str("- **Speedometer / JetStream**: performance, not compatibility.\n");
+    if results
+        .iter()
+        .any(|r| r.path == "acid1/test5526c.htm" && r.status == "unreachable")
+    {
+        md.push_str("\n### Acid1 fetch note\n\n");
+        md.push_str(
+            "Acid1 was unreachable in this run. If the reason includes HTTP 403/406, w3.org may be rejecting requests that lack a typical browser `User-Agent` (Glide does not spoof one).\n",
+        );
+    }
 
     std::fs::write(&cfg.report_md, md).map_err(|e| e.to_string())
 }
@@ -878,14 +905,70 @@ fn write_report(cfg: &RunnerConfig, results: &[TestResult]) -> Result<(), String
 fn failure_categories(results: &[TestResult]) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for r in results {
-        if r.status == "fail" {
-            let key = format!("{}:{}", r.suite, r.kind);
+        if r.status == "fail" && r.path != "__summary__" {
+            let key = failure_category_label(r);
             *counts.entry(key).or_default() += 1;
         }
     }
     let mut items: Vec<_> = counts.into_iter().collect();
     items.sort_by_key(|a| std::cmp::Reverse(a.1));
     items
+}
+
+fn first_uncaught_in_run(run: &GlideRun) -> Option<String> {
+    first_uncaught_js_error(&run.stderr).or_else(|| first_uncaught_js_error(&run.stdout))
+}
+
+fn harness_missing_results_reason(run: &GlideRun, parse_err: &str) -> String {
+    if let Some(err) = first_uncaught_in_run(run) {
+        format!("harness did not load: {err}")
+    } else {
+        parse_err.to_string()
+    }
+}
+
+fn acid3_score_failure_reason(run: &GlideRun) -> String {
+    if let Some(err) = first_uncaught_in_run(run) {
+        format!("could not parse NN/100 score; {err}")
+    } else {
+        "could not parse NN/100 score".into()
+    }
+}
+
+fn acid1_unreachable_reason(fetch_err: &str) -> String {
+    let mut msg = fetch_err.to_string();
+    let low = msg.to_ascii_lowercase();
+    if msg.contains("403")
+        || msg.contains("406")
+        || low.contains("forbidden")
+        || low.contains("server answered 403")
+        || low.contains("server answered 406")
+    {
+        msg.push_str(
+            "; w3.org may reject fetches without a browser User-Agent (Glide does not send one)",
+        );
+    }
+    msg
+}
+
+fn failure_category_label(r: &TestResult) -> String {
+    let base = format!("{}:{}", r.suite, r.kind);
+    let Some(reason) = &r.reason else {
+        return base;
+    };
+    if let Some(err) = reason.strip_prefix("harness did not load: ") {
+        return format!("{base} — harness did not load ({err})");
+    }
+    if reason.starts_with("could not parse NN/100") {
+        return format!("{base} — {reason}");
+    }
+    if reason.starts_with("pixel diff") {
+        return format!("{base} — rendering differs (pixel diff)");
+    }
+    if r.suite == "probe" && r.kind == "api" && r.path != "__summary__" {
+        return "probe:api — Web API missing (undefined typeof)".into();
+    }
+    format!("{base} — {reason}")
 }
 
 fn fail_result(

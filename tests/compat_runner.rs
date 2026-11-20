@@ -26,8 +26,17 @@ fn compat_runner_filter_integration_offline() {
         report_md: root.join("target/compat-report-test.md"),
     };
     let results = run_compat(cfg).expect("run_compat");
-    assert!(results.iter().any(|r| r.path.contains("green-box")));
-    assert!(results.iter().any(|r| r.path.contains("harness-minimal")));
-    let json = std::fs::read_to_string(root.join("target/compat-results-test.json")).unwrap();
-    assert!(json.contains("integration/green-box.html"));
+    let green = results
+        .iter()
+        .find(|r| r.path == "integration/green-box.html")
+        .expect("green-box result");
+    assert_eq!(green.status, "pass");
+    let harness = results
+        .iter()
+        .find(|r| r.path == "integration/harness-minimal.html")
+        .expect("harness-minimal result");
+    assert_eq!(harness.status, "fail");
+    let reason = harness.reason.as_deref().expect("harness failure reason");
+    assert!(reason.contains("harness did not load:"));
+    assert!(reason.contains("ReferenceError"));
 }

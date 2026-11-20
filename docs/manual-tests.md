@@ -24,3 +24,6 @@ Each row names the feature it covers.
 | M-016 | F-007 | Open `tests/fixtures/input.html`, click the input (a first click on the page may only focus the iframe), type `x` | Characters appear in the page input, not the address bar |
 | M-017 | F-022 | Open `tests/fixtures/js-toggle.html`. Press Cmd/Ctrl+Shift+J twice | After first toggle: toolbar **JS off**, page shows `static` and `no-js-fallback`. After second: **JS on**, page shows `scripted` |
 | M-018 | F-022 | Open `tests/fixtures/counter.html`. Confirm `#count` shows `ready`. Toggle JS off then on | With JS off, count stays `0`; after turning JS on, count shows `ready` again |
+| M-019 | F-023 | Open `https://nonexistent.invalid` | Error page shows the URL, a reason, and **Retry**; **Retry** requests the same URL again (no `glide://` navigation) |
+| M-020 | F-023 | Open a slow `https://` page (or throttle locally) | Blue loading bar and **Stop** show only during the main document load; both clear when the load finishes |
+| M-021 | F-023 | With a slow load in progress, press Esc or click Stop (■) | Load stops; previous page stays visible; history and address bar match the displayed page |

@@ -11,7 +11,19 @@ pub fn document_from_html(
     config: DocumentConfig,
     scripting_enabled: bool,
 ) -> BaseDocument {
+    document_from_html_with(html, config, scripting_enabled, |_| {})
+}
+
+/// Build a document and run `before_parse` after [`BaseDocument::new`] but before HTML is parsed,
+/// so embedder hooks (e.g. chrome doc id for [`GlideNet`]) run before iframe loads fire.
+pub fn document_from_html_with(
+    html: &str,
+    config: DocumentConfig,
+    scripting_enabled: bool,
+    before_parse: impl FnOnce(&BaseDocument),
+) -> BaseDocument {
     let mut doc = BaseDocument::new(config);
+    before_parse(&doc);
     let mut mutr = doc.mutate();
     parse_into_mutator(&mut mutr, html, scripting_enabled);
     drop(mutr);

@@ -47,6 +47,20 @@ impl History {
     pub fn replace_current(&mut self, url: String) {
         self.entries[self.index] = url;
     }
+
+    pub fn history_index(&self) -> usize {
+        self.index
+    }
+
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
+    /// Rewind the stack after a cancelled navigation (index and trailing entries).
+    pub fn restore_to_index(&mut self, index: usize) {
+        self.index = index;
+        self.entries.truncate(index + 1);
+    }
 }
 
 #[cfg(test)]
@@ -119,5 +133,14 @@ mod tests {
         assert_eq!(h.back().as_deref(), Some("https://a/"));
         assert_eq!(h.forward().as_deref(), Some("https://b/"));
         assert_eq!(h.current(), "https://b/");
+    }
+
+    #[test]
+    fn restore_to_index_drops_forward_entries() {
+        let mut h = History::new("https://a/".into());
+        h.push("https://b/".into());
+        h.restore_to_index(0);
+        assert_eq!(h.entries(), &["https://a/"]);
+        assert_eq!(h.history_index(), 0);
     }
 }

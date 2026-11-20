@@ -17,12 +17,16 @@ use winit::window::{WindowAttributes, WindowId};
 
 use std::sync::atomic::Ordering;
 
-use crate::chrome::{NavCommand, chrome_document, command_from_url};
-use crate::history::History;
+use crate::chrome::{
+    NavCommand, chrome_document, command_from_url, set_address, set_loading_ui,
+    sync_committed_address,
+};
 use crate::html::{GlideHtmlProvider, HtmlPageDocument, set_js_runtime_mode};
 use crate::js::{JsHost, JsTap};
 use crate::keyboard;
 use crate::location::resolve_location;
+use crate::nav::{NavKind, NavTracker};
+use crate::net::{GlideNet, LoadState};
 use crate::parse;
 
 const CHROME_BASE: &str = "https://glide.invalid/chrome";
@@ -32,8 +36,10 @@ type Renderer = anyrender_vello_cpu::VelloCpuWindowRenderer;
 pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
+    let load_state = Arc::new(LoadState::default());
     let net_impl = Arc::new(Provider::new(Some(Arc::new(proxy.clone()))));
-    let net: Arc<dyn blitz_traits::net::NetProvider> = net_impl.clone();
+    let waker: Arc<dyn blitz_traits::net::NetWaker> = Arc::new(proxy.clone());
+    let net = GlideNet::new(net_impl.clone(), load_state.clone(), waker);
     let bus = NavBus::default();
 
     let js_tap = if js_enabled {
@@ -49,7 +55,7 @@ pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
 
     let chrome_config = DocumentConfig {
         base_url: Some(CHROME_BASE.to_string()),
-        net_provider: Some(net),
+        net_provider: Some(net.clone()),
         navigation_provider: Some(Arc::new(ChromeNav {
             bus: bus.clone(),
             proxy: proxy.clone(),
@@ -58,18 +64,22 @@ pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
         ..Default::default()
     };
 
-    let doc = HtmlPageDocument(parse::document_from_html(
-        &chrome_document(&start, js_enabled),
-        chrome_config,
-        js_enabled,
-    ));
+    let doc = build_chrome_page_document(&start, js_enabled, &load_state, chrome_config);
 
     let attrs = WindowAttributes::default()
         .with_title("Glide")
         .with_surface_size(winit::dpi::LogicalSize::new(1100.0, 760.0));
     let window = WindowConfig::with_attributes(Box::new(doc), Renderer::new(), attrs);
 
-    let mut app = Glide::new(proxy, receiver, bus, start, js_host, html_provider);
+    let mut app = Glide::new(
+        proxy,
+        receiver,
+        bus,
+        start,
+        js_host,
+        html_provider,
+        load_state,
+    );
     app.inner.add_window(window);
     event_loop
         .run_app(app)
@@ -110,13 +120,25 @@ struct Glide {
     bus: NavBus,
     js: JsHost,
     html_provider: GlideHtmlProvider,
-    history: History,
-    /// URL we last asked the iframe to load. Observations of that load,
-    /// including redirects, update the current history entry in place.
-    expecting: Option<String>,
-    last_seen: Option<String>,
-    shown: String,
+    nav: NavTracker,
     last_title: String,
+    load_state: Arc<LoadState>,
+    chrome_loading: bool,
+    address_written: String,
+}
+
+fn build_chrome_page_document(
+    start: &str,
+    js_enabled: bool,
+    load_state: &LoadState,
+    chrome_config: DocumentConfig,
+) -> HtmlPageDocument {
+    HtmlPageDocument(parse::document_from_html_with(
+        &chrome_document(start, js_enabled),
+        chrome_config,
+        js_enabled,
+        |doc| load_state.set_chrome_doc_id(doc.id()),
+    ))
 }
 
 impl Glide {
@@ -127,17 +149,18 @@ impl Glide {
         start: String,
         js: JsHost,
         html_provider: GlideHtmlProvider,
+        load_state: Arc<LoadState>,
     ) -> Self {
         Self {
             inner: BlitzApplication::new(proxy, receiver),
             bus,
             js,
             html_provider,
-            history: History::new(start.clone()),
-            expecting: Some(start.clone()),
-            last_seen: None,
-            shown: start,
+            nav: NavTracker::new(start.clone()),
             last_title: "Glide".to_string(),
+            load_state,
+            chrome_loading: false,
+            address_written: start,
         }
     }
 
@@ -152,71 +175,66 @@ impl Glide {
                 changed = true;
                 match command {
                     NavCommand::Back => {
-                        if let Some(url) = self.history.back() {
+                        if let Some(url) = self.nav.navigate(NavKind::Back, None) {
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
-                            self.expecting = Some(url.clone());
-                            self.shown.clone_from(&url);
                             set_address(&mut doc, &url);
+                            self.address_written = self.nav.shown().to_string();
                         }
                     }
                     NavCommand::Forward => {
-                        if let Some(url) = self.history.forward() {
+                        if let Some(url) = self.nav.navigate(NavKind::Forward, None) {
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
-                            self.expecting = Some(url.clone());
-                            self.shown.clone_from(&url);
                             set_address(&mut doc, &url);
+                            self.address_written = self.nav.shown().to_string();
                         }
                     }
                     NavCommand::Reload => {
-                        let url = self.history.current();
-                        self.js.on_navigation(&doc, &url);
-                        load_iframe(&mut doc, &url);
-                        self.expecting = Some(url);
+                        if let Some(url) = self.nav.navigate(NavKind::Reload, None) {
+                            self.js.on_navigation(&doc, &url);
+                            load_iframe(&mut doc, &url);
+                            set_address(&mut doc, &url);
+                            self.address_written = self.nav.shown().to_string();
+                        }
+                    }
+                    NavCommand::Stop => {
+                        self.load_state.stop_page_load();
+                        if let Some(url) = page_url(&doc) {
+                            self.nav.stop(&url);
+                            set_address(&mut doc, &url);
+                            self.address_written = self.nav.shown().to_string();
+                        }
                     }
                     NavCommand::ToggleJs => {
                         let new = !self.html_provider.scripting_enabled.load(Ordering::Relaxed);
                         set_js_runtime_mode(&self.html_provider, &mut self.js, &doc, new);
-                        let url = self.history.current();
-                        load_iframe(&mut doc, &url);
-                        self.expecting = Some(url);
-                        set_js_indicator(&mut doc, new);
+                        if let Some(url) = self.nav.navigate(NavKind::Reload, None) {
+                            load_iframe(&mut doc, &url);
+                            set_js_indicator(&mut doc, new);
+                        }
                     }
                     NavCommand::Go(raw) => {
                         let url = resolve_location(&raw);
                         self.js.on_navigation(&doc, &url);
-                        self.history.push(url.clone());
                         load_iframe(&mut doc, &url);
-                        self.expecting = Some(url.clone());
-                        self.shown.clone_from(&url);
-                        set_address(&mut doc, &url);
+                        if self.nav.navigate(NavKind::Go, Some(url.clone())).is_some() {
+                            set_address(&mut doc, &url);
+                            self.address_written = self.nav.shown().to_string();
+                        }
                     }
                 }
             }
 
             if let Some(actual) = page_url(&doc) {
-                if let Some(expected) = self.expecting.clone() {
-                    if actual == expected {
-                        self.expecting = None;
-                        self.last_seen = Some(actual);
-                    } else {
-                        self.history.replace_current(actual.clone());
-                        self.expecting = Some(actual.clone());
-                        if actual != self.shown {
-                            self.shown.clone_from(&actual);
-                            set_address(&mut doc, &actual);
-                        }
-                        self.last_seen = Some(actual);
-                    }
-                } else if self.last_seen.as_ref() != Some(&actual) {
-                    self.history.push(actual.clone());
-                    self.last_seen = Some(actual.clone());
-                    if actual != self.shown {
-                        self.shown.clone_from(&actual);
-                        set_address(&mut doc, &actual);
-                    }
-                }
+                let _ = self.nav.observe(&actual);
+            }
+            sync_committed_address(&mut doc, self.nav.shown(), &mut self.address_written);
+            let loading = self.load_state.page_loading();
+            if loading != self.chrome_loading {
+                self.chrome_loading = loading;
+                set_loading_ui(&mut doc, loading);
+                changed = true;
             }
             if let Some(title) = page_title(&doc) {
                 let window_title = if title.is_empty() {
@@ -266,6 +284,11 @@ impl Glide {
         let Some(shortcut) = keyboard::try_browser_shortcut(view, event) else {
             return false;
         };
+        if !keyboard::consume_stop_shortcut(&shortcut, self.load_state.page_loading())
+            && matches!(shortcut, keyboard::BrowserShortcut::Stop)
+        {
+            return false;
+        }
 
         match shortcut {
             keyboard::BrowserShortcut::FocusAddressBar => {
@@ -309,13 +332,6 @@ fn load_iframe(doc: &mut BaseDocument, url: &str) {
         return;
     };
     doc.mutate().set_attribute(id, qual_name!("src"), url);
-}
-
-fn set_address(doc: &mut BaseDocument, url: &str) {
-    let Some(id) = doc.get_element_by_id("url") else {
-        return;
-    };
-    doc.mutate().set_attribute(id, qual_name!("value"), url);
 }
 
 fn set_js_indicator(doc: &mut BaseDocument, on: bool) {
@@ -412,5 +428,103 @@ impl ApplicationHandler for Glide {
         &mut self,
     ) -> Option<&mut dyn winit::platform::macos::ApplicationHandlerExtMacOS> {
         Some(&mut self.inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use blitz_net::Provider;
+    use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
+    use blitz_traits::net::NetWaker;
+
+    use super::*;
+
+    #[test]
+    fn initial_iframe_load_uses_glide_net_error_page() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+
+        let load_state = Arc::new(LoadState::default());
+        let record = Arc::new(Mutex::new(None));
+        let record2 = record.clone();
+        let waker: Arc<dyn NetWaker> = Arc::new(move |_| {
+            *record2.lock().expect("lock") = Some(());
+        });
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let net = GlideNet::new(inner, load_state.clone(), waker);
+
+        let html_provider = GlideHtmlProvider {
+            scripting_enabled: Arc::new(AtomicBool::new(false)),
+            js_tap: JsTap::new_disabled(),
+        };
+        let missing = std::path::Path::new("/tmp/glide-chrome-start-missing-page.html");
+        let start = url::Url::from_file_path(missing)
+            .expect("file url")
+            .to_string();
+
+        let chrome_config = DocumentConfig {
+            base_url: Some(CHROME_BASE.to_string()),
+            net_provider: Some(net),
+            navigation_provider: Some(Arc::new(DummyNav)),
+            html_parser_provider: Some(Arc::new(html_provider)),
+            ..Default::default()
+        };
+
+        let mut doc = build_chrome_page_document(&start, false, &load_state, chrome_config);
+        assert_ne!(load_state.chrome_doc_id(), 0);
+
+        // The error page reaches the iframe as a document event that a later
+        // `resolve()` applies, so wait for the title, not just the network state.
+        let mut title = String::new();
+        for _ in 0..300 {
+            doc.0.resolve(0.0);
+            title = page_title_of(&doc.0);
+            if load_state.page_loads_started() >= 1
+                && record.lock().expect("lock").is_some()
+                && !load_state.page_loading()
+                && !title.is_empty()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            load_state.page_loads_started() >= 1,
+            "chrome doc id must be set before parsing so the first load is a page load"
+        );
+        assert!(record.lock().expect("lock").is_some());
+        assert!(!load_state.page_loading());
+
+        assert!(
+            title.contains("Can't open page"),
+            "expected error page title, got {:?}",
+            title
+        );
+    }
+
+    struct DummyNav;
+
+    impl NavigationProvider for DummyNav {
+        fn navigate_to(&self, _options: NavigationOptions) {}
+    }
+
+    fn page_title_of(chrome: &blitz_dom::BaseDocument) -> String {
+        let Some(page_id) = chrome.get_element_by_id("page") else {
+            return String::new();
+        };
+        chrome
+            .get_node(page_id)
+            .and_then(|n| n.subdoc())
+            .and_then(|sub| {
+                sub.inner()
+                    .find_title_node()
+                    .map(|node| node.text_content())
+            })
+            .unwrap_or_default()
     }
 }

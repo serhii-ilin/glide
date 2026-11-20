@@ -28,9 +28,6 @@ const CHROME_BASE: &str = "https://glide.invalid/chrome";
 type Renderer = anyrender_vello_cpu::VelloCpuWindowRenderer;
 
 pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
-    let runtime = tokio_runtime();
-    let _guard = runtime.enter();
-
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
     let net_impl = Arc::new(Provider::new(Some(Arc::new(proxy.clone()))));
@@ -75,13 +72,6 @@ pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
     event_loop
         .run_app(app)
         .map_err(|err| format!("glide exited: {err}"))
-}
-
-fn tokio_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime")
 }
 
 #[derive(Clone, Default)]

@@ -7,7 +7,11 @@ These rules apply to humans, Claude and Cursor agents alike.
 ## Project map
 
 ```
-src/main.rs       window, history, keyboard shortcuts, JS pump
+src/lib.rs        crate modules and library entry points
+src/main.rs       CLI dispatch (window, screenshot, help)
+src/app.rs        window, history sync, keyboard shortcuts, JS pump
+src/history.rs    back/forward stack
+src/args.rs       CLI parsing
 src/chrome.rs     chrome markup (HTML) and navigation commands
 src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
 src/js/           V8 worker thread, DOM RPC, script loading

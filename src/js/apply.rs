@@ -272,14 +272,7 @@ fn apply_inner(
                 .unwrap_or(DomValue::Null);
             DomResponse::ok(reply, value)
         }
-        DomRequest::Listen {
-            node,
-            event_type,
-            reply,
-        } => {
-            let _ = (node, event_type);
-            DomResponse::ok(reply, DomValue::Null)
-        }
+        DomRequest::Listen { reply } => DomResponse::ok(reply, DomValue::Null),
         DomRequest::Fetch { url, reply } => {
             if let Some(body) = data_url_body(&url) {
                 return DomResponse::ok(reply, DomValue::String(body));

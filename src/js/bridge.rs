@@ -98,8 +98,6 @@ pub enum DomRequest {
         reply: u64,
     },
     Listen {
-        node: u64,
-        event_type: String,
         reply: u64,
     },
     Fetch {
@@ -112,8 +110,6 @@ pub enum DomRequest {
 pub enum DomValue {
     Null,
     Bool(bool),
-    #[expect(dead_code, reason = "DOM numeric returns from JS RPC")]
-    Number(f64),
     String(String),
     NodeId(u64),
     NodeList(Vec<u64>),
@@ -122,18 +118,16 @@ pub enum DomValue {
 
 #[derive(Debug, Clone)]
 pub struct DomResponse {
-    pub id: u64,
     pub value: DomValue,
 }
 
 impl DomResponse {
-    pub fn ok(id: u64, value: DomValue) -> Self {
-        Self { id, value }
+    pub fn ok(_reply: u64, value: DomValue) -> Self {
+        Self { value }
     }
 
-    pub fn err(id: u64, message: impl Into<String>) -> Self {
+    pub fn err(_reply: u64, message: impl Into<String>) -> Self {
         Self {
-            id,
             value: DomValue::Error(message.into()),
         }
     }

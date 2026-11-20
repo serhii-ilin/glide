@@ -147,6 +147,21 @@ mod tests {
                 js_enabled: true,
             }
         );
+        let mode = parse([
+            "--screenshot".into(),
+            "https://a.test/page".into(),
+            "--no-js".into(),
+            "/tmp/out-nojs.png".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            mode,
+            RunMode::Screenshot {
+                url: "https://a.test/page".into(),
+                output: "/tmp/out-nojs.png".into(),
+                js_enabled: false,
+            }
+        );
     }
 
     #[test]

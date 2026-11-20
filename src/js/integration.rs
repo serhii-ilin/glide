@@ -70,12 +70,11 @@ fn failed_external_script_does_not_panic() {
         src: Some("https://example.invalid/missing.js".into()),
         defer: false,
         r#async: false,
-        node: blitz_traits::node_id::NodeId::default(),
     }];
     let sources =
         crate::js::scripts::resolve_sources(&specs, &net, "https://example.test/", handle);
     assert!(matches!(
         sources[0],
-        crate::js::scripts::ScriptSource::Failed { .. }
+        crate::js::scripts::ScriptSource::Failed
     ));
 }

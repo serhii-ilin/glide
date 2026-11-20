@@ -16,14 +16,13 @@ pub struct ScriptSpec {
     pub src: Option<String>,
     pub defer: bool,
     pub r#async: bool,
-    pub node: NodeId,
 }
 
 #[derive(Debug, Clone)]
 pub enum ScriptSource {
     Inline(String),
-    External { url: String, body: String },
-    Failed { url: String, error: String },
+    External(String),
+    Failed,
 }
 
 /// Depth-first document order.
@@ -80,7 +79,6 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
                 src,
                 defer,
                 r#async: async_attr,
-                node: child,
             });
         }
         walk(doc, child, out);
@@ -139,23 +137,16 @@ pub fn resolve_sources(
                     Ok(u) => u,
                     Err(err) => {
                         eprintln!("[js] script url invalid ({src}): {err}");
-                        return ScriptSource::Failed {
-                            url: src.to_string(),
-                            error: err.to_string(),
-                        };
+                        return ScriptSource::Failed;
                     }
                 };
             match rt.block_on(net.fetch_async(Request::get(parsed))) {
-                Ok((_final_url, bytes)) => ScriptSource::External {
-                    url: src.to_string(),
-                    body: String::from_utf8_lossy(&bytes).into_owned(),
-                },
+                Ok((_final_url, bytes)) => {
+                    ScriptSource::External(String::from_utf8_lossy(&bytes).into_owned())
+                }
                 Err(err) => {
                     eprintln!("[js] script fetch failed ({src}): {err}");
-                    ScriptSource::Failed {
-                        url: src.to_string(),
-                        error: err.to_string(),
-                    }
+                    ScriptSource::Failed
                 }
             }
         })
@@ -165,16 +156,8 @@ pub fn resolve_sources(
 pub fn source_body(source: &ScriptSource) -> Option<String> {
     match source {
         ScriptSource::Inline(s) => Some(s.clone()),
-        ScriptSource::External { url, body } => {
-            if body.is_empty() {
-                eprintln!("[js] empty script body for {url}");
-            }
-            Some(body.clone())
-        }
-        ScriptSource::Failed { url, error } => {
-            eprintln!("[js] script skipped ({url}): {error}");
-            None
-        }
+        ScriptSource::External(body) => Some(body.clone()),
+        ScriptSource::Failed => None,
     }
 }
 
@@ -213,6 +196,5 @@ mod tests {
                 .as_ref()
                 .is_some_and(|s| s.contains("addEventListener"))
         );
-        assert_ne!(scripts[0].node.as_u64(), 0);
     }
 }

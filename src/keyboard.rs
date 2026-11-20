@@ -246,6 +246,27 @@ fn page_iframe_accepts_keys(chrome: &BaseDocument) -> bool {
     page_iframe_id(chrome).is_some_and(|page_id| chrome.get_focussed_node_id() == Some(page_id))
 }
 
+/// macOS: deliver an Apple standard keybinding into the iframe when one applies.
+fn try_iframe_apple_keybinding(
+    event: &KeyEvent,
+    modifiers: ModifiersState,
+    dispatch: impl FnOnce(UiEvent),
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if event.state.is_pressed()
+            && let PhysicalKey::Code(code) = event.physical_key
+            && let Some(selector) = macos_standard_keybinding(code, modifiers)
+        {
+            dispatch(UiEvent::AppleStandardKeybinding(SmolStr::new(selector)));
+            return true;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (event, modifiers, dispatch);
+    false
+}
+
 /// Deliver editing/viewport keyboard handling before Blitz's default `KeyboardInput` path.
 ///
 /// Returns `true` when the caller should skip the default winit keyboard handler for this event.
@@ -265,15 +286,9 @@ pub fn dispatch_text_keys<Rend: WindowRenderer>(view: &mut View<Rend>, event: &K
                     .get_node_mut(page_id)
                     .and_then(|node| node.subdoc_mut())
             {
-                let mut handled = false;
-                #[cfg(target_os = "macos")]
-                if event.state.is_pressed()
-                    && let PhysicalKey::Code(code) = event.physical_key
-                    && let Some(selector) = macos_standard_keybinding(code, modifiers)
-                {
-                    sub.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(selector)));
-                    handled = true;
-                }
+                let handled = try_iframe_apple_keybinding(event, modifiers, |ui| {
+                    sub.handle_ui_event(ui);
+                });
                 if !handled {
                     let blitz_key = winit_key_to_blitz(event, modifiers);
                     let ui = if event.state.is_pressed() {

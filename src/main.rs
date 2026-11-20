@@ -1,7 +1,7 @@
 //! `glide` binary entry: parse CLI args and run the window or headless screenshot.
 
 use glide::args::{RunMode, parse, usage};
-use glide::{run_window, shot};
+use glide::{run_window, shot, tokio_runtime};
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -43,11 +43,4 @@ fn main() {
             std::process::exit(2);
         }
     }
-}
-
-fn tokio_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime")
 }

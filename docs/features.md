@@ -42,7 +42,7 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | F-006 | Text editing with macOS standard keybindings | done | R-005 | `keyboard::tests::{macos_backspace_deletes_backward,macos_option_arrows_move_by_word}` | |
 | F-007 | Keyboard forwarding into the page iframe | done | R-005 | manual | |
 | F-008 | V8 page JavaScript: worker thread, DOM RPC, timers, rAF, fetch, events | done | R-004 | `js::apply::tests::*`, `js::integration::*`, `js::scripts::tests::*` | experimental; see README limits |
-| F-009 | `--no-js` CLI flag | done | R-004 | `args::tests::{no_js_flag_anywhere,unknown_flag_is_error}` | |
+| F-009 | `--no-js` CLI flag | done | R-004 | `args::tests::*` | |
 | F-010 | Headless `--screenshot` to PNG (with and without JS) | done | R-006 | manual | |
 | F-011 | `file://`, `data:`, http(s) loading through blitz-net | done | R-003 | indirect | |
 | F-020 | T1 Hardening: lib/bin split, `History` module + tests, tested CLI args, clippy clean, CI | done | R-007, R-002 | `history::tests::*`, `args::tests::*`, CI workflow | lib/bin split, `src/app.rs` |

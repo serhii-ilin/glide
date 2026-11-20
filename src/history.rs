@@ -55,8 +55,10 @@ mod tests {
 
     #[test]
     fn new_history_has_one_entry() {
-        let h = History::new("https://example.com/".into());
+        let mut h = History::new("https://example.com/".into());
         assert_eq!(h.current(), "https://example.com/");
+        assert!(h.back().is_none());
+        assert!(h.forward().is_none());
     }
 
     #[test]

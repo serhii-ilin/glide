@@ -51,7 +51,7 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | F-029 | Headless `--dump-text` (compatibility runner hook) | done | R-004, R-012 | `headless_js::*`, `args::tests::dump_text_*` | shares `headless::load` with screenshot |
 | F-023 | T4 Loading indicator, error page with retry, stop button | done | R-009 | `net::tests::*`, `nav::tests::*`, `app::tests::initial_iframe_load_uses_glide_net_error_page`, `chrome::tests::*`, `keyboard::tests::*`, manual M-019–M-021 | Retry is the failed URL; `NavTracker` fixes stop/history |
 | F-024 | T5 Page-only zoom (Cmd/Ctrl +/-/0) and find in page (Cmd/Ctrl+F) | done | R-010 | `zoom::tests::*`, `find::tests::*`, `keyboard::tests::readme_shortcut_table`, `chrome::tests::toolbar_height_stable_across_page_zoom`, manual M-022–M-025 | Chrome viewport zoom; toolbar counter-scaled with `--ui` |
-| F-025 | T6 Profile dir, settings, session restore, history file, bookmarks, in-memory cookies | planned | R-011 | | |
+| F-025 | T6 Profile dir, settings, session restore, history file, bookmarks, in-memory cookies | done | R-011 | `profile::tests::*`, `history::tests::from_parts_restores_position`, `args::tests::*`, `keyboard::tests::readme_shortcut_table`, `net::tests::{provider_with_cookies_feature_builds,glide_bookmarks_page_delivers_html}`, manual M-026–M-028 | F-026 deferred; profile under platform data dir or `GLIDE_PROFILE_DIR` |
 | F-026 | Cookies persisted to disk | deferred | R-011 | | blitz-net builds its own reqwest client; needs a custom NetProvider |
 | F-027 | T7 Compatibility runner and `docs/compat/REPORT.md` (Acid1-3, WPT subset) | planned | R-012 | | |
 | F-028 | T8 Super-critical compatibility fixes | planned | R-013 | | scoped after T7 |

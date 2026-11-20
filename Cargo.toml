@@ -32,6 +32,11 @@ png = "0.18"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 url = "2"
 winit = "=0.31.0-beta.3"
+keyboard-types = "0.8"
+v8 = "152.2.0"
+crossbeam-channel = "0.5"
+once_cell = "1"
+html5ever = "0.40"
 
 [profile.release]
 lto = false

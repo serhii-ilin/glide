@@ -77,6 +77,17 @@ code on its branch. Runs are **sequential in the main checkout** (no worktrees).
 ## Gotchas
 
 - `ca-run.sh` refuses to start on a dirty tree or while another run holds the lock.
+- **Kill hung child processes by exact PID only.** `cursor-agent`'s command line contains the
+  whole prompt text, so `pkill -f <pattern>` with any path or name mentioned in the prompt can
+  match, and kill, the agent itself. Find the PID with `ps -eo pid,etime,command` and `kill <pid>`.
+- **Hung commands stall the run.** Cursor's shell waits up to 24 h on a command. If a run goes
+  quiet with a child at 100% CPU, kill that child by PID; the agent sees the failure and continues.
+  Prompts for harness-style work should require hard per-script timeouts and an outer
+  `perl -e 'alarm N; exec @ARGV'` limit.
+- **Resuming after an interruption:** commit the WIP on the branch (the tree must be clean), then
+  `ca-run.sh -n <branch> -p <resume-prompt> -r <chat-id>`.
+- **Stale release binaries:** tests and runners that use `target/release/glide` can pick up a
+  binary built on another branch. Rebuild before trusting a surprising result.
 - An agent can claim gates passed when they did not. Step 5 is mandatory.
 - If a run times out (142), check `git status` on the branch: partial uncommitted work may
   need to be committed or discarded before a fix round.

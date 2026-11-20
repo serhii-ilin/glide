@@ -2,7 +2,7 @@
 
 use crate::location::resolve_location;
 
-const KNOWN_FLAGS: &[&str] = &["--no-js", "--screenshot", "--help", "-h"];
+const KNOWN_FLAGS: &[&str] = &["--no-js", "--screenshot", "--dump-text", "--help", "-h"];
 
 /// Parsed subcommand for [`parse`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +17,10 @@ pub enum RunMode {
         output: String,
         js_enabled: bool,
     },
+    DumpText {
+        url: String,
+        js_enabled: bool,
+    },
 }
 
 pub fn usage() -> &'static str {
@@ -24,6 +28,7 @@ pub fn usage() -> &'static str {
      Usage:\n  \
        glide [url]                    open a window (default https://example.com/)\n  \
        glide --screenshot [url] [png] headless PNG (default url / glide-screenshot.png)\n  \
+       glide --dump-text [url]        print page text after scripts settle\n  \
        glide --no-js ...              disable page JavaScript\n\n\
      Options:\n  \
        -h, --help                     print this help\n"
@@ -46,6 +51,23 @@ where
     }
 
     let js_enabled = !raw.iter().any(|a| a == "--no-js");
+
+    if raw.first().is_some_and(|a| a == "--dump-text") {
+        let rest: Vec<String> = raw
+            .iter()
+            .skip(1)
+            .filter(|a| *a != "--no-js")
+            .cloned()
+            .collect();
+        let url = rest
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "https://example.com".into());
+        return Ok(RunMode::DumpText {
+            url: resolve_location(&url),
+            js_enabled,
+        });
+    }
 
     if raw.first().is_some_and(|a| a == "--screenshot") {
         let rest: Vec<String> = raw
@@ -187,5 +209,34 @@ mod tests {
     fn help_flag() {
         assert!(matches!(parse(["--help".into()]), Ok(RunMode::Help)));
         assert!(matches!(parse(["-h".into()]), Ok(RunMode::Help)));
+    }
+
+    #[test]
+    fn dump_text_with_url() {
+        let mode = parse(["--dump-text".into(), "example.com".into()]).unwrap();
+        assert_eq!(
+            mode,
+            RunMode::DumpText {
+                url: "https://example.com/".into(),
+                js_enabled: true,
+            }
+        );
+    }
+
+    #[test]
+    fn dump_text_with_no_js() {
+        let mode = parse([
+            "--dump-text".into(),
+            "--no-js".into(),
+            "https://x.test/".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            mode,
+            RunMode::DumpText {
+                url: "https://x.test/".into(),
+                js_enabled: false,
+            }
+        );
     }
 }

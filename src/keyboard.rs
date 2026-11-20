@@ -25,6 +25,7 @@ pub enum BrowserShortcut {
     Back,
     Forward,
     Reload,
+    Stop,
     ToggleJs,
     FocusAddressBar,
     CloseWindow,
@@ -66,6 +67,9 @@ pub fn browser_shortcut(
         KeyCode::F5 if !primary && !alt => return Some(BrowserShortcut::Reload),
         KeyCode::ArrowLeft if alt && !primary => return Some(BrowserShortcut::Back),
         KeyCode::ArrowRight if alt && !primary => return Some(BrowserShortcut::Forward),
+        KeyCode::Escape if !text_input_focused && !primary && !alt => {
+            return Some(BrowserShortcut::Stop);
+        }
         _ if text_input_focused => return None,
         KeyCode::Space if !primary && !alt && shift => {
             return Some(BrowserShortcut::Scroll(ScrollAction::PageUp));
@@ -409,6 +413,7 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         BrowserShortcut::Back => Some(NavCommand::Back),
         BrowserShortcut::Forward => Some(NavCommand::Forward),
         BrowserShortcut::Reload => Some(NavCommand::Reload),
+        BrowserShortcut::Stop => Some(NavCommand::Stop),
         BrowserShortcut::ToggleJs => Some(NavCommand::ToggleJs),
         BrowserShortcut::FocusAddressBar | BrowserShortcut::CloseWindow | BrowserShortcut::Quit => {
             None
@@ -633,6 +638,13 @@ mod tests {
             Some(BrowserShortcut::Reload),
             Some(BrowserShortcut::Reload),
         ));
+        cases.extend(both(
+            "Esc stop load",
+            KeyCode::Escape,
+            none,
+            Some(BrowserShortcut::Stop),
+            None,
+        ));
         cases.push(case(
             "plain letter not intercepted",
             KeyCode::KeyA,
@@ -726,6 +738,10 @@ mod tests {
         assert_eq!(
             nav_from_shortcut(BrowserShortcut::Reload),
             Some(NavCommand::Reload)
+        );
+        assert_eq!(
+            nav_from_shortcut(BrowserShortcut::Stop),
+            Some(NavCommand::Stop)
         );
         assert_eq!(
             nav_from_shortcut(BrowserShortcut::ToggleJs),

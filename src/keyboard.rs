@@ -253,20 +253,20 @@ fn page_iframe_accepts_keys(chrome: &BaseDocument) -> bool {
 /// keyboard target.
 pub(crate) fn forward_page_iframe_key(
     chrome: &mut BaseDocument,
-    code: KeyCode,
+    event: &KeyEvent,
     modifiers: ModifiersState,
-    pressed: bool,
-    blitz_key: BlitzKeyEvent,
 ) -> Option<bool> {
     if !page_iframe_accepts_keys(chrome) {
         return None;
     }
+    let PhysicalKey::Code(code) = event.physical_key else {
+        return Some(false);
+    };
+    let pressed = event.state.is_pressed();
     if pressed && browser_shortcut(code, modifiers, false).is_some() {
         return Some(false);
     }
-    let Some(page_id) = page_iframe_id(chrome) else {
-        return Some(false);
-    };
+    let page_id = page_iframe_id(chrome).expect("page iframe is focused");
     let Some(sub) = chrome
         .get_node_mut(page_id)
         .and_then(|node| node.subdoc_mut())
@@ -278,6 +278,7 @@ pub(crate) fn forward_page_iframe_key(
         sub.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(selector)));
         return Some(true);
     }
+    let blitz_key = winit_key_to_blitz(event, modifiers);
     let ui = if pressed {
         UiEvent::KeyDown(blitz_key)
     } else {
@@ -316,12 +317,7 @@ pub fn dispatch_text_keys<Rend: WindowRenderer>(view: &mut View<Rend>, event: &K
     let iframe_handled = {
         let mut guard = view.doc.inner_mut();
         let chrome = &mut *guard;
-        if let PhysicalKey::Code(code) = event.physical_key {
-            let blitz_key = winit_key_to_blitz(event, modifiers);
-            forward_page_iframe_key(chrome, code, modifiers, event.state.is_pressed(), blitz_key)
-        } else {
-            None
-        }
+        forward_page_iframe_key(chrome, event, modifiers)
     };
 
     if let Some(true) = iframe_handled {
@@ -449,9 +445,9 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use blitz_dom::{Document, DocumentConfig, qual_name};
+    use blitz_dom::{DocumentConfig, qual_name};
     use blitz_traits::shell::{ColorScheme, Viewport};
-    use keyboard_types::{Code, Key, Modifiers, NamedKey};
+    use keyboard_types::{Code, Key, NamedKey};
     use winit::keyboard::ModifiersState;
 
     use crate::chrome::{NavCommand, chrome_document};
@@ -475,208 +471,158 @@ mod tests {
         m
     }
 
-    fn primary_mods() -> ModifiersState {
-        #[cfg(target_os = "macos")]
-        {
-            mods(false, false, false, true)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            mods(true, false, false, false)
-        }
+    fn ctrl_meta_mods() -> [(ModifiersState, &'static str); 2] {
+        [
+            (mods(true, false, false, false), "Ctrl"),
+            (mods(false, false, false, true), "Meta"),
+        ]
     }
 
     struct ShortcutCase {
-        row: &'static str,
+        row: String,
         code: KeyCode,
         modifiers: ModifiersState,
         text_focused: bool,
         expected: Option<BrowserShortcut>,
     }
 
+    fn case(
+        row: impl Into<String>,
+        code: KeyCode,
+        modifiers: ModifiersState,
+        text_focused: bool,
+        expected: Option<BrowserShortcut>,
+    ) -> ShortcutCase {
+        ShortcutCase {
+            row: row.into(),
+            code,
+            modifiers,
+            text_focused,
+            expected,
+        }
+    }
+
+    fn both(
+        row: &str,
+        code: KeyCode,
+        modifiers: ModifiersState,
+        expected_unfocused: Option<BrowserShortcut>,
+        expected_focused: Option<BrowserShortcut>,
+    ) -> [ShortcutCase; 2] {
+        [
+            case(row, code, modifiers, false, expected_unfocused),
+            case(
+                format!("{row} (text focused)"),
+                code,
+                modifiers,
+                true,
+                expected_focused,
+            ),
+        ]
+    }
+
     fn readme_shortcut_cases() -> Vec<ShortcutCase> {
-        let primary = primary_mods();
         let alt = mods(false, true, false, false);
         let shift_only = mods(false, false, true, false);
         let none = ModifiersState::empty();
+        let mut cases = Vec::new();
 
-        let mut cases = vec![
-            ShortcutCase {
-                row: "Enter (not a browser shortcut)",
-                code: KeyCode::Enter,
-                modifiers: none,
-                text_focused: false,
-                expected: None,
-            },
-            ShortcutCase {
-                row: "Enter while typing",
-                code: KeyCode::Enter,
-                modifiers: none,
-                text_focused: true,
-                expected: None,
-            },
-            ShortcutCase {
-                row: "Alt+Left back",
-                code: KeyCode::ArrowLeft,
-                modifiers: alt,
-                text_focused: false,
-                expected: Some(BrowserShortcut::Back),
-            },
-            ShortcutCase {
-                row: "Alt+Left back in text field",
-                code: KeyCode::ArrowLeft,
-                modifiers: alt,
-                text_focused: true,
-                expected: Some(BrowserShortcut::Back),
-            },
-            ShortcutCase {
-                row: "Alt+Right forward",
-                code: KeyCode::ArrowRight,
-                modifiers: alt,
-                text_focused: false,
-                expected: Some(BrowserShortcut::Forward),
-            },
-            ShortcutCase {
-                row: "Alt+Right forward in text field",
-                code: KeyCode::ArrowRight,
-                modifiers: alt,
-                text_focused: true,
-                expected: Some(BrowserShortcut::Forward),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+[ back",
-                code: KeyCode::BracketLeft,
-                modifiers: primary,
-                text_focused: false,
-                expected: Some(BrowserShortcut::Back),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+[ back in text field",
-                code: KeyCode::BracketLeft,
-                modifiers: primary,
-                text_focused: true,
-                expected: Some(BrowserShortcut::Back),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+] forward",
-                code: KeyCode::BracketRight,
-                modifiers: primary,
-                text_focused: false,
-                expected: Some(BrowserShortcut::Forward),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+R reload",
-                code: KeyCode::KeyR,
-                modifiers: primary,
-                text_focused: false,
-                expected: Some(BrowserShortcut::Reload),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+R reload in text field",
-                code: KeyCode::KeyR,
-                modifiers: primary,
-                text_focused: true,
-                expected: Some(BrowserShortcut::Reload),
-            },
-            ShortcutCase {
-                row: "F5 reload",
-                code: KeyCode::F5,
-                modifiers: none,
-                text_focused: false,
-                expected: Some(BrowserShortcut::Reload),
-            },
-            ShortcutCase {
-                row: "F5 reload in text field",
-                code: KeyCode::F5,
-                modifiers: none,
-                text_focused: true,
-                expected: Some(BrowserShortcut::Reload),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+L focus address bar",
-                code: KeyCode::KeyL,
-                modifiers: primary,
-                text_focused: false,
-                expected: Some(BrowserShortcut::FocusAddressBar),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+L focus address bar in text field",
-                code: KeyCode::KeyL,
-                modifiers: primary,
-                text_focused: true,
-                expected: Some(BrowserShortcut::FocusAddressBar),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+W close",
-                code: KeyCode::KeyW,
-                modifiers: primary,
-                text_focused: false,
-                expected: Some(BrowserShortcut::CloseWindow),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+W close in text field",
-                code: KeyCode::KeyW,
-                modifiers: primary,
-                text_focused: true,
-                expected: Some(BrowserShortcut::CloseWindow),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+Q quit",
-                code: KeyCode::KeyQ,
-                modifiers: primary,
-                text_focused: false,
-                expected: Some(BrowserShortcut::Quit),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+Q quit in text field",
-                code: KeyCode::KeyQ,
-                modifiers: primary,
-                text_focused: true,
-                expected: Some(BrowserShortcut::Quit),
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+Shift+R not intercepted",
-                code: KeyCode::KeyR,
-                modifiers: primary | ModifiersState::SHIFT,
-                text_focused: false,
-                expected: None,
-            },
-            ShortcutCase {
-                row: "plain letter not intercepted",
-                code: KeyCode::KeyA,
-                modifiers: none,
-                text_focused: false,
-                expected: None,
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+C not intercepted",
-                code: KeyCode::KeyC,
-                modifiers: primary,
-                text_focused: true,
-                expected: None,
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+V not intercepted",
-                code: KeyCode::KeyV,
-                modifiers: primary,
-                text_focused: true,
-                expected: None,
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+X not intercepted",
-                code: KeyCode::KeyX,
-                modifiers: primary,
-                text_focused: true,
-                expected: None,
-            },
-            ShortcutCase {
-                row: "Cmd/Ctrl+A not intercepted",
-                code: KeyCode::KeyA,
-                modifiers: primary,
-                text_focused: true,
-                expected: None,
-            },
-        ];
+        cases.extend(both(
+            "Enter (not a browser shortcut)",
+            KeyCode::Enter,
+            none,
+            None,
+            None,
+        ));
+        cases.extend(both(
+            "Alt+Left back",
+            KeyCode::ArrowLeft,
+            alt,
+            Some(BrowserShortcut::Back),
+            Some(BrowserShortcut::Back),
+        ));
+        cases.extend(both(
+            "Alt+Right forward",
+            KeyCode::ArrowRight,
+            alt,
+            Some(BrowserShortcut::Forward),
+            Some(BrowserShortcut::Forward),
+        ));
+
+        for (prim, tag) in ctrl_meta_mods() {
+            cases.extend(both(
+                &format!("{tag}+[ back"),
+                KeyCode::BracketLeft,
+                prim,
+                Some(BrowserShortcut::Back),
+                Some(BrowserShortcut::Back),
+            ));
+            cases.extend(both(
+                &format!("{tag}+] forward"),
+                KeyCode::BracketRight,
+                prim,
+                Some(BrowserShortcut::Forward),
+                Some(BrowserShortcut::Forward),
+            ));
+            cases.extend(both(
+                &format!("{tag}+R reload"),
+                KeyCode::KeyR,
+                prim,
+                Some(BrowserShortcut::Reload),
+                Some(BrowserShortcut::Reload),
+            ));
+            cases.extend(both(
+                &format!("{tag}+L focus address bar"),
+                KeyCode::KeyL,
+                prim,
+                Some(BrowserShortcut::FocusAddressBar),
+                Some(BrowserShortcut::FocusAddressBar),
+            ));
+            cases.extend(both(
+                &format!("{tag}+W close"),
+                KeyCode::KeyW,
+                prim,
+                Some(BrowserShortcut::CloseWindow),
+                Some(BrowserShortcut::CloseWindow),
+            ));
+            cases.extend(both(
+                &format!("{tag}+Q quit"),
+                KeyCode::KeyQ,
+                prim,
+                Some(BrowserShortcut::Quit),
+                Some(BrowserShortcut::Quit),
+            ));
+            cases.push(case(
+                format!("{tag}+Shift+R not intercepted"),
+                KeyCode::KeyR,
+                prim | ModifiersState::SHIFT,
+                false,
+                None,
+            ));
+            for (suffix, code) in [
+                ("C not intercepted", KeyCode::KeyC),
+                ("V not intercepted", KeyCode::KeyV),
+                ("X not intercepted", KeyCode::KeyX),
+                ("A not intercepted", KeyCode::KeyA),
+            ] {
+                cases.push(case(format!("{tag}+{suffix}"), code, prim, true, None));
+            }
+        }
+
+        cases.extend(both(
+            "F5 reload",
+            KeyCode::F5,
+            none,
+            Some(BrowserShortcut::Reload),
+            Some(BrowserShortcut::Reload),
+        ));
+        cases.push(case(
+            "plain letter not intercepted",
+            KeyCode::KeyA,
+            none,
+            false,
+            None,
+        ));
 
         let scroll_cases = [
             (
@@ -728,32 +674,15 @@ mod tests {
                 BrowserShortcut::Scroll(ScrollAction::Down),
             ),
         ];
-
-        for (row, code, modifiers, action) in scroll_cases {
-            cases.push(ShortcutCase {
-                row,
+        for (row, code, modifiers, expected) in scroll_cases {
+            cases.push(case(row, code, modifiers, false, Some(expected)));
+            cases.push(case(
+                format!("{row} (text focused)"),
                 code,
                 modifiers,
-                text_focused: false,
-                expected: Some(action),
-            });
-            cases.push(ShortcutCase {
-                row: match row {
-                    "Space scroll down" => "Space blocked in text field",
-                    "Shift+Space scroll up" => "Shift+Space blocked in text field",
-                    "PgUp" => "PgUp blocked in text field",
-                    "PgDn" => "PgDn blocked in text field",
-                    "Home" => "Home blocked in text field",
-                    "End" => "End blocked in text field",
-                    "ArrowUp" => "ArrowUp blocked in text field",
-                    "ArrowDown" => "ArrowDown blocked in text field",
-                    _ => "scroll key blocked in text field",
-                },
-                code,
-                modifiers,
-                text_focused: true,
-                expected: None,
-            });
+                true,
+                None,
+            ));
         }
 
         cases
@@ -784,16 +713,9 @@ mod tests {
         assert!(nav_from_shortcut(BrowserShortcut::FocusAddressBar).is_none());
     }
 
+    #[test]
     #[cfg(target_os = "macos")]
-    struct MacKeybindingCase {
-        row: &'static str,
-        code: KeyCode,
-        modifiers: ModifiersState,
-        expected: Option<&'static str>,
-    }
-
-    #[cfg(target_os = "macos")]
-    fn macos_keybinding_cases() -> Vec<MacKeybindingCase> {
+    fn macos_standard_keybinding_table() {
         let none = ModifiersState::empty();
         let shift = mods(false, false, true, false);
         let option = mods(false, true, false, false);
@@ -801,175 +723,152 @@ mod tests {
         let cmd_shift = cmd | shift;
         let option_shift = option | shift;
 
-        vec![
-            MacKeybindingCase {
-                row: "plain Backspace",
-                code: KeyCode::Backspace,
-                modifiers: none,
-                expected: Some("deleteBackward:"),
-            },
-            MacKeybindingCase {
-                row: "plain Delete",
-                code: KeyCode::Delete,
-                modifiers: none,
-                expected: Some("deleteForward:"),
-            },
-            MacKeybindingCase {
-                row: "plain ArrowLeft",
-                code: KeyCode::ArrowLeft,
-                modifiers: none,
-                expected: Some("moveLeft:"),
-            },
-            MacKeybindingCase {
-                row: "plain ArrowRight",
-                code: KeyCode::ArrowRight,
-                modifiers: none,
-                expected: Some("moveRight:"),
-            },
-            MacKeybindingCase {
-                row: "plain ArrowUp",
-                code: KeyCode::ArrowUp,
-                modifiers: none,
-                expected: Some("moveUp:"),
-            },
-            MacKeybindingCase {
-                row: "plain ArrowDown",
-                code: KeyCode::ArrowDown,
-                modifiers: none,
-                expected: Some("moveDown:"),
-            },
-            MacKeybindingCase {
-                row: "plain Home",
-                code: KeyCode::Home,
-                modifiers: none,
-                expected: Some("moveToBeginningOfLine:"),
-            },
-            MacKeybindingCase {
-                row: "plain End",
-                code: KeyCode::End,
-                modifiers: none,
-                expected: Some("moveToEndOfLine:"),
-            },
-            MacKeybindingCase {
-                row: "plain Enter",
-                code: KeyCode::Enter,
-                modifiers: none,
-                expected: Some("insertNewline:"),
-            },
-            MacKeybindingCase {
-                row: "plain NumpadEnter",
-                code: KeyCode::NumpadEnter,
-                modifiers: none,
-                expected: Some("insertNewline:"),
-            },
-            MacKeybindingCase {
-                row: "Shift+ArrowLeft",
-                code: KeyCode::ArrowLeft,
-                modifiers: shift,
-                expected: Some("moveLeftAndModifySelection:"),
-            },
-            MacKeybindingCase {
-                row: "Shift+ArrowRight",
-                code: KeyCode::ArrowRight,
-                modifiers: shift,
-                expected: Some("moveRightAndModifySelection:"),
-            },
-            MacKeybindingCase {
-                row: "Shift+ArrowUp",
-                code: KeyCode::ArrowUp,
-                modifiers: shift,
-                expected: Some("moveUpAndModifySelection:"),
-            },
-            MacKeybindingCase {
-                row: "Shift+ArrowDown",
-                code: KeyCode::ArrowDown,
-                modifiers: shift,
-                expected: Some("moveDownAndModifySelection:"),
-            },
-            MacKeybindingCase {
-                row: "Option+ArrowLeft",
-                code: KeyCode::ArrowLeft,
-                modifiers: option,
-                expected: Some("moveWordBackward:"),
-            },
-            MacKeybindingCase {
-                row: "Option+ArrowRight",
-                code: KeyCode::ArrowRight,
-                modifiers: option,
-                expected: Some("moveWordForward:"),
-            },
-            MacKeybindingCase {
-                row: "Option+Shift+ArrowLeft",
-                code: KeyCode::ArrowLeft,
-                modifiers: option_shift,
-                expected: Some("moveWordBackwardAndModifySelection:"),
-            },
-            MacKeybindingCase {
-                row: "Option+Shift+ArrowRight",
-                code: KeyCode::ArrowRight,
-                modifiers: option_shift,
-                expected: Some("moveWordForwardAndModifySelection:"),
-            },
-            MacKeybindingCase {
-                row: "Option+Backspace",
-                code: KeyCode::Backspace,
-                modifiers: option,
-                expected: Some("deleteWordBackward:"),
-            },
-            MacKeybindingCase {
-                row: "Option+Delete",
-                code: KeyCode::Delete,
-                modifiers: option,
-                expected: Some("deleteWordForward:"),
-            },
-            MacKeybindingCase {
-                row: "Cmd+ArrowLeft",
-                code: KeyCode::ArrowLeft,
-                modifiers: cmd,
-                expected: Some("moveToBeginningOfLine:"),
-            },
-            MacKeybindingCase {
-                row: "Cmd+ArrowRight",
-                code: KeyCode::ArrowRight,
-                modifiers: cmd,
-                expected: Some("moveToEndOfLine:"),
-            },
-            MacKeybindingCase {
-                row: "Cmd+Shift+ArrowLeft",
-                code: KeyCode::ArrowLeft,
-                modifiers: cmd_shift,
-                expected: Some("moveToBeginningOfLineAndModifySelection:"),
-            },
-            MacKeybindingCase {
-                row: "Cmd+Shift+ArrowRight",
-                code: KeyCode::ArrowRight,
-                modifiers: cmd_shift,
-                expected: Some("moveToEndOfLineAndModifySelection:"),
-            },
-            MacKeybindingCase {
-                row: "Cmd+C passthrough",
-                code: KeyCode::KeyC,
-                modifiers: cmd,
-                expected: None,
-            },
-        ]
-    }
+        let rows: &[(&str, KeyCode, ModifiersState, Option<&str>)] = &[
+            (
+                "plain Backspace",
+                KeyCode::Backspace,
+                none,
+                Some("deleteBackward:"),
+            ),
+            (
+                "plain Delete",
+                KeyCode::Delete,
+                none,
+                Some("deleteForward:"),
+            ),
+            (
+                "plain ArrowLeft",
+                KeyCode::ArrowLeft,
+                none,
+                Some("moveLeft:"),
+            ),
+            (
+                "plain ArrowRight",
+                KeyCode::ArrowRight,
+                none,
+                Some("moveRight:"),
+            ),
+            ("plain ArrowUp", KeyCode::ArrowUp, none, Some("moveUp:")),
+            (
+                "plain ArrowDown",
+                KeyCode::ArrowDown,
+                none,
+                Some("moveDown:"),
+            ),
+            (
+                "plain Home",
+                KeyCode::Home,
+                none,
+                Some("moveToBeginningOfLine:"),
+            ),
+            ("plain End", KeyCode::End, none, Some("moveToEndOfLine:")),
+            ("plain Enter", KeyCode::Enter, none, Some("insertNewline:")),
+            (
+                "plain NumpadEnter",
+                KeyCode::NumpadEnter,
+                none,
+                Some("insertNewline:"),
+            ),
+            (
+                "Shift+ArrowLeft",
+                KeyCode::ArrowLeft,
+                shift,
+                Some("moveLeftAndModifySelection:"),
+            ),
+            (
+                "Shift+ArrowRight",
+                KeyCode::ArrowRight,
+                shift,
+                Some("moveRightAndModifySelection:"),
+            ),
+            (
+                "Shift+ArrowUp",
+                KeyCode::ArrowUp,
+                shift,
+                Some("moveUpAndModifySelection:"),
+            ),
+            (
+                "Shift+ArrowDown",
+                KeyCode::ArrowDown,
+                shift,
+                Some("moveDownAndModifySelection:"),
+            ),
+            (
+                "Option+ArrowLeft",
+                KeyCode::ArrowLeft,
+                option,
+                Some("moveWordBackward:"),
+            ),
+            (
+                "Option+ArrowRight",
+                KeyCode::ArrowRight,
+                option,
+                Some("moveWordForward:"),
+            ),
+            (
+                "Option+Shift+ArrowLeft",
+                KeyCode::ArrowLeft,
+                option_shift,
+                Some("moveWordBackwardAndModifySelection:"),
+            ),
+            (
+                "Option+Shift+ArrowRight",
+                KeyCode::ArrowRight,
+                option_shift,
+                Some("moveWordForwardAndModifySelection:"),
+            ),
+            (
+                "Option+Backspace",
+                KeyCode::Backspace,
+                option,
+                Some("deleteWordBackward:"),
+            ),
+            (
+                "Option+Delete",
+                KeyCode::Delete,
+                option,
+                Some("deleteWordForward:"),
+            ),
+            (
+                "Cmd+ArrowLeft",
+                KeyCode::ArrowLeft,
+                cmd,
+                Some("moveToBeginningOfLine:"),
+            ),
+            (
+                "Cmd+ArrowRight",
+                KeyCode::ArrowRight,
+                cmd,
+                Some("moveToEndOfLine:"),
+            ),
+            (
+                "Cmd+Shift+ArrowLeft",
+                KeyCode::ArrowLeft,
+                cmd_shift,
+                Some("moveToBeginningOfLineAndModifySelection:"),
+            ),
+            (
+                "Cmd+Shift+ArrowRight",
+                KeyCode::ArrowRight,
+                cmd_shift,
+                Some("moveToEndOfLineAndModifySelection:"),
+            ),
+            ("Cmd+C passthrough", KeyCode::KeyC, cmd, None),
+        ];
 
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn macos_standard_keybinding_table() {
-        for case in macos_keybinding_cases() {
-            let got = macos_standard_keybinding(case.code, case.modifiers);
-            assert_eq!(
-                got, case.expected,
-                "macOS keybinding row failed: {}",
-                case.row
-            );
+        for &(row, code, modifiers, expected) in rows {
+            let got = macos_standard_keybinding(code, modifiers);
+            assert_eq!(got, expected, "macOS keybinding row failed: {row}");
         }
     }
 
-    fn winit_mods_to_blitz(modifiers: ModifiersState) -> Modifiers {
-        winit_modifiers_to_kbt(modifiers)
+    fn char_code(ch: char) -> KeyCode {
+        match ch {
+            'a' => KeyCode::KeyA,
+            'b' => KeyCode::KeyB,
+            'c' => KeyCode::KeyC,
+            _ => panic!("unsupported test character {ch}"),
+        }
     }
 
     fn blitz_key(code: KeyCode, modifiers: ModifiersState, key: Key) -> BlitzKeyEvent {
@@ -987,7 +886,7 @@ mod tests {
         BlitzKeyEvent {
             key,
             code: physical,
-            modifiers: winit_mods_to_blitz(modifiers),
+            modifiers: winit_modifiers_to_kbt(modifiers),
             location: keyboard_types::Location::Standard,
             is_auto_repeating: false,
             is_composing: false,
@@ -1041,17 +940,29 @@ mod tests {
     }
 
     fn press_char(doc: &mut BaseDocument, ch: char) {
-        let code = match ch {
-            'a' => KeyCode::KeyA,
-            'b' => KeyCode::KeyB,
-            'c' => KeyCode::KeyC,
-            _ => panic!("unsupported test character {ch}"),
-        };
+        let code = char_code(ch);
         doc.handle_ui_event(UiEvent::KeyDown(blitz_key(
             code,
             ModifiersState::empty(),
             Key::Character(ch.to_string()),
         )));
+    }
+
+    use winit::event::ElementState;
+    use winit::keyboard::Key as WinitKey;
+
+    fn test_key_event(code: KeyCode, state: ElementState, logical: WinitKey) -> KeyEvent {
+        let key_without_modifiers = logical.clone();
+        KeyEvent {
+            physical_key: PhysicalKey::Code(code),
+            logical_key: logical,
+            text: None,
+            text_with_all_modifiers: None,
+            key_without_modifiers,
+            location: winit::keyboard::KeyLocation::Standard,
+            state,
+            repeat: false,
+        }
     }
 
     #[test]
@@ -1136,15 +1047,14 @@ mod tests {
         let mut doc = chrome_with_page_srcdoc();
         let modifiers = ModifiersState::empty();
         for ch in ['a', 'b', 'c'] {
-            let code = match ch {
-                'a' => KeyCode::KeyA,
-                'b' => KeyCode::KeyB,
-                'c' => KeyCode::KeyC,
-                _ => unreachable!(),
-            };
-            let blitz = blitz_key(code, modifiers, Key::Character(ch.to_string()));
+            let code = char_code(ch);
+            let event = test_key_event(
+                code,
+                ElementState::Pressed,
+                WinitKey::Character(ch.to_string().into()),
+            );
             assert_eq!(
-                forward_page_iframe_key(&mut doc, code, modifiers, true, blitz),
+                forward_page_iframe_key(&mut doc, &event, modifiers),
                 Some(true),
                 "iframe should consume key for {ch}"
             );
@@ -1157,5 +1067,52 @@ mod tests {
             .and_then(|sub| text_value_in_doc(&sub.inner(), "field"))
             .expect("iframe field value");
         assert_eq!(value, "abc");
+    }
+
+    #[test]
+    fn forward_page_iframe_key_forwards_key_up() {
+        let mut doc = chrome_with_page_srcdoc();
+        let modifiers = ModifiersState::empty();
+        let event = test_key_event(
+            KeyCode::KeyA,
+            ElementState::Released,
+            WinitKey::Character("a".into()),
+        );
+        assert_eq!(
+            forward_page_iframe_key(&mut doc, &event, modifiers),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn forward_page_iframe_key_leaves_browser_shortcut() {
+        let mut doc = chrome_with_page_srcdoc();
+        let event = test_key_event(
+            KeyCode::KeyL,
+            ElementState::Pressed,
+            WinitKey::Character("l".into()),
+        );
+        for prim in [
+            mods(true, false, false, false),
+            mods(false, false, false, true),
+        ] {
+            assert_eq!(forward_page_iframe_key(&mut doc, &event, prim), Some(false));
+        }
+    }
+
+    #[test]
+    fn forward_page_iframe_key_ignores_unfocused_iframe() {
+        let mut doc = chrome_with_page_srcdoc();
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.set_focus_to(url_id);
+        let event = test_key_event(
+            KeyCode::KeyA,
+            ElementState::Pressed,
+            WinitKey::Character("a".into()),
+        );
+        assert_eq!(
+            forward_page_iframe_key(&mut doc, &event, ModifiersState::empty()),
+            None
+        );
     }
 }

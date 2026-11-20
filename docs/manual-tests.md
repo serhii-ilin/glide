@@ -18,7 +18,7 @@ Each row names the feature it covers.
 | M-010 | F-005 | Press Cmd/Ctrl+[ then Cmd/Ctrl+] | Back then forward |
 | M-011 | F-005 | Press Ctrl+R, F5, and on macOS Cmd+R | Page reloads each time |
 | M-012 | F-005 | Press Cmd/Ctrl+W | Window closes |
-| M-013 | F-005 | Run two windows; press Cmd/Ctrl+Q | Application quits |
+| M-013 | F-005 | Press Cmd/Ctrl+Q | The process exits |
 | M-014 | F-006 | Focus the address bar, type `hello`, Cmd/Ctrl+A, Cmd/Ctrl+C, move caret to end, Cmd/Ctrl+V | Field shows `hellohello` |
 | M-015 | F-006 | On macOS: type `one two`, Option+Left/Right moves by word; Option+Backspace deletes the word before the caret | Caret and text follow macOS editing conventions |
-| M-016 | F-007 | Open `tests/fixtures/input.html`, click the page background, then Tab or click until the input is focused, type `x` | Characters appear in the page input, not the address bar |
+| M-016 | F-007 | Open `tests/fixtures/input.html`, click the input (a first click on the page may only focus the iframe), type `x` | Characters appear in the page input, not the address bar |

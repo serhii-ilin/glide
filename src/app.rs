@@ -274,8 +274,12 @@ impl Glide {
             sync_committed_address(&mut doc, self.nav.shown(), &mut self.address_written);
             let loading = self.load_state.page_loading();
             if loading != self.chrome_loading {
+                let was_loading = self.chrome_loading;
                 self.chrome_loading = loading;
                 set_loading_ui(&mut doc, loading);
+                if was_loading && !loading {
+                    self.find.rerun_search_after_load(&mut doc);
+                }
                 changed = true;
             }
             if let Some(title) = page_title(&doc) {

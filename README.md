@@ -33,7 +33,9 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Enter / Cmd/Ctrl+G (find bar open) | Next match |
 | Shift+Enter / Cmd/Ctrl+Shift+G (find bar open) | Previous match |
 | Esc (in the find field) | Close find and clear selection |
-| Cmd/Ctrl+= / Cmd/Ctrl+- / Cmd/Ctrl+0 | Zoom page in / out / reset (30%–300%) |
+| Cmd/Ctrl+= / Cmd/Ctrl++ / Numpad+ | Zoom page in (10% steps, also with Shift held) |
+| Cmd/Ctrl+- / Numpad- | Zoom page out |
+| Cmd/Ctrl+0 | Reset zoom to 100% (non-100% zoom shows a **%** label in the toolbar) |
 | Space / Shift+Space / PgUp / PgDn / Home / End / arrows | Scroll the page when no text field is focused |
 
 Text fields (address bar and in-page inputs) use normal editing shortcuts: Backspace and
@@ -104,13 +106,15 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 - Link clicks, in-page fragment jumps, scrolling, text selection, and form controls that Blitz implements (the address bar is one of those).
 - Back, forward, and reload. Redirects replace the current history entry. A link click pushes a new one.
 - Loading indicator, stop (Esc or the toolbar **Stop** button while a page is loading), and a readable error page when a page fails to load. **Retry** on the error page reloads the same URL.
+- Page zoom (30%–300%) and find-in-page with match highlight and scroll-into-view.
 - System fonts through Parley.
 - Experimental page JavaScript via V8 (see above). Pass `--no-js` to turn it off.
 
 ## What does not
 
 - **Full browser JavaScript.** The bootstrap is intentionally tiny; Boa in Kitesurf implements far more of the Web platform. DuckDuckGo's JS-heavy UI may still break; the HTML frontend is the default search target.
-- **Many browser features.** No multiple tabs, cookies UI, downloads, find-in-page, or extensions. Blitz's own gaps apply too: incomplete CSS, limited form controls, and no full navigation of frames other than the single page iframe Glide uses as the viewport.
+- **Many browser features.** No multiple tabs, cookies UI, downloads, or extensions. Blitz's own gaps apply too: incomplete CSS, limited form controls, and no full navigation of frames other than the single page iframe Glide uses as the viewport.
+- **Find scroll target.** Find scrolls the inline root that contains the match into view, not the exact line box; tall paragraphs and scrollable subcontainers may not place the caret optimally.
 - **Stop vs. subresources.** Stopping a navigation aborts the in-flight main document load, but Blitz also aborts the previous page's subresource fetches when a new navigation starts, so images or scripts on the page you return to may stay missing until you reload.
 - **Kitesurf's Workers runtime.** No Chrome DevTools Protocol, no Dynamic Workers, no PDF export. Those live in Kitesurf's TypeScript and Wasm layers.
 

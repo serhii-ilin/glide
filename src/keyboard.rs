@@ -67,9 +67,9 @@ pub fn browser_shortcut(
     match code {
         KeyCode::Equal if primary => return Some(BrowserShortcut::ZoomIn),
         KeyCode::NumpadAdd if primary => return Some(BrowserShortcut::ZoomIn),
-        KeyCode::Minus if primary && !shift => return Some(BrowserShortcut::ZoomOut),
+        KeyCode::Minus if primary => return Some(BrowserShortcut::ZoomOut),
         KeyCode::NumpadSubtract if primary => return Some(BrowserShortcut::ZoomOut),
-        KeyCode::Digit0 if primary && !shift => return Some(BrowserShortcut::ZoomReset),
+        KeyCode::Digit0 if primary => return Some(BrowserShortcut::ZoomReset),
         KeyCode::KeyF if primary && !shift => return Some(BrowserShortcut::Find),
         KeyCode::KeyG if primary && find_bar_open => {
             if shift {
@@ -604,24 +604,58 @@ mod tests {
     fn zoom_cases() -> Vec<ShortcutCase> {
         let mut out = Vec::new();
         for (prim, tag) in ctrl_meta_mods() {
-            for (row, code, expected) in [
+            let shift = prim | ModifiersState::SHIFT;
+            for (row, code, modifiers, expected) in [
                 (
                     format!("{tag}+= zoom in"),
                     KeyCode::Equal,
+                    prim,
+                    BrowserShortcut::ZoomIn,
+                ),
+                (
+                    format!("{tag}+Shift+= zoom in (plus)"),
+                    KeyCode::Equal,
+                    shift,
                     BrowserShortcut::ZoomIn,
                 ),
                 (
                     format!("{tag}+- zoom out"),
                     KeyCode::Minus,
+                    prim,
+                    BrowserShortcut::ZoomOut,
+                ),
+                (
+                    format!("{tag}+Shift+- zoom out"),
+                    KeyCode::Minus,
+                    shift,
                     BrowserShortcut::ZoomOut,
                 ),
                 (
                     format!("{tag}+0 zoom reset"),
                     KeyCode::Digit0,
+                    prim,
                     BrowserShortcut::ZoomReset,
                 ),
+                (
+                    format!("{tag}+Shift+0 zoom reset"),
+                    KeyCode::Digit0,
+                    shift,
+                    BrowserShortcut::ZoomReset,
+                ),
+                (
+                    format!("{tag}+NumpadAdd zoom in"),
+                    KeyCode::NumpadAdd,
+                    prim,
+                    BrowserShortcut::ZoomIn,
+                ),
+                (
+                    format!("{tag}+NumpadSubtract zoom out"),
+                    KeyCode::NumpadSubtract,
+                    prim,
+                    BrowserShortcut::ZoomOut,
+                ),
             ] {
-                out.push(case(row, code, prim, false, false, Some(expected)));
+                out.push(case(row, code, modifiers, false, false, Some(expected)));
             }
         }
         out
@@ -1296,6 +1330,65 @@ mod tests {
         assert_eq!(
             forward_page_iframe_key(&mut doc, &event, ModifiersState::empty()),
             None
+        );
+    }
+
+    fn chrome_with_find_focused() -> BaseDocument {
+        let html = chrome_document("about:blank", true);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        layout_doc(&mut doc);
+        crate::chrome::set_find_bar_open(&mut doc, true);
+        crate::chrome::focus_find_input(&mut doc);
+        doc
+    }
+
+    #[test]
+    fn dispatch_find_field_keys_enter_and_shift_enter() {
+        let mut doc = chrome_with_find_focused();
+        let enter = test_key_event(
+            KeyCode::Enter,
+            ElementState::Pressed,
+            WinitKey::Named(winit::keyboard::NamedKey::Enter),
+        );
+        assert_eq!(
+            dispatch_find_field_keys(&mut doc, &enter, ModifiersState::empty(), true),
+            Some(BrowserShortcut::FindNext)
+        );
+        let shift = mods(false, false, true, false);
+        assert_eq!(
+            dispatch_find_field_keys(&mut doc, &enter, shift, true),
+            Some(BrowserShortcut::FindPrev)
+        );
+    }
+
+    #[test]
+    fn dispatch_find_field_keys_esc_closes_find() {
+        let mut doc = chrome_with_find_focused();
+        let esc = test_key_event(
+            KeyCode::Escape,
+            ElementState::Pressed,
+            WinitKey::Named(winit::keyboard::NamedKey::Escape),
+        );
+        assert_eq!(
+            dispatch_find_field_keys(&mut doc, &esc, ModifiersState::empty(), true),
+            Some(BrowserShortcut::FindClose)
+        );
+        assert!(
+            browser_shortcut(KeyCode::Escape, ModifiersState::empty(), true, true).is_none(),
+            "Esc in find field must not become Stop"
+        );
+    }
+
+    #[test]
+    fn dispatch_find_field_keys_ignores_closed_bar() {
+        let mut doc = chrome_with_find_focused();
+        let enter = test_key_event(
+            KeyCode::Enter,
+            ElementState::Pressed,
+            WinitKey::Named(winit::keyboard::NamedKey::Enter),
+        );
+        assert!(
+            dispatch_find_field_keys(&mut doc, &enter, ModifiersState::empty(), false).is_none()
         );
     }
 }

@@ -67,12 +67,17 @@ impl FindState {
     }
 }
 
+/// Fold one Unicode scalar for case-insensitive find (same rule for query and haystack).
+fn fold_case(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
 /// Case-insensitive substring search over inline-root texts; byte offsets are UTF-8 safe.
 pub fn find_matches(texts: &[(NodeId, String)], query: &str) -> Vec<FindMatch> {
     if query.is_empty() {
         return Vec::new();
     }
-    let needle: Vec<char> = query.to_lowercase().chars().collect();
+    let needle: Vec<char> = query.chars().map(fold_case).collect();
     if needle.is_empty() {
         return Vec::new();
     }
@@ -85,17 +90,14 @@ pub fn find_matches(texts: &[(NodeId, String)], query: &str) -> Vec<FindMatch> {
 }
 
 fn find_in_text(node_id: NodeId, text: &str, needle: &[char]) -> Vec<FindMatch> {
-    let text_lower: Vec<char> = text
-        .chars()
-        .map(|c| c.to_lowercase().next().unwrap_or(c))
-        .collect();
+    let text_folded: Vec<char> = text.chars().map(fold_case).collect();
     let byte_starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
     let text_len = text.len();
 
     let mut matches = Vec::new();
     let mut i = 0;
-    while i + needle.len() <= text_lower.len() {
-        if text_lower[i..i + needle.len()] == *needle {
+    while i + needle.len() <= text_folded.len() {
+        if text_folded[i..i + needle.len()] == *needle {
             let start = byte_starts.get(i).copied().unwrap_or(0);
             let end = if i + needle.len() < byte_starts.len() {
                 byte_starts[i + needle.len()]
@@ -107,7 +109,7 @@ fn find_in_text(node_id: NodeId, text: &str, needle: &[char]) -> Vec<FindMatch> 
                 start_byte: start,
                 end_byte: end,
             });
-            i += 1;
+            i += needle.len();
         } else {
             i += 1;
         }
@@ -153,7 +155,13 @@ fn collect_from_node(doc: &BaseDocument, node_id: NodeId, out: &mut Vec<(NodeId,
     {
         out.push((node_id, text));
     }
-    for &child in node.children.iter() {
+    let child_ids: Vec<NodeId> = node
+        .layout_children
+        .borrow()
+        .as_ref()
+        .map(|ids| ids.iter().copied().collect())
+        .unwrap_or_else(|| node.children.iter().copied().collect());
+    for child in child_ids {
         collect_from_node(doc, child, out);
     }
 }
@@ -220,6 +228,18 @@ impl FindSession {
         crate::chrome::set_find_bar_open(chrome, false);
         crate::chrome::set_find_count(chrome, 0, 0);
         clear_page_selection(chrome);
+        if let Some(page_id) = page_iframe_id(chrome) {
+            chrome.set_focus_to(page_id);
+        }
+    }
+
+    /// Re-collect page text and refresh matches after the page finishes loading.
+    pub fn rerun_search_after_load(&mut self, chrome: &mut BaseDocument) {
+        if !self.open || self.state.query().is_empty() {
+            return;
+        }
+        self.synced_query.clear();
+        self.sync_from_input(chrome);
     }
 
     pub fn sync_from_input(&mut self, chrome: &mut BaseDocument) {
@@ -312,6 +332,31 @@ mod tests {
     }
 
     #[test]
+    fn turkish_dotted_i_matches_itself() {
+        let texts = vec![(node_id(1), "İstanbul".to_string())];
+        let matches = find_matches(&texts, "istanbul");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            &texts[0].1[matches[0].start_byte..matches[0].end_byte],
+            "İstanbul"
+        );
+    }
+
+    #[test]
+    fn greek_sigma_matches_itself() {
+        let texts = vec![(node_id(1), "ΟΔΟΣ".to_string())];
+        let matches = find_matches(&texts, "οδοσ");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn german_sharp_s_does_not_panic() {
+        let texts = vec![(node_id(1), "groß".to_string())];
+        let _ = find_matches(&texts, "ß");
+        let _ = find_matches(&texts, "GROß");
+    }
+
+    #[test]
     fn next_prev_wrap() {
         let mut state = FindState::default();
         let texts = vec![(node_id(1), "aa bb aa".to_string())];
@@ -365,18 +410,47 @@ mod tests {
             "script text is skipped"
         );
 
+        let script_only = find_matches(&texts, "xyzzy");
+        assert!(
+            script_only.is_empty(),
+            "script-only tokens have no inline layout; skip is defensive"
+        );
+
+        let before_matches = find_matches(&texts, "before");
+        let after_matches = find_matches(&texts, "after");
+        assert!(
+            !before_matches.is_empty() && !after_matches.is_empty(),
+            "anonymous layout children must be searchable"
+        );
+
         let matches = find_matches(&texts, "alpha");
         assert!(!matches.is_empty(), "expected alpha matches");
         let first = &matches[0];
         apply_current_match(&mut chrome, first);
         layout_doc(&mut chrome);
 
-        let ranges = with_page_document_mut(&mut chrome, |page| page.get_text_selection_ranges())
-            .expect("page subdoc");
+        let (ranges, selected) = with_page_document_mut(&mut chrome, |page| {
+            (page.get_text_selection_ranges(), page.get_selected_text())
+        })
+        .expect("page subdoc");
         assert_eq!(ranges.len(), 1);
         let (node, start, end) = ranges[0];
         assert_eq!(node, first.node_id);
         assert_eq!(start, first.start_byte);
         assert_eq!(end, first.end_byte);
+        assert_eq!(selected.as_deref(), Some("alpha"));
+
+        let cafe_matches = find_matches(&texts, "café");
+        assert!(!cafe_matches.is_empty(), "expected café match");
+        let cafe_match = &cafe_matches[0];
+        apply_current_match(&mut chrome, cafe_match);
+        layout_doc(&mut chrome);
+        let cafe_selected =
+            with_page_document_mut(&mut chrome, |page| page.get_selected_text()).expect("page");
+        let cafe_inline = texts
+            .iter()
+            .find(|(id, _)| *id == cafe_match.node_id)
+            .map(|(_, t)| &t[cafe_match.start_byte..cafe_match.end_byte]);
+        assert_eq!(cafe_selected.as_deref(), cafe_inline);
     }
 }

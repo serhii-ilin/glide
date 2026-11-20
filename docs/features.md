@@ -36,16 +36,16 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | --- | --- | --- | --- | --- | --- |
 | F-001 | Address bar: URL vs. search resolution (bare host → https, phrase → DuckDuckGo HTML) | done | R-001 | `location::tests::*`, `chrome::tests::reads_the_address_form` | |
 | F-002 | Chrome as an HTML document, page in an `<iframe>`; `glide://` commands | done | R-001, R-002 | `chrome::tests::classifies_chrome_actions` | |
-| F-003 | Back / forward / reload with redirect-aware history | done | R-002 | none yet | `History` in `src/main.rs`; tests come with T1 |
+| F-003 | Back / forward / reload with redirect-aware history | done | R-002 | `history::tests::*` | `History` in `src/history.rs` |
 | F-004 | Window title follows page `<title>` | done | R-002 | manual | |
 | F-005 | Browser shortcuts (Cmd/Ctrl+L/R/W/Q/[/], Alt+arrows, F5, scroll keys) | done | R-005 | `keyboard::tests::{history_shortcuts,reload_shortcut,browser_chrome_shortcuts_work_in_text_fields}` | full matrix in T2 |
 | F-006 | Text editing with macOS standard keybindings | done | R-005 | `keyboard::tests::{macos_backspace_deletes_backward,macos_option_arrows_move_by_word}` | |
 | F-007 | Keyboard forwarding into the page iframe | done | R-005 | manual | |
 | F-008 | V8 page JavaScript: worker thread, DOM RPC, timers, rAF, fetch, events | done | R-004 | `js::apply::tests::*`, `js::integration::*`, `js::scripts::tests::*` | experimental; see README limits |
-| F-009 | `--no-js` CLI flag | done | R-004 | none yet | covered by T3 dump tests |
+| F-009 | `--no-js` CLI flag | done | R-004 | `args::tests::*` | |
 | F-010 | Headless `--screenshot` to PNG (with and without JS) | done | R-006 | manual | |
 | F-011 | `file://`, `data:`, http(s) loading through blitz-net | done | R-003 | indirect | |
-| F-020 | T1 Hardening: lib/bin split, `History` module + tests, tested CLI args, clippy clean, CI | planned | R-007, R-002 | | |
+| F-020 | T1 Hardening: lib/bin split, `History` module + tests, tested CLI args, clippy clean, CI | done | R-007, R-002 | `history::tests::*`, `args::tests::*`, CI workflow | lib/bin split, `src/app.rs` |
 | F-021 | T2 Keyboard verification: table tests for every README shortcut, manual checklist | planned | R-005 | | |
 | F-022 | T3 Runtime JS toggle (toolbar + Cmd/Ctrl+Shift+J) and `--dump-text` headless mode | planned | R-008, R-004 | | |
 | F-023 | T4 Loading indicator, error page with retry, stop button | planned | R-009 | | stop may be deferred if blitz-net cannot abort |

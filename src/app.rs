@@ -1,0 +1,393 @@
+//! Windowed browser: chrome shell, history, keyboard shortcuts, and JS pump.
+
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use blitz_dom::{BaseDocument, DocumentConfig, qual_name};
+use blitz_net::Provider;
+use blitz_shell::{
+    BlitzApplication, BlitzShellEvent, BlitzShellProxy, WindowConfig, create_default_event_loop,
+};
+use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{WindowAttributes, WindowId};
+
+use crate::chrome::{NavCommand, chrome_document, command_from_url};
+use crate::history::History;
+use crate::html::{GlideHtmlProvider, HtmlPageDocument};
+use crate::js::{JsHost, JsTap};
+use crate::keyboard;
+use crate::location::resolve_location;
+use crate::parse;
+
+const CHROME_BASE: &str = "https://glide.invalid/chrome";
+
+type Renderer = anyrender_vello_cpu::VelloCpuWindowRenderer;
+
+pub fn run_window(start: String, js_enabled: bool) -> Result<(), String> {
+    let event_loop = create_default_event_loop();
+    let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
+    let net_impl = Arc::new(Provider::new(Some(Arc::new(proxy.clone()))));
+    let net: Arc<dyn blitz_traits::net::NetProvider> = net_impl.clone();
+    let bus = NavBus::default();
+
+    let js_tap = if js_enabled {
+        JsTap::new_enabled()
+    } else {
+        JsTap::new_disabled()
+    };
+    let html_provider = GlideHtmlProvider {
+        scripting_enabled: Arc::new(AtomicBool::new(js_enabled)),
+        js_tap: js_tap.clone(),
+    };
+    let js_host = JsHost::new(js_enabled, js_tap, Some(net_impl));
+
+    let chrome_config = DocumentConfig {
+        base_url: Some(CHROME_BASE.to_string()),
+        net_provider: Some(net),
+        navigation_provider: Some(Arc::new(ChromeNav {
+            bus: bus.clone(),
+            proxy: proxy.clone(),
+        })),
+        html_parser_provider: Some(Arc::new(html_provider.clone())),
+        ..Default::default()
+    };
+
+    let doc = HtmlPageDocument(parse::document_from_html(
+        &chrome_document(&start),
+        chrome_config,
+        js_enabled,
+    ));
+
+    let attrs = WindowAttributes::default()
+        .with_title("Glide")
+        .with_surface_size(winit::dpi::LogicalSize::new(1100.0, 760.0));
+    let window = WindowConfig::with_attributes(Box::new(doc), Renderer::new(), attrs);
+
+    let mut app = Glide::new(proxy, receiver, bus, start, js_host, html_provider);
+    app.inner.add_window(window);
+    event_loop
+        .run_app(app)
+        .map_err(|err| format!("glide exited: {err}"))
+}
+
+#[derive(Clone, Default)]
+struct NavBus {
+    inner: Arc<Mutex<Vec<NavCommand>>>,
+}
+
+impl NavBus {
+    fn push(&self, command: NavCommand) {
+        self.inner.lock().expect("nav bus").push(command);
+    }
+
+    fn take(&self) -> Vec<NavCommand> {
+        std::mem::take(&mut *self.inner.lock().expect("nav bus"))
+    }
+}
+
+struct ChromeNav {
+    bus: NavBus,
+    proxy: BlitzShellProxy,
+}
+
+impl NavigationProvider for ChromeNav {
+    fn navigate_to(&self, options: NavigationOptions) {
+        if let Some(command) = command_from_url(&options.url) {
+            self.bus.push(command);
+            self.proxy.wake_up();
+        }
+    }
+}
+
+struct Glide {
+    inner: BlitzApplication<Renderer>,
+    bus: NavBus,
+    js: JsHost,
+    #[expect(dead_code, reason = "runtime JS toggle, F-022")]
+    html_provider: GlideHtmlProvider,
+    history: History,
+    /// URL we last asked the iframe to load. Observations of that load,
+    /// including redirects, update the current history entry in place.
+    expecting: Option<String>,
+    last_seen: Option<String>,
+    shown: String,
+    last_title: String,
+}
+
+impl Glide {
+    fn new(
+        proxy: BlitzShellProxy,
+        receiver: std::sync::mpsc::Receiver<BlitzShellEvent>,
+        bus: NavBus,
+        start: String,
+        js: JsHost,
+        html_provider: GlideHtmlProvider,
+    ) -> Self {
+        Self {
+            inner: BlitzApplication::new(proxy, receiver),
+            bus,
+            js,
+            html_provider,
+            history: History::new(start.clone()),
+            expecting: Some(start.clone()),
+            last_seen: None,
+            shown: start,
+            last_title: "Glide".to_string(),
+        }
+    }
+
+    fn sync(&mut self) {
+        let Some(view) = self.inner.windows.values_mut().next() else {
+            return;
+        };
+        let mut changed = false;
+        {
+            let mut doc = view.doc.inner_mut();
+            for command in self.bus.take() {
+                changed = true;
+                match command {
+                    NavCommand::Back => {
+                        if let Some(url) = self.history.back() {
+                            self.js.on_navigation(&url);
+                            load_iframe(&mut doc, &url);
+                            self.expecting = Some(url.clone());
+                            self.shown.clone_from(&url);
+                            set_address(&mut doc, &url);
+                        }
+                    }
+                    NavCommand::Forward => {
+                        if let Some(url) = self.history.forward() {
+                            self.js.on_navigation(&url);
+                            load_iframe(&mut doc, &url);
+                            self.expecting = Some(url.clone());
+                            self.shown.clone_from(&url);
+                            set_address(&mut doc, &url);
+                        }
+                    }
+                    NavCommand::Reload => {
+                        let url = self.history.current();
+                        self.js.on_navigation(&url);
+                        load_iframe(&mut doc, &url);
+                        self.expecting = Some(url);
+                    }
+                    NavCommand::Go(raw) => {
+                        let url = resolve_location(&raw);
+                        self.js.on_navigation(&url);
+                        self.history.push(url.clone());
+                        load_iframe(&mut doc, &url);
+                        self.expecting = Some(url.clone());
+                        self.shown.clone_from(&url);
+                        set_address(&mut doc, &url);
+                    }
+                }
+            }
+
+            if let Some(actual) = page_url(&doc) {
+                if let Some(expected) = self.expecting.clone() {
+                    if actual == expected {
+                        self.expecting = None;
+                        self.last_seen = Some(actual);
+                    } else {
+                        self.history.replace_current(actual.clone());
+                        self.expecting = Some(actual.clone());
+                        if actual != self.shown {
+                            self.shown.clone_from(&actual);
+                            set_address(&mut doc, &actual);
+                        }
+                        self.last_seen = Some(actual);
+                    }
+                } else if self.last_seen.as_ref() != Some(&actual) {
+                    self.history.push(actual.clone());
+                    self.last_seen = Some(actual.clone());
+                    if actual != self.shown {
+                        self.shown.clone_from(&actual);
+                        set_address(&mut doc, &actual);
+                    }
+                }
+            }
+            if let Some(title) = page_title(&doc) {
+                let window_title = if title.is_empty() {
+                    "Glide".to_string()
+                } else {
+                    format!("{title} — Glide")
+                };
+                if window_title != self.last_title {
+                    self.last_title = window_title.clone();
+                    doc.shell_provider.set_window_title(window_title);
+                }
+            }
+        }
+        if changed {
+            view.request_redraw();
+        }
+
+        let page_url_now = {
+            let chrome = view.doc.inner();
+            page_url(&chrome)
+        };
+        if let Some(url) = page_url_now {
+            let handle = tokio::runtime::Handle::current();
+            {
+                let chrome = view.doc.inner();
+                self.js.maybe_start_page(&chrome, &url, &handle);
+            }
+            let js_redraw = {
+                let mut chrome = view.doc.inner_mut();
+                self.js.pump(&mut chrome, Instant::now())
+            };
+            if js_redraw {
+                view.request_redraw();
+            }
+        }
+    }
+
+    fn handle_browser_shortcut(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: &WindowEvent,
+    ) -> bool {
+        let Some(view) = self.inner.windows.get_mut(&window_id) else {
+            return false;
+        };
+        let Some(shortcut) = keyboard::try_browser_shortcut(view, event) else {
+            return false;
+        };
+
+        match shortcut {
+            keyboard::BrowserShortcut::FocusAddressBar => {
+                keyboard::focus_address_bar(view);
+                view.request_redraw();
+                true
+            }
+            keyboard::BrowserShortcut::CloseWindow => {
+                if let Some(win) = self.inner.windows.remove(&window_id) {
+                    drop(win);
+                }
+                if self.inner.windows.is_empty() {
+                    event_loop.exit();
+                }
+                true
+            }
+            keyboard::BrowserShortcut::Quit => {
+                self.inner.windows.clear();
+                event_loop.exit();
+                true
+            }
+            keyboard::BrowserShortcut::Scroll(action) => {
+                keyboard::scroll_page(view, action);
+                view.request_redraw();
+                true
+            }
+            other => {
+                if let Some(command) = keyboard::nav_from_shortcut(other) {
+                    self.bus.push(command);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn load_iframe(doc: &mut BaseDocument, url: &str) {
+    let Some(id) = doc.get_element_by_id("page") else {
+        return;
+    };
+    doc.mutate().set_attribute(id, qual_name!("src"), url);
+}
+
+fn set_address(doc: &mut BaseDocument, url: &str) {
+    let Some(id) = doc.get_element_by_id("url") else {
+        return;
+    };
+    doc.mutate().set_attribute(id, qual_name!("value"), url);
+}
+
+fn page_url(doc: &BaseDocument) -> Option<String> {
+    let id = doc.get_element_by_id("page")?;
+    let url = doc.get_node(id)?.subdoc()?.inner().url().to_string();
+    if url.starts_with("data:") || url.is_empty() {
+        None
+    } else {
+        Some(url)
+    }
+}
+
+fn page_title(doc: &BaseDocument) -> Option<String> {
+    let id = doc.get_element_by_id("page")?;
+    let title = doc
+        .get_node(id)?
+        .subdoc()?
+        .inner()
+        .find_title_node()
+        .map(|node| node.text_content())
+        .unwrap_or_default();
+    Some(title.trim().to_string())
+}
+
+impl ApplicationHandler for Glide {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.inner.can_create_surfaces(event_loop);
+        self.sync();
+    }
+
+    fn destroy_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.inner.destroy_surfaces(event_loop);
+    }
+
+    fn resumed(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.inner.resumed(event_loop);
+    }
+
+    fn suspended(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.inner.suspended(event_loop);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        if self.handle_browser_shortcut(event_loop, window_id, &event) {
+            self.inner
+                .proxy
+                .send_event(BlitzShellEvent::Poll { window_id });
+            self.sync();
+            return;
+        }
+
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && let Some(view) = self.inner.windows.get_mut(&window_id)
+            && keyboard::dispatch_text_keys(view, event)
+        {
+            view.request_redraw();
+            self.inner
+                .proxy
+                .send_event(BlitzShellEvent::Poll { window_id });
+            self.sync();
+            return;
+        }
+
+        self.inner.window_event(event_loop, window_id, event);
+        self.sync();
+    }
+
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.inner.proxy_wake_up(event_loop);
+        self.sync();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_handler(
+        &mut self,
+    ) -> Option<&mut dyn winit::platform::macos::ApplicationHandlerExtMacOS> {
+        Some(&mut self.inner)
+    }
+}

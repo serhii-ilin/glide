@@ -322,11 +322,11 @@ fn map_dom_op(
             url: arg_string(scope, args, 2)?,
             reply,
         },
-        "listen" => DomRequest::Listen {
-            node: arg_handle(scope, args, 2)?,
-            event_type: arg_string(scope, args, 3)?,
-            reply,
-        },
+        "listen" => {
+            arg_handle(scope, args, 2)?;
+            arg_string(scope, args, 3)?;
+            DomRequest::Listen { reply }
+        }
         other => return Err(format!("unknown dom op {other}")),
     })
 }
@@ -351,10 +351,12 @@ fn arg_handle(
             .parse::<u64>()
             .map_err(|_| format!("arg {idx} not a valid node id"));
     }
-    if let Some(n) = v.number_value(scope) {
-        if n >= 0.0 && n <= u64::MAX as f64 && n.trunc() == n {
-            return Ok(n as u64);
-        }
+    if let Some(n) = v.number_value(scope)
+        && n >= 0.0
+        && n <= u64::MAX as f64
+        && n.trunc() == n
+    {
+        return Ok(n as u64);
     }
     Err(format!("arg {idx} not a node id"))
 }
@@ -366,7 +368,6 @@ fn dom_value_to_v8<'s>(
     match value {
         DomValue::Null => v8::null(scope).into(),
         DomValue::Bool(b) => v8::Boolean::new(scope, *b).into(),
-        DomValue::Number(n) => v8::Number::new(scope, *n).into(),
         DomValue::String(s) => v8::String::new(scope, s).unwrap().into(),
         DomValue::NodeId(id) => v8::String::new(scope, &id.to_string()).unwrap().into(),
         DomValue::NodeList(ids) => {

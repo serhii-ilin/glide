@@ -16,14 +16,13 @@ pub struct ScriptSpec {
     pub src: Option<String>,
     pub defer: bool,
     pub r#async: bool,
-    pub node: NodeId,
 }
 
 #[derive(Debug, Clone)]
 pub enum ScriptSource {
     Inline(String),
-    External { url: String, body: String },
-    Failed { url: String, error: String },
+    External(String),
+    Failed,
 }
 
 /// Depth-first document order.
@@ -40,48 +39,47 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
         .map(|n| n.children.iter().copied().collect())
         .unwrap_or_default();
     for child in children {
-        if let Some(el) = doc.get_node(child).and_then(|n| n.element_data()) {
-            if el.name.local == local_name!("script") {
-                if let Some(kind) = el.attr(local_name!("type")).map(str::to_lowercase) {
-                    if kind == "application/ld+json" || kind == "text/json" {
-                        continue;
-                    }
-                    if kind != "text/javascript"
-                        && kind != "application/javascript"
-                        && kind != "module"
-                        && !kind.is_empty()
-                    {
-                        continue;
-                    }
-                    if kind == "module" {
-                        continue;
-                    }
+        if let Some(el) = doc.get_node(child).and_then(|n| n.element_data())
+            && el.name.local == local_name!("script")
+        {
+            if let Some(kind) = el.attr(local_name!("type")).map(str::to_lowercase) {
+                if kind == "application/ld+json" || kind == "text/json" {
+                    continue;
                 }
-                let defer = el.attr(local_name!("defer")).is_some();
-                let async_attr = el.attr(local_name!("async")).is_some();
-                let src = el
-                    .attr(local_name!("src"))
-                    .map(str::to_string)
-                    .filter(|s| !s.is_empty());
-                let defer = src.is_some() && defer;
-                let async_attr = src.is_some() && async_attr;
-                let inline = if src.is_none() {
-                    Some(
-                        doc.get_node(child)
-                            .map(|n| n.text_content())
-                            .unwrap_or_default(),
-                    )
-                } else {
-                    None
-                };
-                out.push(ScriptSpec {
-                    inline,
-                    src,
-                    defer,
-                    r#async: async_attr,
-                    node: child,
-                });
+                if kind != "text/javascript"
+                    && kind != "application/javascript"
+                    && kind != "module"
+                    && !kind.is_empty()
+                {
+                    continue;
+                }
+                if kind == "module" {
+                    continue;
+                }
             }
+            let defer = el.attr(local_name!("defer")).is_some();
+            let async_attr = el.attr(local_name!("async")).is_some();
+            let src = el
+                .attr(local_name!("src"))
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            let defer = src.is_some() && defer;
+            let async_attr = src.is_some() && async_attr;
+            let inline = if src.is_none() {
+                Some(
+                    doc.get_node(child)
+                        .map(|n| n.text_content())
+                        .unwrap_or_default(),
+                )
+            } else {
+                None
+            };
+            out.push(ScriptSpec {
+                inline,
+                src,
+                defer,
+                r#async: async_attr,
+            });
         }
         walk(doc, child, out);
     }
@@ -139,23 +137,16 @@ pub fn resolve_sources(
                     Ok(u) => u,
                     Err(err) => {
                         eprintln!("[js] script url invalid ({src}): {err}");
-                        return ScriptSource::Failed {
-                            url: src.to_string(),
-                            error: err.to_string(),
-                        };
+                        return ScriptSource::Failed;
                     }
                 };
             match rt.block_on(net.fetch_async(Request::get(parsed))) {
-                Ok((_final_url, bytes)) => ScriptSource::External {
-                    url: src.to_string(),
-                    body: String::from_utf8_lossy(&bytes).into_owned(),
-                },
+                Ok((_final_url, bytes)) => {
+                    ScriptSource::External(String::from_utf8_lossy(&bytes).into_owned())
+                }
                 Err(err) => {
                     eprintln!("[js] script fetch failed ({src}): {err}");
-                    ScriptSource::Failed {
-                        url: src.to_string(),
-                        error: err.to_string(),
-                    }
+                    ScriptSource::Failed
                 }
             }
         })
@@ -165,8 +156,8 @@ pub fn resolve_sources(
 pub fn source_body(source: &ScriptSource) -> Option<String> {
     match source {
         ScriptSource::Inline(s) => Some(s.clone()),
-        ScriptSource::External { body, .. } => Some(body.clone()),
-        ScriptSource::Failed { .. } => None,
+        ScriptSource::External(body) => Some(body.clone()),
+        ScriptSource::Failed => None,
     }
 }
 

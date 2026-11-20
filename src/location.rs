@@ -41,9 +41,7 @@ fn host_like(raw: &str) -> Option<String> {
         return None;
     }
     let url = Url::parse(&format!("https://{raw}")).ok()?;
-    if url.host().is_none() {
-        return None;
-    }
+    url.host()?;
     Some(url.to_string())
 }
 

@@ -272,7 +272,7 @@ fn apply_inner(
                 .unwrap_or(DomValue::Null);
             DomResponse::ok(reply, value)
         }
-        DomRequest::Listen { reply, .. } => DomResponse::ok(reply, DomValue::Null),
+        DomRequest::Listen { reply } => DomResponse::ok(reply, DomValue::Null),
         DomRequest::Fetch { url, reply } => {
             if let Some(body) = data_url_body(&url) {
                 return DomResponse::ok(reply, DomValue::String(body));
@@ -356,7 +356,7 @@ fn op_add(mut class: String, token: &str) -> String {
     class
 }
 
-fn op_remove(mut class: String, token: &str) -> String {
+fn op_remove(class: String, token: &str) -> String {
     let parts: Vec<_> = class_tokens(&class).filter(|t| *t != token).collect();
     parts.join(" ")
 }

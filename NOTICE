@@ -71,8 +71,18 @@ https://github.com/boa-dev/boa
 Copyright Boa contributors
 License: Unlicense OR MIT
 
-Kitesurf runs page JavaScript with Boa inside its Workers module. Glide does
-not link Boa. Page scripts are not executed. See README.md.
+Kitesurf runs page JavaScript with Boa inside its Workers module. Glide uses
+V8 for page scripts instead; see below.
+
+--------------------------------------------------------------------------------
+V8 (crate: v8)
+https://v8.dev/ https://github.com/denoland/rusty_v8
+Copyright The V8 project authors and Deno contributors
+License: MIT
+
+Glide embeds V8 prebuilt binaries via the `v8` Rust crate to execute page
+JavaScript on a worker thread. V8 is also subject to its own terms in the
+upstream repository.
 
 --------------------------------------------------------------------------------
 reqwest, tokio, url, winit, png, and the other crates named in Cargo.lock

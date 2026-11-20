@@ -52,9 +52,10 @@ macOS uses the system security framework and Core Text. The Xcode command-line t
 
 ```sh
 cargo run --release -- --screenshot https://example.com example.png
+cargo run --release -- --screenshot --no-js https://example.com example-nojs.png
 ```
 
-This fetches the page, waits for stylesheets and images, and writes a PNG with Vello's CPU rasterizer.
+This fetches the page, waits for stylesheets and images, runs page scripts unless `--no-js` is set, and writes a PNG with Vello's CPU rasterizer.
 
 ## Why this is not a Kitesurf crate dependency
 
@@ -76,6 +77,16 @@ Glide therefore links the native crates Kitesurf is built on, at the versions Ki
 
 Kitesurf patches those crates (box-shadow performance, gradient LUTs, iframe scene recording, a smaller `NodeId`, and others) before compiling them to Wasm. Glide uses the published crates, so it does not include those patches. The painting model is the same: Blitz builds a display list, Vello rasterizes it.
 
+## Page JavaScript
+
+Glide runs page scripts with the [V8](https://v8.dev/) crate on a dedicated `glide-js` thread. The UI thread owns the DOM; scripts call through a small synchronous RPC (`src/js/`). Each navigation tears down the isolate and starts a new one. `--no-js` disables parsing `<script>` tags, skipping the worker entirely.
+
+Supported in the bootstrap shim today: `document` queries and mutations, inline/defer/async classic scripts, `setTimeout` / `setInterval`, `requestAnimationFrame`, `fetch` (via `blitz-net`), and `console.log`. DOM events are stored in JS; clicks are forwarded from the UI thread when possible.
+
+Limits: no `addEventListener` registry on the Rust side beyond bookkeeping, incomplete UI event types, five-second per-script watchdog, no modules/service workers/workers, and many Web APIs are missing. Real sites may still fail; `tests/fixtures/counter.html` is the smoke test.
+
+The first `--release` build downloads and compiles V8 prebuilts in addition to Stylo and Vello, so allow extra time and disk.
+
 ## What works
 
 - A native window on Linux and macOS, drawn with Vello's CPU rasterizer.
@@ -84,10 +95,11 @@ Kitesurf patches those crates (box-shadow performance, gradient LUTs, iframe sce
 - Link clicks, in-page fragment jumps, scrolling, text selection, and form controls that Blitz implements (the address bar is one of those).
 - Back, forward, and reload. Redirects replace the current history entry. A link click pushes a new one.
 - System fonts through Parley.
+- Experimental page JavaScript via V8 (see above). Pass `--no-js` to turn it off.
 
 ## What does not
 
-- **Page JavaScript.** Kitesurf runs scripts with Boa inside the Worker. Blitz 0.3 can optionally host `blitz-vibey-script`, and Glide does not turn that on. Scripts are not downloaded or run. Pages that only render after JavaScript stay empty or show their noscript content. DuckDuckGo is pointed at the HTML frontend for that reason.
+- **Full browser JavaScript.** The bootstrap is intentionally tiny; Boa in Kitesurf implements far more of the Web platform. DuckDuckGo's JS-heavy UI may still break; the HTML frontend is the default search target.
 - **Many browser features.** No multiple tabs, cookies UI, downloads, find-in-page, or extensions. Blitz's own gaps apply too: incomplete CSS, limited form controls, and no full navigation of frames other than the single page iframe Glide uses as the viewport.
 - **Kitesurf's Workers runtime.** No Chrome DevTools Protocol, no Dynamic Workers, no PDF export. Those live in Kitesurf's TypeScript and Wasm layers.
 
@@ -96,8 +108,11 @@ Kitesurf patches those crates (box-shadow performance, gradient LUTs, iframe sce
 The chrome is an HTML document drawn by Blitz. Back, forward, and reload are links (`glide://back` and similar). The address field is a form whose submit is intercepted. The page is an `<iframe>`; clicks inside it stay in Blitz, and Glide records the iframe's URL as history.
 
 ```
-src/main.rs       window, history, keyboard shortcuts
+src/main.rs       window, history, keyboard shortcuts, JS pump
 src/chrome.rs     chrome markup and navigation commands
+src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
+src/js/           V8 worker, DOM RPC, script loading
+src/parse.rs      html5ever with configurable scripting flag
 src/location.rs   URL vs. search
 src/shot.rs       headless PNG
 ```

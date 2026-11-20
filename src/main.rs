@@ -5,14 +5,21 @@
 //! Kitesurf crates themselves are not linked here.
 
 mod chrome;
+mod html;
+mod js;
 mod keyboard;
 mod location;
+mod parse;
 mod shot;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use blitz_dom::{DocumentConfig, qual_name};
-use blitz_html::{HtmlDocument, HtmlProvider};
+use blitz_html::HtmlDocument;
+use html::{GlideHtmlProvider, HtmlPageDocument};
+use js::{JsHost, JsTap};
 use blitz_net::Provider;
 use blitz_shell::{
     BlitzApplication, BlitzShellEvent, BlitzShellProxy, WindowConfig, create_default_event_loop,
@@ -28,14 +35,27 @@ use winit::window::{WindowAttributes, WindowId};
 const CHROME_BASE: &str = "https://glide.invalid/chrome";
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("--screenshot") {
-        let url = args.next().unwrap_or_else(|| "https://example.com".into());
-        let path = args.next().unwrap_or_else(|| "glide-screenshot.png".into());
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let mut args = raw.clone().into_iter();
+    let no_js = raw.iter().any(|a| a == "--no-js");
+    if raw.first().is_some_and(|a| a == "--screenshot") {
+        let args: Vec<_> = raw
+            .iter()
+            .skip(1)
+            .filter(|a| *a != "--no-js")
+            .cloned()
+            .collect();
+        let url = args.first().cloned().unwrap_or_else(|| "https://example.com".into());
+        let path = args.get(1).cloned().unwrap_or_else(|| "glide-screenshot.png".into());
         let url = resolve_location(&url);
         let runtime = tokio_runtime();
         let _guard = runtime.enter();
-        match shot::render_url(&url, std::path::Path::new(&path)) {
+        let render = if no_js {
+            shot::render_url_no_js
+        } else {
+            shot::render_url
+        };
+        match render(&url, std::path::Path::new(&path)) {
             Ok(()) => println!("wrote {path}"),
             Err(err) => {
                 eprintln!("screenshot failed: {err}");
@@ -45,9 +65,11 @@ fn main() {
         return;
     }
 
-    let start = std::env::args()
-        .nth(1)
-        .map(|arg| resolve_location(&arg))
+    let js_enabled = !no_js;
+    let start = raw
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(|arg| resolve_location(arg))
         .unwrap_or_else(|| "https://example.com/".to_string());
 
     let runtime = tokio_runtime();
@@ -55,29 +77,44 @@ fn main() {
 
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
-    let net = Provider::shared(Some(Arc::new(proxy.clone())));
+    let net_impl = Arc::new(Provider::new(Some(Arc::new(proxy.clone()))));
+    let net: Arc<dyn blitz_traits::net::NetProvider> = net_impl.clone();
     let bus = NavBus::default();
 
-    let doc = HtmlDocument::from_html(
+    let js_tap = if js_enabled {
+        JsTap::new_enabled()
+    } else {
+        JsTap::new_disabled()
+    };
+    let html_provider = GlideHtmlProvider {
+        scripting_enabled: Arc::new(AtomicBool::new(js_enabled)),
+        js_tap: js_tap.clone(),
+    };
+    let mut js_host = JsHost::new(js_enabled, js_tap, Some(net_impl));
+
+    let chrome_config = DocumentConfig {
+        base_url: Some(CHROME_BASE.to_string()),
+        net_provider: Some(net),
+        navigation_provider: Some(Arc::new(ChromeNav {
+            bus: bus.clone(),
+            proxy: proxy.clone(),
+        })),
+        html_parser_provider: Some(Arc::new(html_provider.clone())),
+        ..Default::default()
+    };
+
+    let doc = HtmlPageDocument(parse::document_from_html(
         &chrome_document(&start),
-        DocumentConfig {
-            base_url: Some(CHROME_BASE.to_string()),
-            net_provider: Some(net),
-            navigation_provider: Some(Arc::new(ChromeNav {
-                bus: bus.clone(),
-                proxy: proxy.clone(),
-            })),
-            html_parser_provider: Some(Arc::new(HtmlProvider)),
-            ..Default::default()
-        },
-    );
+        chrome_config,
+        js_enabled,
+    ));
 
     let attrs = WindowAttributes::default()
         .with_title("Glide")
         .with_surface_size(winit::dpi::LogicalSize::new(1100.0, 760.0));
     let window = WindowConfig::with_attributes(Box::new(doc), Renderer::new(), attrs);
 
-    let mut app = Glide::new(proxy, receiver, bus, start);
+    let mut app = Glide::new(proxy, receiver, bus, start, js_host, html_provider);
     app.inner.add_window(window);
     if let Err(err) = event_loop.run_app(app) {
         eprintln!("glide exited: {err}");
@@ -170,6 +207,8 @@ type Renderer = anyrender_vello_cpu::VelloCpuWindowRenderer;
 struct Glide {
     inner: BlitzApplication<Renderer>,
     bus: NavBus,
+    js: JsHost,
+    html_provider: GlideHtmlProvider,
     history: History,
     /// URL we last asked the iframe to load. Observations of that load,
     /// including redirects, update the current history entry in place.
@@ -185,10 +224,14 @@ impl Glide {
         receiver: std::sync::mpsc::Receiver<BlitzShellEvent>,
         bus: NavBus,
         start: String,
+        js: JsHost,
+        html_provider: GlideHtmlProvider,
     ) -> Self {
         Self {
             inner: BlitzApplication::new(proxy, receiver),
             bus,
+            js,
+            html_provider,
             history: History::new(start.clone()),
             expecting: Some(start.clone()),
             last_seen: None,
@@ -209,6 +252,7 @@ impl Glide {
                 match command {
                     NavCommand::Back => {
                         if let Some(url) = self.history.back() {
+                            self.js.on_navigation(&url);
                             load_iframe(&mut doc, &url);
                             self.expecting = Some(url.clone());
                             self.shown.clone_from(&url);
@@ -217,6 +261,7 @@ impl Glide {
                     }
                     NavCommand::Forward => {
                         if let Some(url) = self.history.forward() {
+                            self.js.on_navigation(&url);
                             load_iframe(&mut doc, &url);
                             self.expecting = Some(url.clone());
                             self.shown.clone_from(&url);
@@ -225,11 +270,13 @@ impl Glide {
                     }
                     NavCommand::Reload => {
                         let url = self.history.current();
+                        self.js.on_navigation(&url);
                         load_iframe(&mut doc, &url);
                         self.expecting = Some(url);
                     }
                     NavCommand::Go(raw) => {
                         let url = resolve_location(&raw);
+                        self.js.on_navigation(&url);
                         self.history.push(url.clone());
                         load_iframe(&mut doc, &url);
                         self.expecting = Some(url.clone());
@@ -276,6 +323,25 @@ impl Glide {
         }
         if changed {
             view.request_redraw();
+        }
+
+        let page_url_now = {
+            let chrome = view.doc.inner();
+            page_url(&chrome)
+        };
+        if let Some(url) = page_url_now {
+            let handle = tokio::runtime::Handle::current();
+            {
+                let chrome = view.doc.inner();
+                self.js.maybe_start_page(&chrome, &url, &handle);
+            }
+            let js_redraw = {
+                let mut chrome = view.doc.inner_mut();
+                self.js.pump(&mut *chrome, Instant::now())
+            };
+            if js_redraw {
+                view.request_redraw();
+            }
         }
     }
 

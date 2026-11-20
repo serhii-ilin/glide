@@ -1,0 +1,79 @@
+Glide
+Copyright 2026 Glide contributors
+
+This product includes software developed as part of Glide, licensed under
+the Apache License, Version 2.0. See the LICENSE file.
+
+Glide is a native desktop browser. It does not vendor Cloudflare Kitesurf.
+It renders pages with the same engine Kitesurf embeds, linked from crates.io
+at the versions Kitesurf pins. Those components remain under their own
+licenses. Source for each crate is published on crates.io and in the
+upstream repositories named below.
+
+--------------------------------------------------------------------------------
+Kitesurf
+https://github.com/cloudflare/kitesurf
+Copyright Cloudflare, Inc.
+License: Apache-2.0
+
+Kitesurf is an experimental browser engine that runs on Cloudflare Workers.
+Glide follows its stack (Blitz, Stylo, and Vello) rather than linking the
+kitesurf-core or renderer-core crates. Those crates are WebAssembly modules
+for Workers: their public API is wasm-bindgen, their entropy crates are
+configured with the JavaScript backend, and the workspace patches Blitz,
+Stylo, Boa, and Vello to paths that Bazel materialises outside the git tree.
+See README.md.
+
+Kitesurf itself bundles or patches the projects below. Glide uses the
+unpatched crates.io releases of the native subset.
+
+--------------------------------------------------------------------------------
+Blitz (blitz, blitz-dom, blitz-html, blitz-paint, blitz-shell, blitz-net,
+blitz-traits, stylo_taffy)
+https://github.com/DioxusLabs/blitz
+Copyright Dioxus Labs and Blitz contributors
+License: MIT OR Apache-2.0
+Version used by Glide and by Kitesurf: 0.3.0-beta.4
+
+HTML parsing, the DOM, layout (Taffy), and painting.
+
+--------------------------------------------------------------------------------
+Stylo (style, selectors, and related Servo crates)
+https://github.com/servo/stylo
+Copyright Servo contributors
+License: Mozilla Public License 2.0
+Version pulled in by Blitz 0.3.0-beta.4: 0.22
+
+CSS parsing, cascading, and computed styles. The MPL-2.0 source is the
+published crate and the Servo repository above.
+
+--------------------------------------------------------------------------------
+html5ever / markup5ever / xml5ever
+https://github.com/servo/html5ever
+Copyright Servo contributors
+License: MIT OR Apache-2.0
+
+--------------------------------------------------------------------------------
+Vello, Parley, Kurbo, Peniko, and the other Linebender libraries used by
+Blitz and anyrender (including vello, vello_cpu, parley, kurbo, peniko,
+skrifa, fontations)
+https://github.com/linebender/vello
+https://github.com/linebender/parley
+License: Apache-2.0 OR MIT
+
+Text layout and 2D rendering. Glide's window and `glide --screenshot`
+both rasterize with anyrender_vello_cpu (vello_cpu), the CPU renderer
+Kitesurf uses on Workers. The window is presented with softbuffer.
+
+--------------------------------------------------------------------------------
+Boa
+https://github.com/boa-dev/boa
+Copyright Boa contributors
+License: Unlicense OR MIT
+
+Kitesurf runs page JavaScript with Boa inside its Workers module. Glide does
+not link Boa. Page scripts are not executed. See README.md.
+
+--------------------------------------------------------------------------------
+reqwest, tokio, url, winit, png, and the other crates named in Cargo.lock
+are third-party dependencies under the licenses recorded in those crates.

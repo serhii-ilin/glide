@@ -1,0 +1,38 @@
+[package]
+name = "glide"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "A small desktop web browser"
+readme = "README.md"
+rust-version = "1.91"
+publish = false
+
+[[bin]]
+name = "glide"
+path = "src/main.rs"
+
+[dependencies]
+anyrender = "0.14"
+anyrender_vello_cpu = { version = "0.18", features = ["softbuffer_window_renderer"] }
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = [
+    "svg",
+    "woff",
+    "system-fonts",
+    "floats",
+    "scrollbars",
+] }
+blitz-html = "=0.3.0-beta.4"
+blitz-net = "=0.3.0-beta.4"
+blitz-paint = { version = "=0.3.0-beta.4", features = ["svg", "scrollbars"] }
+blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
+blitz-traits = "=0.3.0-beta.4"
+peniko = "0.6"
+png = "0.18"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+url = "2"
+winit = "=0.31.0-beta.3"
+
+[profile.release]
+lto = false
+codegen-units = 8

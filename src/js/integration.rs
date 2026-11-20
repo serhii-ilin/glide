@@ -70,6 +70,7 @@ fn failed_external_script_does_not_panic() {
         src: Some("https://example.invalid/missing.js".into()),
         defer: false,
         r#async: false,
+        element: None,
     }];
     let sources =
         crate::js::scripts::resolve_sources(&specs, &net, "https://example.test/", handle);

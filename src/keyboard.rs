@@ -6,7 +6,7 @@
 //! embedder setups never receive those callbacks reliably, and keyboard events are not
 //! forwarded into iframe sub-documents. Glide closes both gaps here.
 
-use blitz_dom::BaseDocument;
+use blitz_dom::{BaseDocument, Document};
 use blitz_shell::View;
 #[cfg(target_os = "macos")]
 use blitz_traits::SmolStr;
@@ -246,25 +246,66 @@ fn page_iframe_accepts_keys(chrome: &BaseDocument) -> bool {
     page_iframe_id(chrome).is_some_and(|page_id| chrome.get_focussed_node_id() == Some(page_id))
 }
 
-/// macOS: deliver an Apple standard keybinding into the iframe when one applies.
-fn try_iframe_apple_keybinding(
+/// Forward a key into the page iframe when it has focus.
+///
+/// Returns `Some(true)` when the iframe consumed the event, `Some(false)` when the iframe
+/// is focused but the key is a browser shortcut, and `None` when the iframe is not the
+/// keyboard target.
+pub(crate) fn forward_page_iframe_key(
+    chrome: &mut BaseDocument,
     event: &KeyEvent,
     modifiers: ModifiersState,
-    dispatch: impl FnOnce(UiEvent),
-) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        if event.state.is_pressed()
-            && let PhysicalKey::Code(code) = event.physical_key
-            && let Some(selector) = macos_standard_keybinding(code, modifiers)
-        {
-            dispatch(UiEvent::AppleStandardKeybinding(SmolStr::new(selector)));
-            return true;
-        }
+) -> Option<bool> {
+    if !page_iframe_accepts_keys(chrome) {
+        return None;
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (event, modifiers, dispatch);
-    false
+    let PhysicalKey::Code(code) = event.physical_key else {
+        return Some(false);
+    };
+    let pressed = event.state.is_pressed();
+    if pressed && browser_shortcut(code, modifiers, false).is_some() {
+        return Some(false);
+    }
+    let page_id = page_iframe_id(chrome).expect("page iframe is focused");
+    let Some(sub) = chrome
+        .get_node_mut(page_id)
+        .and_then(|node| node.subdoc_mut())
+    else {
+        return Some(false);
+    };
+    #[cfg(target_os = "macos")]
+    if pressed && let Some(selector) = macos_standard_keybinding(code, modifiers) {
+        sub.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(selector)));
+        return Some(true);
+    }
+    let blitz_key = winit_key_to_blitz(event, modifiers);
+    let ui = if pressed {
+        UiEvent::KeyDown(blitz_key)
+    } else {
+        UiEvent::KeyUp(blitz_key)
+    };
+    sub.handle_ui_event(ui);
+    Some(true)
+}
+
+/// Apply a macOS standard keybinding to the focused chrome text control, if any.
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_macos_chrome_keybinding(
+    chrome: &mut BaseDocument,
+    code: KeyCode,
+    modifiers: ModifiersState,
+) -> bool {
+    let focused_input = chrome
+        .get_focussed_node_id()
+        .is_some_and(|id| node_is_text_input(chrome, id));
+    if !focused_input {
+        return false;
+    }
+    let Some(selector) = macos_standard_keybinding(code, modifiers) else {
+        return false;
+    };
+    chrome.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(selector)));
+    true
 }
 
 /// Deliver editing/viewport keyboard handling before Blitz's default `KeyboardInput` path.
@@ -276,35 +317,7 @@ pub fn dispatch_text_keys<Rend: WindowRenderer>(view: &mut View<Rend>, event: &K
     let iframe_handled = {
         let mut guard = view.doc.inner_mut();
         let chrome = &mut *guard;
-        if !page_iframe_accepts_keys(chrome) {
-            None
-        } else if let PhysicalKey::Code(code) = event.physical_key {
-            if event.state.is_pressed() && browser_shortcut(code, modifiers, false).is_some() {
-                Some(false)
-            } else if let Some(page_id) = page_iframe_id(chrome)
-                && let Some(sub) = chrome
-                    .get_node_mut(page_id)
-                    .and_then(|node| node.subdoc_mut())
-            {
-                let handled = try_iframe_apple_keybinding(event, modifiers, |ui| {
-                    sub.handle_ui_event(ui);
-                });
-                if !handled {
-                    let blitz_key = winit_key_to_blitz(event, modifiers);
-                    let ui = if event.state.is_pressed() {
-                        UiEvent::KeyDown(blitz_key)
-                    } else {
-                        UiEvent::KeyUp(blitz_key)
-                    };
-                    sub.handle_ui_event(ui);
-                }
-                Some(true)
-            } else {
-                Some(false)
-            }
-        } else {
-            None
-        }
+        forward_page_iframe_key(chrome, event, modifiers)
     };
 
     if let Some(true) = iframe_handled {
@@ -314,33 +327,24 @@ pub fn dispatch_text_keys<Rend: WindowRenderer>(view: &mut View<Rend>, event: &K
         return false;
     }
 
+    if !event.state.is_pressed() {
+        return false;
+    }
+    let PhysicalKey::Code(code) = event.physical_key else {
+        return false;
+    };
     #[cfg(target_os = "macos")]
     {
-        let selector = {
-            let mut guard = view.doc.inner_mut();
-            let chrome = &mut *guard;
-            if !event.state.is_pressed() {
-                return false;
-            }
-            let PhysicalKey::Code(code) = event.physical_key else {
-                return false;
-            };
-            let focused_input = chrome
-                .get_focussed_node_id()
-                .is_some_and(|id| node_is_text_input(chrome, id));
-            if !focused_input {
-                return false;
-            }
-            macos_standard_keybinding(code, modifiers).map(SmolStr::new)
-        };
-        if let Some(selector) = selector {
-            view.doc
-                .handle_ui_event(UiEvent::AppleStandardKeybinding(selector));
-            return true;
-        }
+        let mut guard = view.doc.inner_mut();
+        let chrome = &mut *guard;
+        apply_macos_chrome_keybinding(chrome, code, modifiers)
     }
 
-    false
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (view, code, modifiers);
+        false
+    }
 }
 
 pub fn scroll_page<Rend: WindowRenderer>(view: &mut View<Rend>, action: ScrollAction) -> bool {
@@ -439,7 +443,16 @@ pub fn focus_address_bar<Rend: WindowRenderer>(view: &mut View<Rend>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use blitz_dom::{DocumentConfig, qual_name};
+    use blitz_traits::shell::{ColorScheme, Viewport};
+    use keyboard_types::{Code, Key, NamedKey};
     use winit::keyboard::ModifiersState;
+
+    use crate::chrome::{NavCommand, chrome_document};
+    use crate::html::GlideHtmlProvider;
+    use crate::parse;
 
     fn mods(ctrl: bool, alt: bool, shift: bool, meta: bool) -> ModifiersState {
         let mut m = ModifiersState::empty();
@@ -458,63 +471,648 @@ mod tests {
         m
     }
 
-    #[test]
-    fn browser_chrome_shortcuts_work_in_text_fields() {
-        assert_eq!(
-            browser_shortcut(KeyCode::KeyL, mods(true, false, false, false), true),
-            Some(BrowserShortcut::FocusAddressBar)
-        );
-        assert!(browser_shortcut(KeyCode::Space, ModifiersState::empty(), true).is_none());
+    fn ctrl_meta_mods() -> [(ModifiersState, &'static str); 2] {
+        [
+            (mods(true, false, false, false), "Ctrl"),
+            (mods(false, false, false, true), "Meta"),
+        ]
+    }
+
+    struct ShortcutCase {
+        row: String,
+        code: KeyCode,
+        modifiers: ModifiersState,
+        text_focused: bool,
+        expected: Option<BrowserShortcut>,
+    }
+
+    fn case(
+        row: impl Into<String>,
+        code: KeyCode,
+        modifiers: ModifiersState,
+        text_focused: bool,
+        expected: Option<BrowserShortcut>,
+    ) -> ShortcutCase {
+        ShortcutCase {
+            row: row.into(),
+            code,
+            modifiers,
+            text_focused,
+            expected,
+        }
+    }
+
+    fn both(
+        row: &str,
+        code: KeyCode,
+        modifiers: ModifiersState,
+        expected_unfocused: Option<BrowserShortcut>,
+        expected_focused: Option<BrowserShortcut>,
+    ) -> [ShortcutCase; 2] {
+        [
+            case(row, code, modifiers, false, expected_unfocused),
+            case(
+                format!("{row} (text focused)"),
+                code,
+                modifiers,
+                true,
+                expected_focused,
+            ),
+        ]
+    }
+
+    fn readme_shortcut_cases() -> Vec<ShortcutCase> {
+        let alt = mods(false, true, false, false);
+        let shift_only = mods(false, false, true, false);
+        let none = ModifiersState::empty();
+        let mut cases = Vec::new();
+
+        cases.extend(both(
+            "Enter (not a browser shortcut)",
+            KeyCode::Enter,
+            none,
+            None,
+            None,
+        ));
+        cases.extend(both(
+            "Alt+Left back",
+            KeyCode::ArrowLeft,
+            alt,
+            Some(BrowserShortcut::Back),
+            Some(BrowserShortcut::Back),
+        ));
+        cases.extend(both(
+            "Alt+Right forward",
+            KeyCode::ArrowRight,
+            alt,
+            Some(BrowserShortcut::Forward),
+            Some(BrowserShortcut::Forward),
+        ));
+
+        for (prim, tag) in ctrl_meta_mods() {
+            cases.extend(both(
+                &format!("{tag}+[ back"),
+                KeyCode::BracketLeft,
+                prim,
+                Some(BrowserShortcut::Back),
+                Some(BrowserShortcut::Back),
+            ));
+            cases.extend(both(
+                &format!("{tag}+] forward"),
+                KeyCode::BracketRight,
+                prim,
+                Some(BrowserShortcut::Forward),
+                Some(BrowserShortcut::Forward),
+            ));
+            cases.extend(both(
+                &format!("{tag}+R reload"),
+                KeyCode::KeyR,
+                prim,
+                Some(BrowserShortcut::Reload),
+                Some(BrowserShortcut::Reload),
+            ));
+            cases.extend(both(
+                &format!("{tag}+L focus address bar"),
+                KeyCode::KeyL,
+                prim,
+                Some(BrowserShortcut::FocusAddressBar),
+                Some(BrowserShortcut::FocusAddressBar),
+            ));
+            cases.extend(both(
+                &format!("{tag}+W close"),
+                KeyCode::KeyW,
+                prim,
+                Some(BrowserShortcut::CloseWindow),
+                Some(BrowserShortcut::CloseWindow),
+            ));
+            cases.extend(both(
+                &format!("{tag}+Q quit"),
+                KeyCode::KeyQ,
+                prim,
+                Some(BrowserShortcut::Quit),
+                Some(BrowserShortcut::Quit),
+            ));
+            cases.push(case(
+                format!("{tag}+Shift+R not intercepted"),
+                KeyCode::KeyR,
+                prim | ModifiersState::SHIFT,
+                false,
+                None,
+            ));
+            for (suffix, code) in [
+                ("C not intercepted", KeyCode::KeyC),
+                ("V not intercepted", KeyCode::KeyV),
+                ("X not intercepted", KeyCode::KeyX),
+                ("A not intercepted", KeyCode::KeyA),
+            ] {
+                cases.push(case(format!("{tag}+{suffix}"), code, prim, true, None));
+            }
+        }
+
+        cases.extend(both(
+            "F5 reload",
+            KeyCode::F5,
+            none,
+            Some(BrowserShortcut::Reload),
+            Some(BrowserShortcut::Reload),
+        ));
+        cases.push(case(
+            "plain letter not intercepted",
+            KeyCode::KeyA,
+            none,
+            false,
+            None,
+        ));
+
+        let scroll_cases = [
+            (
+                "Space scroll down",
+                KeyCode::Space,
+                none,
+                BrowserShortcut::Scroll(ScrollAction::Down),
+            ),
+            (
+                "Shift+Space scroll up",
+                KeyCode::Space,
+                shift_only,
+                BrowserShortcut::Scroll(ScrollAction::PageUp),
+            ),
+            (
+                "PgUp",
+                KeyCode::PageUp,
+                none,
+                BrowserShortcut::Scroll(ScrollAction::PageUp),
+            ),
+            (
+                "PgDn",
+                KeyCode::PageDown,
+                none,
+                BrowserShortcut::Scroll(ScrollAction::PageDown),
+            ),
+            (
+                "Home",
+                KeyCode::Home,
+                none,
+                BrowserShortcut::Scroll(ScrollAction::Home),
+            ),
+            (
+                "End",
+                KeyCode::End,
+                none,
+                BrowserShortcut::Scroll(ScrollAction::End),
+            ),
+            (
+                "ArrowUp",
+                KeyCode::ArrowUp,
+                none,
+                BrowserShortcut::Scroll(ScrollAction::Up),
+            ),
+            (
+                "ArrowDown",
+                KeyCode::ArrowDown,
+                none,
+                BrowserShortcut::Scroll(ScrollAction::Down),
+            ),
+        ];
+        for (row, code, modifiers, expected) in scroll_cases {
+            cases.push(case(row, code, modifiers, false, Some(expected)));
+            cases.push(case(
+                format!("{row} (text focused)"),
+                code,
+                modifiers,
+                true,
+                None,
+            ));
+        }
+
+        cases
     }
 
     #[test]
-    fn reload_shortcut() {
-        assert_eq!(
-            browser_shortcut(KeyCode::KeyR, mods(true, false, false, false), false),
-            Some(BrowserShortcut::Reload)
-        );
-        assert_eq!(
-            browser_shortcut(KeyCode::F5, ModifiersState::empty(), false),
-            Some(BrowserShortcut::Reload)
-        );
+    fn readme_shortcut_table() {
+        for case in readme_shortcut_cases() {
+            let got = browser_shortcut(case.code, case.modifiers, case.text_focused);
+            assert_eq!(
+                got, case.expected,
+                "README shortcut row failed: {}",
+                case.row
+            );
+        }
     }
 
     #[test]
-    fn history_shortcuts() {
+    fn nav_from_shortcut_maps_history() {
+        assert_eq!(
+            nav_from_shortcut(BrowserShortcut::Back),
+            Some(NavCommand::Back)
+        );
+        assert_eq!(
+            nav_from_shortcut(BrowserShortcut::Reload),
+            Some(NavCommand::Reload)
+        );
+        assert!(nav_from_shortcut(BrowserShortcut::FocusAddressBar).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_standard_keybinding_table() {
+        let none = ModifiersState::empty();
+        let shift = mods(false, false, true, false);
+        let option = mods(false, true, false, false);
+        let cmd = mods(false, false, false, true);
+        let cmd_shift = cmd | shift;
+        let option_shift = option | shift;
+
+        let rows: &[(&str, KeyCode, ModifiersState, Option<&str>)] = &[
+            (
+                "plain Backspace",
+                KeyCode::Backspace,
+                none,
+                Some("deleteBackward:"),
+            ),
+            (
+                "plain Delete",
+                KeyCode::Delete,
+                none,
+                Some("deleteForward:"),
+            ),
+            (
+                "plain ArrowLeft",
+                KeyCode::ArrowLeft,
+                none,
+                Some("moveLeft:"),
+            ),
+            (
+                "plain ArrowRight",
+                KeyCode::ArrowRight,
+                none,
+                Some("moveRight:"),
+            ),
+            ("plain ArrowUp", KeyCode::ArrowUp, none, Some("moveUp:")),
+            (
+                "plain ArrowDown",
+                KeyCode::ArrowDown,
+                none,
+                Some("moveDown:"),
+            ),
+            (
+                "plain Home",
+                KeyCode::Home,
+                none,
+                Some("moveToBeginningOfLine:"),
+            ),
+            ("plain End", KeyCode::End, none, Some("moveToEndOfLine:")),
+            ("plain Enter", KeyCode::Enter, none, Some("insertNewline:")),
+            (
+                "plain NumpadEnter",
+                KeyCode::NumpadEnter,
+                none,
+                Some("insertNewline:"),
+            ),
+            (
+                "Shift+ArrowLeft",
+                KeyCode::ArrowLeft,
+                shift,
+                Some("moveLeftAndModifySelection:"),
+            ),
+            (
+                "Shift+ArrowRight",
+                KeyCode::ArrowRight,
+                shift,
+                Some("moveRightAndModifySelection:"),
+            ),
+            (
+                "Shift+ArrowUp",
+                KeyCode::ArrowUp,
+                shift,
+                Some("moveUpAndModifySelection:"),
+            ),
+            (
+                "Shift+ArrowDown",
+                KeyCode::ArrowDown,
+                shift,
+                Some("moveDownAndModifySelection:"),
+            ),
+            (
+                "Option+ArrowLeft",
+                KeyCode::ArrowLeft,
+                option,
+                Some("moveWordBackward:"),
+            ),
+            (
+                "Option+ArrowRight",
+                KeyCode::ArrowRight,
+                option,
+                Some("moveWordForward:"),
+            ),
+            (
+                "Option+Shift+ArrowLeft",
+                KeyCode::ArrowLeft,
+                option_shift,
+                Some("moveWordBackwardAndModifySelection:"),
+            ),
+            (
+                "Option+Shift+ArrowRight",
+                KeyCode::ArrowRight,
+                option_shift,
+                Some("moveWordForwardAndModifySelection:"),
+            ),
+            (
+                "Option+Backspace",
+                KeyCode::Backspace,
+                option,
+                Some("deleteWordBackward:"),
+            ),
+            (
+                "Option+Delete",
+                KeyCode::Delete,
+                option,
+                Some("deleteWordForward:"),
+            ),
+            (
+                "Cmd+ArrowLeft",
+                KeyCode::ArrowLeft,
+                cmd,
+                Some("moveToBeginningOfLine:"),
+            ),
+            (
+                "Cmd+ArrowRight",
+                KeyCode::ArrowRight,
+                cmd,
+                Some("moveToEndOfLine:"),
+            ),
+            (
+                "Cmd+Shift+ArrowLeft",
+                KeyCode::ArrowLeft,
+                cmd_shift,
+                Some("moveToBeginningOfLineAndModifySelection:"),
+            ),
+            (
+                "Cmd+Shift+ArrowRight",
+                KeyCode::ArrowRight,
+                cmd_shift,
+                Some("moveToEndOfLineAndModifySelection:"),
+            ),
+            ("Cmd+C passthrough", KeyCode::KeyC, cmd, None),
+        ];
+
+        for &(row, code, modifiers, expected) in rows {
+            let got = macos_standard_keybinding(code, modifiers);
+            assert_eq!(got, expected, "macOS keybinding row failed: {row}");
+        }
+    }
+
+    fn char_code(ch: char) -> KeyCode {
+        match ch {
+            'a' => KeyCode::KeyA,
+            'b' => KeyCode::KeyB,
+            'c' => KeyCode::KeyC,
+            _ => panic!("unsupported test character {ch}"),
+        }
+    }
+
+    fn blitz_key(code: KeyCode, modifiers: ModifiersState, key: Key) -> BlitzKeyEvent {
+        let physical = match code {
+            KeyCode::Backspace => Code::Backspace,
+            KeyCode::Delete => Code::Delete,
+            KeyCode::ArrowLeft => Code::ArrowLeft,
+            KeyCode::ArrowRight => Code::ArrowRight,
+            KeyCode::Enter => Code::Enter,
+            KeyCode::KeyA => Code::KeyA,
+            KeyCode::KeyB => Code::KeyB,
+            KeyCode::KeyC => Code::KeyC,
+            _ => Code::Unidentified,
+        };
+        BlitzKeyEvent {
+            key,
+            code: physical,
+            modifiers: winit_modifiers_to_kbt(modifiers),
+            location: keyboard_types::Location::Standard,
+            is_auto_repeating: false,
+            is_composing: false,
+            state: KeyState::Pressed,
+            text: None,
+        }
+    }
+
+    fn text_value_in_doc(doc: &BaseDocument, id: &str) -> Option<String> {
+        let node_id = doc.get_element_by_id(id)?;
+        let input = doc.get_node(node_id)?.element_data()?.text_input_data()?;
+        Some(input.editor.text().to_string())
+    }
+
+    fn test_document_config() -> DocumentConfig {
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(GlideHtmlProvider::default())),
+            ..DocumentConfig::default()
+        }
+    }
+
+    fn layout_doc(doc: &mut BaseDocument) {
+        doc.resolve(0.0);
+    }
+
+    fn chrome_test_document() -> BaseDocument {
+        let html = chrome_document("");
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        layout_doc(&mut doc);
+        let url_id = doc.get_element_by_id("url").expect("url input");
+        doc.set_focus_to(url_id);
+        doc
+    }
+
+    fn press_editing_key(doc: &mut BaseDocument, code: KeyCode, modifiers: ModifiersState) {
         #[cfg(target_os = "macos")]
-        let primary = mods(false, false, false, true);
+        if apply_macos_chrome_keybinding(doc, code, modifiers) {
+            return;
+        }
+        let key = match code {
+            KeyCode::Backspace => Key::Named(NamedKey::Backspace),
+            KeyCode::Delete => Key::Named(NamedKey::Delete),
+            KeyCode::End => Key::Named(NamedKey::End),
+            KeyCode::KeyA => Key::Character("a".into()),
+            KeyCode::KeyB => Key::Character("b".into()),
+            KeyCode::KeyC => Key::Character("c".into()),
+            _ => Key::Named(NamedKey::Unidentified),
+        };
+        doc.handle_ui_event(UiEvent::KeyDown(blitz_key(code, modifiers, key)));
+    }
+
+    fn press_char(doc: &mut BaseDocument, ch: char) {
+        let code = char_code(ch);
+        doc.handle_ui_event(UiEvent::KeyDown(blitz_key(
+            code,
+            ModifiersState::empty(),
+            Key::Character(ch.to_string()),
+        )));
+    }
+
+    use winit::event::ElementState;
+    use winit::keyboard::Key as WinitKey;
+
+    fn test_key_event(code: KeyCode, state: ElementState, logical: WinitKey) -> KeyEvent {
+        let key_without_modifiers = logical.clone();
+        KeyEvent {
+            physical_key: PhysicalKey::Code(code),
+            logical_key: logical,
+            text: None,
+            text_with_all_modifiers: None,
+            key_without_modifiers,
+            location: winit::keyboard::KeyLocation::Standard,
+            state,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn headless_address_bar_typing_and_backspace() {
+        let mut doc = chrome_test_document();
+        press_char(&mut doc, 'a');
+        press_char(&mut doc, 'b');
+        press_char(&mut doc, 'c');
+        press_editing_key(&mut doc, KeyCode::Backspace, ModifiersState::empty());
+        assert_eq!(
+            text_value_in_doc(&doc, "url").as_deref(),
+            Some("ab"),
+            "address bar value after typing and Backspace"
+        );
+    }
+
+    #[test]
+    fn headless_word_delete_in_address_bar() {
+        let mut doc = chrome_test_document();
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.with_text_input(url_id, |mut driver| {
+            driver.editor.set_text("hello world");
+            driver.refresh_layout();
+        });
+
+        #[cfg(target_os = "macos")]
+        {
+            press_editing_key(
+                &mut doc,
+                KeyCode::ArrowRight,
+                mods(false, false, false, true),
+            );
+            press_editing_key(
+                &mut doc,
+                KeyCode::Backspace,
+                mods(false, true, false, false),
+            );
+        }
         #[cfg(not(target_os = "macos"))]
-        let primary = mods(true, false, false, false);
-
+        {
+            press_editing_key(&mut doc, KeyCode::End, ModifiersState::empty());
+            press_editing_key(
+                &mut doc,
+                KeyCode::Backspace,
+                mods(true, false, false, false),
+            );
+        }
         assert_eq!(
-            browser_shortcut(KeyCode::BracketLeft, primary, false),
-            Some(BrowserShortcut::Back)
+            text_value_in_doc(&doc, "url").as_deref(),
+            Some("hello "),
+            "address bar value after word Backspace"
+        );
+    }
+
+    const PAGE_INPUT_FIXTURE: &str = include_str!("../tests/fixtures/input.html");
+
+    fn chrome_with_page_srcdoc() -> BaseDocument {
+        let html = chrome_document("about:blank");
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        layout_doc(&mut doc);
+        let page_id = doc.get_element_by_id("page").expect("page iframe");
+        {
+            let mut m = doc.mutate();
+            m.set_attribute(page_id, qual_name!("srcdoc"), PAGE_INPUT_FIXTURE);
+        }
+        layout_doc(&mut doc);
+        let field_id = doc
+            .get_element_by_id("page")
+            .and_then(|id| doc.get_node(id))
+            .and_then(|n| n.subdoc())
+            .and_then(|sub| sub.inner().get_element_by_id("field"))
+            .expect("field input in iframe srcdoc");
+        doc.set_focus_to(page_id);
+        if let Some(sub) = doc.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
+            sub.inner_mut().set_focus_to(field_id);
+        }
+        doc
+    }
+
+    #[test]
+    fn headless_iframe_input_receives_keys() {
+        let mut doc = chrome_with_page_srcdoc();
+        let modifiers = ModifiersState::empty();
+        for ch in ['a', 'b', 'c'] {
+            let code = char_code(ch);
+            let event = test_key_event(
+                code,
+                ElementState::Pressed,
+                WinitKey::Character(ch.to_string().into()),
+            );
+            assert_eq!(
+                forward_page_iframe_key(&mut doc, &event, modifiers),
+                Some(true),
+                "iframe should consume key for {ch}"
+            );
+        }
+
+        let page_id = doc.get_element_by_id("page").expect("page");
+        let value = doc
+            .get_node(page_id)
+            .and_then(|n| n.subdoc())
+            .and_then(|sub| text_value_in_doc(&sub.inner(), "field"))
+            .expect("iframe field value");
+        assert_eq!(value, "abc");
+    }
+
+    #[test]
+    fn forward_page_iframe_key_forwards_key_up() {
+        let mut doc = chrome_with_page_srcdoc();
+        let modifiers = ModifiersState::empty();
+        let event = test_key_event(
+            KeyCode::KeyA,
+            ElementState::Released,
+            WinitKey::Character("a".into()),
         );
         assert_eq!(
-            browser_shortcut(KeyCode::ArrowLeft, mods(false, true, false, false), false),
-            Some(BrowserShortcut::Back)
+            forward_page_iframe_key(&mut doc, &event, modifiers),
+            Some(true)
         );
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
-    fn macos_backspace_deletes_backward() {
-        assert_eq!(
-            macos_standard_keybinding(KeyCode::Backspace, ModifiersState::empty()),
-            Some("deleteBackward:")
+    fn forward_page_iframe_key_leaves_browser_shortcut() {
+        let mut doc = chrome_with_page_srcdoc();
+        let event = test_key_event(
+            KeyCode::KeyL,
+            ElementState::Pressed,
+            WinitKey::Character("l".into()),
         );
-        assert_eq!(
-            macos_standard_keybinding(KeyCode::Delete, ModifiersState::empty()),
-            Some("deleteForward:")
-        );
+        for prim in [
+            mods(true, false, false, false),
+            mods(false, false, false, true),
+        ] {
+            assert_eq!(forward_page_iframe_key(&mut doc, &event, prim), Some(false));
+        }
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
-    fn macos_option_arrows_move_by_word() {
+    fn forward_page_iframe_key_ignores_unfocused_iframe() {
+        let mut doc = chrome_with_page_srcdoc();
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.set_focus_to(url_id);
+        let event = test_key_event(
+            KeyCode::KeyA,
+            ElementState::Pressed,
+            WinitKey::Character("a".into()),
+        );
         assert_eq!(
-            macos_standard_keybinding(KeyCode::ArrowLeft, mods(false, true, false, false)),
-            Some("moveWordBackward:")
+            forward_page_iframe_key(&mut doc, &event, ModifiersState::empty()),
+            None
         );
     }
 }

@@ -19,6 +19,7 @@ pub struct LoadState {
     subresource_in_flight: AtomicU32,
     load_generation: AtomicU64,
     page_cancel: Mutex<Option<ActivePageLoad>>,
+    page_loads_started: AtomicUsize,
     #[cfg(test)]
     pub(crate) test_page_delay_ms: AtomicUsize,
 }
@@ -48,11 +49,14 @@ impl LoadState {
         self.page_in_flight.load(Ordering::Relaxed) > 0
     }
 
+    pub fn page_loads_started(&self) -> usize {
+        self.page_loads_started.load(Ordering::Relaxed)
+    }
+
     pub fn stop_page_load(&self) {
         let mut guard = lock_cancel(&self.page_cancel);
-        if let Some(active) = guard.as_mut() {
-            let controller = std::mem::take(&mut active.controller);
-            controller.abort();
+        if let Some(active) = guard.take() {
+            active.controller.abort();
             active.notify.notify_waiters();
         }
     }
@@ -75,6 +79,7 @@ impl LoadState {
             notify: notify.clone(),
         });
         self.page_in_flight.fetch_add(1, Ordering::Relaxed);
+        self.page_loads_started.fetch_add(1, Ordering::Relaxed);
 
         PageLoadToken {
             generation,
@@ -94,6 +99,7 @@ impl LoadState {
         }
     }
 
+    /// Count in-flight subresource fetches so we can wake the shell when the last one ends.
     fn subresource_started(&self) {
         self.subresource_in_flight.fetch_add(1, Ordering::Relaxed);
     }

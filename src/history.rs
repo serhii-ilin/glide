@@ -48,17 +48,18 @@ impl History {
         self.entries[self.index] = url;
     }
 
-    /// Undo a [`push`] when navigation was stopped before the page URL changed.
-    pub fn cancel_pending_entry(&mut self, displayed_url: &str) {
-        if self.current() == displayed_url {
-            return;
-        }
-        if self.index > 0 {
-            self.entries.pop();
-            self.index -= 1;
-        } else {
-            self.replace_current(displayed_url.to_string());
-        }
+    pub fn history_index(&self) -> usize {
+        self.index
+    }
+
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
+    /// Rewind the stack after a cancelled navigation (index and trailing entries).
+    pub fn restore_to_index(&mut self, index: usize) {
+        self.index = index;
+        self.entries.truncate(index + 1);
     }
 }
 
@@ -135,12 +136,11 @@ mod tests {
     }
 
     #[test]
-    fn stop_after_go_restores_previous_entry() {
+    fn restore_to_index_drops_forward_entries() {
         let mut h = History::new("https://a/".into());
         h.push("https://b/".into());
-        assert_eq!(h.current(), "https://b/");
-        h.cancel_pending_entry("https://a/");
-        assert_eq!(h.current(), "https://a/");
-        assert_eq!(h.entries.len(), 1);
+        h.restore_to_index(0);
+        assert_eq!(h.entries(), &["https://a/"]);
+        assert_eq!(h.history_index(), 0);
     }
 }

@@ -10,7 +10,7 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | Milestone | Goal | State |
 | --- | --- | --- |
 | M0 | First window, navigation, experimental JS (PRs #1, #2) | done |
-| M1 | Minimal browser: hardening, keyboard, JS toggle, loading/error UX, zoom/find, persistence, compatibility report | in-progress |
+| M1 | Minimal browser: hardening, keyboard, JS toggle, loading/error UX, zoom/find, persistence, compatibility report | done (manual checks M-001–M-028 and first CI run pending) |
 
 ## Requirements
 
@@ -54,7 +54,7 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | F-025 | T6 Profile dir, settings, session restore, history file, bookmarks, in-memory cookies | done | R-011 | `profile::tests::*`, `history::tests::from_parts_restores_position`, `args::tests::*`, `keyboard::tests::readme_shortcut_table`, `net::tests::{provider_with_cookies_feature_builds,glide_bookmarks_page_delivers_html}`, manual M-026–M-028 | F-026 deferred; profile under platform data dir or `GLIDE_PROFILE_DIR` |
 | F-026 | Cookies persisted to disk | deferred | R-011 | | blitz-net builds its own reqwest client; needs a custom NetProvider |
 | F-027 | T7 Compatibility runner (`compat` bin) and `docs/compat/REPORT.md` | done | R-012 | `compat::*`, `tests/compat_runner.rs`, `docs/compat/results.json` | Acid1-3 live URLs, ~100 WPT reftests + 30 `dom/nodes` harness; `scripts/vendor-wpt.sh` |
-| F-028 | T8 Super-critical compatibility fixes | planned | R-013 | | no crash/panic/hang in T7 report; scoped after T7 |
+| F-028 | T8 Super-critical compatibility fixes | done | R-013 | `docs/compat/REPORT.md` | T7 run (191 checks) found no crash, panic or hang; nothing to fix. Non-critical gaps are F-030–F-033 |
 | F-030 | WPT CSS reftest pixel diffs | deferred | R-012 | `docs/compat/REPORT.md` | 31/99 reftests exceed 0.1% / channel 16 tolerance |
 | F-031 | WPT testharness cannot load | deferred | R-012 | `docs/compat/REPORT.md`, `compat::subprocess::tests::first_uncaught_from_glide_stderr` | JS global `self` missing (`ReferenceError` at `testharness.js` load); 0/29 files measurable—not DOM API gaps. A small shim (e.g. `self` → `globalThis`) would let the suite measure DOM APIs; deferred per super-critical-only policy |
 | F-032 | Missing Web APIs and DOM bindings | deferred | R-012 | `tests/compat/probe.html`, `docs/compat/REPORT.md` | 37/57 probe keys undefined (e.g. `localStorage`, `MutationObserver`, `getComputedStyle`, many `documentElement` accessors) |

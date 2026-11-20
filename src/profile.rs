@@ -26,8 +26,18 @@ pub struct Profile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default = "default_js_enabled")]
     pub js_enabled: bool,
+    #[serde(default = "default_zoom_percent")]
     pub zoom_percent: i32,
+}
+
+fn default_js_enabled() -> bool {
+    true
+}
+
+fn default_zoom_percent() -> i32 {
+    100
 }
 
 impl Default for Settings {
@@ -41,8 +51,187 @@ impl Default for Settings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Session {
+    #[serde(default)]
     pub entries: Vec<String>,
+    #[serde(default)]
     pub index: usize,
+}
+
+/// Disk-backed profile, or disabled when the data dir is unavailable.
+#[derive(Debug, Clone)]
+pub struct ProfileStore {
+    inner: Option<Profile>,
+}
+
+impl ProfileStore {
+    pub fn open() -> Self {
+        match Profile::open() {
+            Ok(profile) => Self {
+                inner: Some(profile),
+            },
+            Err(err) => {
+                eprintln!("glide: profile unavailable ({err}); running without persistence");
+                Self { inner: None }
+            }
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    fn profile(&self) -> Option<&Profile> {
+        self.inner.as_ref()
+    }
+
+    pub fn load_settings(&self) -> Settings {
+        self.profile()
+            .map(Profile::load_settings)
+            .unwrap_or_default()
+    }
+
+    pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {
+        match self.profile() {
+            Some(p) => p.save_settings(settings),
+            None => Ok(()),
+        }
+    }
+
+    pub fn load_session(&self) -> Session {
+        self.profile()
+            .map(Profile::load_session)
+            .unwrap_or_default()
+    }
+
+    pub fn save_session(&self, session: &Session) -> Result<(), String> {
+        match self.profile() {
+            Some(p) => p.save_session(session),
+            None => Ok(()),
+        }
+    }
+
+    pub fn append_history(&self, entry: &HistoryEntry) -> Result<(), String> {
+        match self.profile() {
+            Some(p) => p.append_history(entry),
+            None => Ok(()),
+        }
+    }
+
+    pub fn load_bookmarks(&self) -> Vec<Bookmark> {
+        self.profile()
+            .map(Profile::load_bookmarks)
+            .unwrap_or_default()
+    }
+
+    pub fn save_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<(), String> {
+        match self.profile() {
+            Some(p) => p.save_bookmarks(bookmarks),
+            None => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingHistoryCommand {
+    Go,
+    Back,
+    Forward,
+    Reload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryCommitKind {
+    Completed,
+    LinkNavigation,
+    Redirect,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HistoryLogState {
+    pub cli_start_url: Option<String>,
+    pub restore_start_url: Option<String>,
+    pub cli_start_logged: bool,
+    pub restore_replay_seen: bool,
+    pub pending_command: Option<PendingHistoryCommand>,
+}
+
+/// Whether a committed navigation should append one line to `history.jsonl`.
+pub fn should_append_history_log(
+    state: &mut HistoryLogState,
+    kind: HistoryCommitKind,
+    url: &str,
+) -> bool {
+    if !should_persist_url(url) {
+        return false;
+    }
+    match kind {
+        HistoryCommitKind::LinkNavigation | HistoryCommitKind::Redirect => true,
+        HistoryCommitKind::Completed => {
+            if state.pending_command == Some(PendingHistoryCommand::Reload) {
+                state.pending_command = None;
+                return false;
+            }
+            if let Some(ref cli) = state.cli_start_url
+                && !state.cli_start_logged
+                && url == cli.as_str()
+            {
+                state.cli_start_logged = true;
+                state.pending_command = None;
+                return true;
+            }
+            if let Some(ref restore) = state.restore_start_url
+                && !state.restore_replay_seen
+                && url == restore.as_str()
+            {
+                state.restore_replay_seen = true;
+                state.pending_command = None;
+                return false;
+            }
+            let log = matches!(
+                state.pending_command,
+                Some(PendingHistoryCommand::Go)
+                    | Some(PendingHistoryCommand::Back)
+                    | Some(PendingHistoryCommand::Forward)
+            );
+            state.pending_command = None;
+            log
+        }
+    }
+}
+
+/// Build a session snapshot for disk, dropping internal URLs and failed loads.
+pub fn session_for_disk(
+    entries: &[String],
+    index: usize,
+    failed_urls: &HashSet<String>,
+) -> Session {
+    let kept: Vec<String> = entries
+        .iter()
+        .filter(|url| should_persist_url(url) && !failed_urls.contains(url.as_str()))
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        return Session::default();
+    }
+    let current = entries.get(index).cloned().unwrap_or_default();
+    let mapped_index = if should_persist_url(&current) && !failed_urls.contains(current.as_str()) {
+        kept.iter().position(|u| u == &current)
+    } else {
+        None
+    };
+    let mapped_index = mapped_index.unwrap_or_else(|| {
+        entries
+            .iter()
+            .take(index + 1)
+            .filter(|url| should_persist_url(url) && !failed_urls.contains(url.as_str()))
+            .count()
+            .saturating_sub(1)
+    });
+    let mapped_index = mapped_index.min(kept.len().saturating_sub(1));
+    Session {
+        entries: kept,
+        index: mapped_index,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,9 +308,8 @@ impl Profile {
             .open(&path)
             .map_err(|err| format!("history append: {err}"))?;
         let line = serde_json::to_string(entry).map_err(|err| format!("history encode: {err}"))?;
-        writeln!(file, "{line}").map_err(|err| format!("history write: {err}"))?;
-        file.sync_all()
-            .map_err(|err| format!("history fsync: {err}"))?;
+        file.write_all(format!("{line}\n").as_bytes())
+            .map_err(|err| format!("history write: {err}"))?;
         Ok(())
     }
 
@@ -177,7 +365,7 @@ impl Profile {
     {
         fs::create_dir_all(&self.dir).map_err(|err| format!("profile mkdir: {err}"))?;
         let path = self.dir.join(name);
-        let tmp = self.dir.join(format!("{name}.tmp"));
+        let tmp = self.dir.join(format!("{name}.{}.tmp", std::process::id()));
         let json = serde_json::to_vec_pretty(value).map_err(|err| format!("json encode: {err}"))?;
         {
             let mut file = File::create(&tmp).map_err(|err| format!("profile write: {err}"))?;
@@ -289,8 +477,20 @@ pub fn should_persist_url(url: &str) -> bool {
     !url.starts_with("glide:") && !url.is_empty()
 }
 
-pub fn is_error_page_title(title: &str) -> bool {
-    title.contains("Can't open page")
+pub fn history_log_state_for_launch(
+    cli_url: Option<&str>,
+    start_url: &str,
+    session: &Session,
+) -> HistoryLogState {
+    HistoryLogState {
+        cli_start_url: cli_url.map(|u| u.to_string()),
+        restore_start_url: if cli_url.is_none() && !session.entries.is_empty() {
+            Some(start_url.to_string())
+        } else {
+            None
+        },
+        ..HistoryLogState::default()
+    }
 }
 
 #[cfg(test)]
@@ -356,8 +556,75 @@ mod tests {
     fn atomic_write_leaves_no_tmp_file() {
         let p = temp_profile();
         p.save_settings(&Settings::default()).expect("save");
-        assert!(!p.dir().join(format!("{SETTINGS_FILE}.tmp")).exists());
+        let tmp_name = format!("{SETTINGS_FILE}.{}.tmp", std::process::id());
+        assert!(!p.dir().join(tmp_name).exists());
         assert!(p.dir().join(SETTINGS_FILE).exists());
+    }
+
+    #[test]
+    fn settings_missing_field_keeps_others() {
+        let p = temp_profile();
+        fs::create_dir_all(p.dir()).expect("mkdir");
+        fs::write(p.dir().join(SETTINGS_FILE), br#"{"js_enabled":false}"#).expect("write");
+        assert_eq!(
+            p.load_settings(),
+            Settings {
+                js_enabled: false,
+                zoom_percent: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn session_save_skips_internal_and_error_entries() {
+        let entries = vec![
+            "https://a/".into(),
+            "glide://bookmarks".into(),
+            "https://b/".into(),
+        ];
+        let mut failed = HashSet::new();
+        failed.insert("https://b/".into());
+        let session = session_for_disk(&entries, 2, &failed);
+        assert_eq!(session.entries, vec!["https://a/"]);
+        assert_eq!(session.index, 0);
+    }
+
+    #[test]
+    fn history_log_skips_reload_and_restore_replay() {
+        let mut state = HistoryLogState {
+            restore_start_url: Some("https://saved/".into()),
+            ..HistoryLogState::default()
+        };
+        assert!(!should_append_history_log(
+            &mut state,
+            HistoryCommitKind::Completed,
+            "https://saved/"
+        ));
+        state.pending_command = Some(PendingHistoryCommand::Reload);
+        assert!(!should_append_history_log(
+            &mut state,
+            HistoryCommitKind::Completed,
+            "https://x/"
+        ));
+        state.pending_command = Some(PendingHistoryCommand::Back);
+        assert!(should_append_history_log(
+            &mut state,
+            HistoryCommitKind::Completed,
+            "https://older/"
+        ));
+    }
+
+    #[test]
+    fn history_log_cli_start_url() {
+        let mut state = HistoryLogState {
+            cli_start_url: Some("https://cli/".into()),
+            ..HistoryLogState::default()
+        };
+        assert!(should_append_history_log(
+            &mut state,
+            HistoryCommitKind::Completed,
+            "https://cli/"
+        ));
     }
 
     #[test]

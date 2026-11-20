@@ -6,6 +6,7 @@
 
 mod app;
 pub mod args;
+mod bookmarks;
 pub mod chrome;
 pub mod find;
 pub mod headless;

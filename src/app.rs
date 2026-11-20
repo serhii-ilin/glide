@@ -17,8 +17,9 @@ use winit::window::{WindowAttributes, WindowId};
 
 use std::sync::atomic::Ordering;
 
+use crate::bookmarks::BookmarksState;
 use crate::chrome::{
-    NavCommand, chrome_document, command_from_url, set_address, set_bookmark_star, set_loading_ui,
+    NavCommand, chrome_document, command_from_url, set_address, set_loading_ui,
     sync_committed_address,
 };
 use crate::find::FindSession;
@@ -31,8 +32,9 @@ use crate::nav::{NavKind, NavTracker, ObserveEffect};
 use crate::net::{GlideNet, LoadState};
 use crate::parse;
 use crate::profile::{
-    HistoryEntry, Profile, Session, Settings, bookmarks_page_html, effective_js_enabled,
-    is_error_page_title, settings_from_saved, should_persist_url, window_start_state,
+    HistoryCommitKind, HistoryEntry, HistoryLogState, PendingHistoryCommand, ProfileStore,
+    Settings, effective_js_enabled, history_log_state_for_launch, session_for_disk,
+    settings_from_saved, should_append_history_log, should_persist_url, window_start_state,
 };
 use crate::zoom::PageZoom;
 
@@ -48,14 +50,15 @@ pub struct WindowLaunch {
     pub js_enabled: bool,
     pub persist_js_setting: bool,
     pub zoom: PageZoom,
-    pub profile: Profile,
+    pub profile: ProfileStore,
     pub saved_settings: Settings,
+    pub history_log: HistoryLogState,
 }
 
 pub fn prepare_window_launch(
     cli_url: Option<&str>,
     cli_no_js: bool,
-    profile: Profile,
+    profile: ProfileStore,
 ) -> WindowLaunch {
     let saved = profile.load_settings();
     let (saved_settings, zoom) = settings_from_saved(&saved);
@@ -64,6 +67,7 @@ pub fn prepare_window_launch(
     let defer_session_save = cli_url.is_some();
     let (start_url, entries, index) = window_start_state(cli_url, &session);
     let history = History::from_parts(entries, index);
+    let history_log = history_log_state_for_launch(cli_url, &start_url, &session);
     WindowLaunch {
         start_url,
         history,
@@ -73,7 +77,12 @@ pub fn prepare_window_launch(
         zoom,
         profile,
         saved_settings,
+        history_log,
     }
+}
+
+pub(crate) fn chrome_accepts_navigation(source_document: usize, chrome_doc_id: usize) -> bool {
+    chrome_doc_id != 0 && source_document == chrome_doc_id
 }
 
 pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
@@ -86,6 +95,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         zoom,
         profile,
         saved_settings,
+        history_log,
     } = launch;
     let profile = Arc::new(profile);
     let event_loop = create_default_event_loop();
@@ -93,8 +103,9 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
     let load_state = Arc::new(LoadState::default());
     let net_impl = Arc::new(Provider::new(Some(Arc::new(proxy.clone()))));
     let waker: Arc<dyn blitz_traits::net::NetWaker> = Arc::new(proxy.clone());
-    let profile_for_net = profile.clone();
-    let bookmarks = Arc::new(move || bookmarks_page_html(&profile_for_net.load_bookmarks()));
+    let bookmarks_state = BookmarksState::load(profile.clone());
+    let bookmark_list = Arc::new(std::sync::RwLock::new(bookmarks_state.entries().to_vec()));
+    let bookmarks = BookmarksState::shared(bookmark_list.clone());
     let net = GlideNet::new(net_impl.clone(), load_state.clone(), waker, bookmarks);
     let bus = NavBus::default();
 
@@ -115,12 +126,13 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         navigation_provider: Some(Arc::new(ChromeNav {
             bus: bus.clone(),
             proxy: proxy.clone(),
+            load_state: load_state.clone(),
         })),
         html_parser_provider: Some(Arc::new(html_provider.clone())),
         ..Default::default()
     };
 
-    let bookmarked = profile.is_bookmarked(&start);
+    let bookmarked = bookmarks_state.is_bookmarked(&start);
     let mut doc =
         build_chrome_page_document(&start, js_enabled, bookmarked, &load_state, chrome_config);
     {
@@ -149,6 +161,9 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
             persist_js_setting,
             defer_session_save,
         },
+        bookmarks: bookmarks_state,
+        bookmark_list: bookmark_list.clone(),
+        history_log,
     });
     app.inner.add_window(window);
     event_loop
@@ -174,10 +189,15 @@ impl NavBus {
 struct ChromeNav {
     bus: NavBus,
     proxy: BlitzShellProxy,
+    load_state: Arc<LoadState>,
 }
 
 impl NavigationProvider for ChromeNav {
     fn navigate_to(&self, options: NavigationOptions) {
+        let chrome_id = self.load_state.chrome_doc_id();
+        if !chrome_accepts_navigation(options.source_document, chrome_id) {
+            return;
+        }
         if let Some(command) = command_from_url(&options.url) {
             self.bus.push(command);
             self.proxy.wake_up();
@@ -186,7 +206,7 @@ impl NavigationProvider for ChromeNav {
 }
 
 struct GlideSessionState {
-    profile: Arc<Profile>,
+    profile: Arc<ProfileStore>,
     saved_settings: Settings,
     persist_js_setting: bool,
     defer_session_save: bool,
@@ -203,6 +223,9 @@ struct GlideBootstrap {
     history: History,
     zoom: PageZoom,
     session: GlideSessionState,
+    bookmarks: BookmarksState,
+    bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
+    history_log: HistoryLogState,
 }
 
 struct Glide {
@@ -218,6 +241,9 @@ struct Glide {
     zoom: PageZoom,
     find: FindSession,
     session: GlideSessionState,
+    bookmarks: BookmarksState,
+    bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
+    history_log: HistoryLogState,
 }
 
 fn build_chrome_page_document(
@@ -238,8 +264,8 @@ fn build_chrome_page_document(
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock before epoch")
-        .as_secs()
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl Glide {
@@ -257,6 +283,9 @@ impl Glide {
             zoom: init.zoom,
             find: FindSession::default(),
             session: init.session,
+            bookmarks: init.bookmarks,
+            bookmark_list: init.bookmark_list,
+            history_log: init.history_log,
         }
     }
 
@@ -277,10 +306,12 @@ impl Glide {
         if self.session.defer_session_save {
             return;
         }
-        let session = Session {
-            entries: self.nav.history().entries().to_vec(),
-            index: self.nav.history().index(),
-        };
+        let failed = self.load_state.failed_page_urls();
+        let session = session_for_disk(
+            self.nav.history().entries(),
+            self.nav.history().index(),
+            &failed,
+        );
         let _ = self.session.profile.save_session(&session);
     }
 
@@ -294,37 +325,32 @@ impl Glide {
         if !matches!(
             effect,
             ObserveEffect::Completed | ObserveEffect::LinkNavigation | ObserveEffect::Redirect
-        ) || self.session.defer_session_save
-        {
+        ) {
             return;
         }
-        if !should_persist_url(url) || is_error_page_title(title) {
+        if self.load_state.page_load_failed(url) || !should_persist_url(url) {
+            if !self.session.defer_session_save {
+                self.save_session_if_allowed();
+            }
             return;
         }
-        self.save_session_if_allowed();
-        let entry = HistoryEntry {
-            ts_unix: unix_now(),
-            url: url.to_string(),
-            title: title.to_string(),
-        };
-        let _ = self.session.profile.append_history(&entry);
-    }
 
-    fn refresh_bookmark_star(doc: &mut BaseDocument, profile: &Profile, url: &str) {
-        let bookmarked = profile.is_bookmarked(url);
-        set_bookmark_star(doc, bookmarked);
-    }
-
-    fn toggle_bookmark_for_page(doc: &mut BaseDocument, profile: &Profile) {
-        let Some(url) = page_url(doc) else {
-            return;
+        let commit_kind = match effect {
+            ObserveEffect::Completed => HistoryCommitKind::Completed,
+            ObserveEffect::LinkNavigation => HistoryCommitKind::LinkNavigation,
+            ObserveEffect::Redirect => HistoryCommitKind::Redirect,
+            ObserveEffect::Unchanged => return,
         };
-        if !should_persist_url(&url) {
-            return;
+        if should_append_history_log(&mut self.history_log, commit_kind, url) {
+            let entry = HistoryEntry {
+                ts_unix: unix_now(),
+                url: url.to_string(),
+                title: title.to_string(),
+            };
+            let _ = self.session.profile.append_history(&entry);
         }
-        let title = page_title(doc).unwrap_or_default();
-        if let Ok(bookmarked) = profile.toggle_bookmark(&url, &title, unix_now()) {
-            set_bookmark_star(doc, bookmarked);
+        if !self.session.defer_session_save {
+            self.save_session_if_allowed();
         }
     }
 
@@ -335,6 +361,7 @@ impl Glide {
         let mut changed = false;
         let mut save_settings_after = false;
         let mut committed: Option<(ObserveEffect, String, String)> = None;
+        let mut pending_history: Option<PendingHistoryCommand> = None;
         if let Some(view) = self.inner.windows.get_mut(&window_id) {
             let mut doc = view.doc.inner_mut();
             for command in self.bus.take() {
@@ -342,6 +369,7 @@ impl Glide {
                 match command {
                     NavCommand::Back => {
                         self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Back);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -354,6 +382,7 @@ impl Glide {
                     }
                     NavCommand::Forward => {
                         self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Forward);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -366,6 +395,7 @@ impl Glide {
                     }
                     NavCommand::Reload => {
                         self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Reload);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -386,6 +416,7 @@ impl Glide {
                     }
                     NavCommand::ToggleJs => {
                         self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Reload);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -399,11 +430,20 @@ impl Glide {
                         save_settings_after = true;
                     }
                     NavCommand::ToggleBookmark => {
-                        Self::toggle_bookmark_for_page(&mut doc, &self.session.profile);
+                        if let Some(url) = page_url(&doc)
+                            && should_persist_url(&url)
+                        {
+                            let title = page_title(&doc).unwrap_or_default();
+                            self.bookmarks.toggle(&mut doc, &url, &title, unix_now());
+                            if let Ok(mut shared) = self.bookmark_list.write() {
+                                *shared = self.bookmarks.entries().to_vec();
+                            }
+                        }
                         changed = true;
                     }
                     NavCommand::Go(raw) => {
                         self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Go);
                         if self.find.open {
                             self.find.close_bar(&mut doc);
                         }
@@ -441,7 +481,7 @@ impl Glide {
                 {
                     self.find.close_bar(&mut doc);
                 }
-                Self::refresh_bookmark_star(&mut doc, &self.session.profile, &actual);
+                self.bookmarks.sync_star(&mut doc, &actual);
                 if matches!(
                     effect,
                     ObserveEffect::Completed
@@ -476,6 +516,9 @@ impl Glide {
             }
         }
 
+        if let Some(cmd) = pending_history {
+            self.history_log.pending_command = Some(cmd);
+        }
         if save_settings_after {
             let _ = self.save_settings();
         }
@@ -790,6 +833,16 @@ mod tests {
     use blitz_traits::net::NetWaker;
 
     use super::*;
+    use url::Url;
+
+    #[test]
+    fn chrome_commands_ignored_from_other_documents() {
+        assert!(!chrome_accepts_navigation(1, 5));
+        assert!(chrome_accepts_navigation(5, 5));
+        assert!(!chrome_accepts_navigation(5, 0));
+        let cmd = command_from_url(&Url::parse("glide://back").unwrap());
+        assert_eq!(cmd, Some(NavCommand::Back));
+    }
 
     #[test]
     fn initial_iframe_load_uses_glide_net_error_page() {

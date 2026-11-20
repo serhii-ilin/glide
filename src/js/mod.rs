@@ -3,9 +3,15 @@
 mod apply;
 mod bridge;
 mod host;
-mod scripts;
+pub mod scripts;
 mod tap;
 mod worker;
+
+#[cfg(test)]
+mod harness;
+
+#[cfg(test)]
+mod integration;
 
 pub use host::JsHost;
 pub use tap::JsTap;

@@ -2,13 +2,13 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use once_cell::sync::OnceCell;
 
-use super::bridge::{DomRequest, DomResponse, DomValue};
+use super::bridge::{DomRequest, DomValue};
 use super::host::DomRpc;
 
 static V8_INIT: OnceCell<()> = OnceCell::new();
@@ -19,15 +19,21 @@ thread_local! {
 
 pub struct JsWorker {
     tx: Sender<WorkerMessage>,
-    join: Option<JoinHandle<()>>,
+    _join: Option<thread::JoinHandle<()>>,
 }
 
 #[derive(Debug)]
 enum WorkerMessage {
-    RunScripts(Vec<String>),
+    RunScripts {
+        sources: Vec<String>,
+    },
+    FireDomContentLoaded,
     Pump { now_ms: u64 },
     FlushRaf,
-    DispatchDom { node: u64, event_type: String },
+    DispatchBubble {
+        path: Vec<u64>,
+        event_type: String,
+    },
     Shutdown,
 }
 
@@ -41,12 +47,16 @@ impl JsWorker {
             .expect("spawn js worker");
         Self {
             tx,
-            join: Some(join),
+            _join: Some(join),
         }
     }
 
     pub fn run_scripts(&self, sources: Vec<String>) {
-        let _ = self.tx.send(WorkerMessage::RunScripts(sources));
+        let _ = self.tx.send(WorkerMessage::RunScripts { sources });
+    }
+
+    pub fn fire_dom_content_loaded(&self) {
+        let _ = self.tx.send(WorkerMessage::FireDomContentLoaded);
     }
 
     pub fn pump(&self, now_ms: u64) {
@@ -57,9 +67,9 @@ impl JsWorker {
         let _ = self.tx.send(WorkerMessage::FlushRaf);
     }
 
-    pub fn dispatch_dom_event(&self, node: u64, event_type: impl Into<String>) {
-        let _ = self.tx.send(WorkerMessage::DispatchDom {
-            node,
+    pub fn dispatch_dom_bubble(&self, path: Vec<u64>, event_type: impl Into<String>) {
+        let _ = self.tx.send(WorkerMessage::DispatchBubble {
+            path,
             event_type: event_type.into(),
         });
     }
@@ -68,9 +78,8 @@ impl JsWorker {
 impl Drop for JsWorker {
     fn drop(&mut self) {
         let _ = self.tx.send(WorkerMessage::Shutdown);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
+        // Detach the worker; do not join from the UI thread.
+        self._join = None;
     }
 }
 
@@ -92,7 +101,8 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
         {
             let scope = &mut v8::ContextScope::new(hs, context);
             install_bindings(scope, context);
-            let source = v8::String::new(scope, include_str!("bootstrap.js")).unwrap();
+            let source = v8::String::new(scope, include_str!("bootstrap.js"))
+                .expect("bootstrap source");
             run_script(scope, source, "<bootstrap>");
         }
         v8::Global::new(hs, context)
@@ -100,16 +110,23 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
 
     while let Ok(msg) = cmd_rx.recv() {
         match msg {
-            WorkerMessage::RunScripts(sources) => {
+            WorkerMessage::RunScripts { sources } => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 for (i, src) in sources.into_iter().enumerate() {
                     run_script_with_timeout(scope, &src, &format!("script-{i}"));
                     scope.perform_microtask_checkpoint();
+                    drain_glide_microtasks(scope);
                 }
+            }
+            WorkerMessage::FireDomContentLoaded => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_fire_dom_content_loaded", &[]);
                 scope.perform_microtask_checkpoint();
+                drain_glide_microtasks(scope);
             }
             WorkerMessage::Pump { now_ms } => {
                 v8::scope!(let hs, isolate);
@@ -118,6 +135,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let n = v8::Number::new(scope, now_ms as f64);
                 call_global_fn(scope, "__glide_pump_timers", &[n.into()]);
                 scope.perform_microtask_checkpoint();
+                drain_glide_microtasks(scope);
             }
             WorkerMessage::FlushRaf => {
                 v8::scope!(let hs, isolate);
@@ -125,15 +143,25 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_flush_raf", &[]);
                 scope.perform_microtask_checkpoint();
+                drain_glide_microtasks(scope);
             }
-            WorkerMessage::DispatchDom { node, event_type } => {
+            WorkerMessage::DispatchBubble { path, event_type } => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
-                let n = v8::Number::new(scope, node as f64);
+                let ids: Vec<v8::Local<v8::Value>> = path
+                    .iter()
+                    .map(|id| v8::String::new(scope, &id.to_string()).unwrap().into())
+                    .collect();
+                let array = v8::Array::new_with_elements(scope, &ids);
                 let ty = v8::String::new(scope, &event_type).unwrap();
-                call_global_fn(scope, "__glide_dispatch_event", &[n.into(), ty.into()]);
+                call_global_fn(
+                    scope,
+                    "__glide_dispatch_bubble",
+                    &[array.into(), ty.into()],
+                );
                 scope.perform_microtask_checkpoint();
+                drain_glide_microtasks(scope);
             }
             WorkerMessage::Shutdown => break,
         }
@@ -233,77 +261,85 @@ fn map_dom_op(
             reply,
         },
         "appendChild" => DomRequest::AppendChild {
-            parent: arg_u64(scope, args, 2)?,
-            child: arg_u64(scope, args, 3)?,
+            parent: arg_handle(scope, args, 2)?,
+            child: arg_handle(scope, args, 3)?,
             reply,
         },
         "removeChild" => DomRequest::RemoveChild {
-            parent: arg_u64(scope, args, 2)?,
-            child: arg_u64(scope, args, 3)?,
+            parent: arg_handle(scope, args, 2)?,
+            child: arg_handle(scope, args, 3)?,
             reply,
         },
         "insertBefore" => DomRequest::InsertBefore {
-            parent: arg_u64(scope, args, 2)?,
-            child: arg_u64(scope, args, 3)?,
-            before: arg_u64(scope, args, 4)?,
+            parent: arg_handle(scope, args, 2)?,
+            child: arg_handle(scope, args, 3)?,
+            before: arg_handle(scope, args, 4)?,
             reply,
         },
         "setAttribute" => DomRequest::SetAttribute {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             name: arg_string(scope, args, 3)?,
             value: arg_string(scope, args, 4)?,
             reply,
         },
         "getAttribute" => DomRequest::GetAttribute {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             name: arg_string(scope, args, 3)?,
             reply,
         },
         "removeAttribute" => DomRequest::RemoveAttribute {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             name: arg_string(scope, args, 3)?,
             reply,
         },
         "setInnerHtml" => DomRequest::SetInnerHtml {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             html: arg_string(scope, args, 3)?,
             reply,
         },
         "getTextContent" => DomRequest::GetTextContent {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             reply,
         },
         "setTextContent" => DomRequest::SetTextContent {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             text: arg_string(scope, args, 3)?,
             reply,
         },
         "classAdd" => DomRequest::ClassListAdd {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             token: arg_string(scope, args, 3)?,
             reply,
         },
         "classRemove" => DomRequest::ClassListRemove {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             token: arg_string(scope, args, 3)?,
             reply,
         },
         "classContains" => DomRequest::ClassListContains {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             token: arg_string(scope, args, 3)?,
             reply,
         },
         "styleSet" => DomRequest::StyleSet {
-            node: arg_u64(scope, args, 2)?,
+            node: arg_handle(scope, args, 2)?,
             name: arg_string(scope, args, 3)?,
             value: arg_string(scope, args, 4)?,
+            reply,
+        },
+        "parentId" => DomRequest::ParentId {
+            node: arg_handle(scope, args, 2)?,
             reply,
         },
         "fetch" => DomRequest::Fetch {
             url: arg_string(scope, args, 2)?,
             reply,
         },
-        "listen" => DomRequest::DocumentUrl { reply },
+        "listen" => DomRequest::Listen {
+            node: arg_handle(scope, args, 2)?,
+            event_type: arg_string(scope, args, 3)?,
+            reply,
+        },
         other => return Err(format!("unknown dom op {other}")),
     })
 }
@@ -316,16 +352,24 @@ fn arg_string(
     Ok(args.get(idx).to_rust_string_lossy(scope))
 }
 
-fn arg_u64(
+fn arg_handle(
     scope: &v8::PinScope,
     args: &v8::FunctionCallbackArguments,
     idx: i32,
 ) -> Result<u64, String> {
-    let n = args
-        .get(idx)
-        .to_uint32(scope)
-        .ok_or_else(|| format!("arg {idx} not a number"))?;
-    Ok(n.value() as u64)
+    let v = args.get(idx);
+    if v.is_string() {
+        let s = v.to_rust_string_lossy(scope);
+        return s
+            .parse::<u64>()
+            .map_err(|_| format!("arg {idx} not a valid node id"));
+    }
+    if let Some(n) = v.number_value(scope) {
+        if n >= 0.0 && n <= u64::MAX as f64 && n.trunc() == n {
+            return Ok(n as u64);
+        }
+    }
+    Err(format!("arg {idx} not a node id"))
 }
 
 fn dom_value_to_v8<'s>(
@@ -337,11 +381,11 @@ fn dom_value_to_v8<'s>(
         DomValue::Bool(b) => v8::Boolean::new(scope, *b).into(),
         DomValue::Number(n) => v8::Number::new(scope, *n).into(),
         DomValue::String(s) => v8::String::new(scope, s).unwrap().into(),
-        DomValue::NodeId(id) => v8::Number::new(scope, *id as f64).into(),
+        DomValue::NodeId(id) => v8::String::new(scope, &id.to_string()).unwrap().into(),
         DomValue::NodeList(ids) => {
             let elements: Vec<v8::Local<v8::Value>> = ids
                 .iter()
-                .map(|id| v8::Number::new(scope, *id as f64).into())
+                .map(|id| v8::String::new(scope, &id.to_string()).unwrap().into())
                 .collect();
             v8::Array::new_with_elements(scope, &elements).into()
         }
@@ -364,16 +408,24 @@ fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
     let done = Arc::new(AtomicBool::new(false));
     let done_flag = done.clone();
     let handle = scope.thread_safe_handle();
-    let watchdog = thread::spawn(move || {
-        thread::sleep(Duration::from_secs(5));
+    thread::spawn(move || {
+        for _ in 0..50 {
+            if done_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
         if !done_flag.load(Ordering::SeqCst) {
             handle.terminate_execution();
         }
     });
-    let code = v8::String::new(scope, source).unwrap();
+    let Some(code) = v8::String::new(scope, source) else {
+        eprintln!("script string alloc failed in {name}");
+        done.store(true, Ordering::SeqCst);
+        return;
+    };
     run_script(scope, code, name);
     done.store(true, Ordering::SeqCst);
-    let _ = watchdog.join();
     scope.cancel_terminate_execution();
 }
 
@@ -387,6 +439,10 @@ fn run_script(scope: &mut v8::PinScope<'_, '_>, source: v8::Local<v8::String>, n
     }
 }
 
+fn drain_glide_microtasks(scope: &mut v8::PinScope<'_, '_>) {
+    call_global_fn(scope, "__glide_drain_microtasks", &[]);
+}
+
 fn call_global_fn(scope: &mut v8::PinScope<'_, '_>, name: &str, argv: &[v8::Local<v8::Value>]) {
     let context = scope.get_current_context();
     let global = context.global(scope);
@@ -394,9 +450,6 @@ fn call_global_fn(scope: &mut v8::PinScope<'_, '_>, name: &str, argv: &[v8::Loca
     let Some(func_val) = global.get(scope, key.into()) else {
         return;
     };
-    if !func_val.is_function() {
-        return;
-    }
     if !func_val.is_function() {
         return;
     }

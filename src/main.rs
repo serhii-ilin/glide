@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use blitz_dom::{DocumentConfig, qual_name};
-use blitz_html::HtmlDocument;
 use html::{GlideHtmlProvider, HtmlPageDocument};
 use js::{JsHost, JsTap};
 use blitz_net::Provider;
@@ -36,7 +35,7 @@ const CHROME_BASE: &str = "https://glide.invalid/chrome";
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    let mut args = raw.clone().into_iter();
+    let _args = raw.clone().into_iter();
     let no_js = raw.iter().any(|a| a == "--no-js");
     if raw.first().is_some_and(|a| a == "--screenshot") {
         let args: Vec<_> = raw

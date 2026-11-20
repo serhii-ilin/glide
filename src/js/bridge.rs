@@ -1,7 +1,6 @@
 //! DOM operation protocol between the V8 worker and the UI thread.
 
-use std::collections::HashMap;
-
+use blitz_dom::BaseDocument;
 use blitz_traits::node_id::NodeId;
 
 /// Requests the UI thread applies against a page [`BaseDocument`](blitz_dom::BaseDocument).
@@ -94,7 +93,13 @@ pub enum DomRequest {
         value: String,
         reply: u64,
     },
-    DocumentUrl {
+    ParentId {
+        node: u64,
+        reply: u64,
+    },
+    Listen {
+        node: u64,
+        event_type: String,
         reply: u64,
     },
     Fetch {
@@ -141,18 +146,21 @@ pub fn handle_to_node(raw: u64) -> NodeId {
     NodeId::from_u64(raw)
 }
 
-/// In-memory listener registry on the worker thread (node handle, event type).
-#[derive(Default)]
-pub struct ListenerTable {
-    next_id: u64,
-    pub by_id: HashMap<u64, (u64, String)>,
+/// Returns `None` when the handle does not resolve in `doc` (stale slot / wrong generation).
+pub fn resolve_handle(doc: &BaseDocument, raw: u64) -> Option<NodeId> {
+    let id = handle_to_node(raw);
+    doc.get_node(id).map(|_| id)
 }
 
-impl ListenerTable {
-    pub fn register(&mut self, node: u64, event: String) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.by_id.insert(id, (node, event));
-        id
+pub fn bubble_handles(doc: &BaseDocument, target: NodeId) -> Vec<u64> {
+    let mut path = Vec::new();
+    let mut cur = Some(target);
+    while let Some(id) = cur {
+        if doc.get_node(id).is_none() {
+            break;
+        }
+        path.push(node_to_handle(id));
+        cur = doc.get_node(id).and_then(|n| n.parent);
     }
+    path
 }

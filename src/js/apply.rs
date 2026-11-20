@@ -1,15 +1,62 @@
 //! Apply [`DomRequest`] values on the UI thread.
 
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::time::Duration;
+
 use blitz_dom::{BaseDocument, LocalName, QualName, local_name, qual_name};
-use crate::parse;
 use blitz_net::Provider;
 use blitz_traits::net::Request;
-use std::sync::Arc;
 use url::Url;
 
-use super::bridge::{DomRequest, DomResponse, DomValue, handle_to_node, node_to_handle};
+use crate::parse;
+use super::bridge::{
+    node_to_handle, resolve_handle, DomRequest, DomResponse,
+    DomValue,
+};
 
 pub fn apply_request(
+    doc: &mut BaseDocument,
+    net: Option<&Arc<Provider>>,
+    base_url: &str,
+    req: DomRequest,
+) -> DomResponse {
+    let reply = reply_id(&req);
+    let result = panic::catch_unwind(AssertUnwindSafe(|| apply_inner(doc, net, base_url, req)));
+    match result {
+        Ok(resp) => resp,
+        Err(_) => DomResponse::err(reply, "dom operation panicked"),
+    }
+}
+
+fn reply_id(req: &DomRequest) -> u64 {
+    match req {
+        DomRequest::GetElementById { reply, .. }
+        | DomRequest::QuerySelector { reply, .. }
+        | DomRequest::QuerySelectorAll { reply, .. }
+        | DomRequest::CreateElement { reply, .. }
+        | DomRequest::CreateTextNode { reply, .. }
+        | DomRequest::AppendChild { reply, .. }
+        | DomRequest::RemoveChild { reply, .. }
+        | DomRequest::InsertBefore { reply, .. }
+        | DomRequest::SetAttribute { reply, .. }
+        | DomRequest::GetAttribute { reply, .. }
+        | DomRequest::RemoveAttribute { reply, .. }
+        | DomRequest::SetInnerHtml { reply, .. }
+        | DomRequest::GetTextContent { reply, .. }
+        | DomRequest::SetTextContent { reply, .. }
+        | DomRequest::ClassListAdd { reply, .. }
+        | DomRequest::ClassListRemove { reply, .. }
+        | DomRequest::ClassListContains { reply, .. }
+        | DomRequest::StyleSet { reply, .. }
+        | DomRequest::ParentId { reply, .. }
+        | DomRequest::Listen { reply, .. }
+        | DomRequest::Fetch { reply, .. } => *reply,
+    }
+}
+
+fn apply_inner(
     doc: &mut BaseDocument,
     net: Option<&Arc<Provider>>,
     base_url: &str,
@@ -50,18 +97,26 @@ pub fn apply_request(
             DomResponse::ok(reply, DomValue::NodeId(node_to_handle(id)))
         }
         DomRequest::AppendChild { parent, child, reply } => {
-            let parent = handle_to_node(parent);
-            let child = handle_to_node(child);
+            let Some(parent) = resolve_handle(doc, parent) else {
+                return DomResponse::err(reply, "invalid parent node");
+            };
+            let Some(child) = resolve_handle(doc, child) else {
+                return DomResponse::err(reply, "invalid child node");
+            };
             let mut m = doc.mutate();
             m.append_children(parent, &[child]);
             DomResponse::ok(reply, DomValue::NodeId(node_to_handle(child)))
         }
         DomRequest::RemoveChild { parent, child, reply } => {
-            let parent = handle_to_node(parent);
-            let child = handle_to_node(child);
+            let Some(parent) = resolve_handle(doc, parent) else {
+                return DomResponse::err(reply, "invalid parent node");
+            };
+            let Some(child) = resolve_handle(doc, child) else {
+                return DomResponse::err(reply, "invalid child node");
+            };
             let mut m = doc.mutate();
             if m.parent_id(child) == Some(parent) {
-                m.remove_and_drop_node(child);
+                m.remove_node(child);
             }
             DomResponse::ok(reply, DomValue::Null)
         }
@@ -71,13 +126,26 @@ pub fn apply_request(
             before,
             reply,
         } => {
-            let parent = handle_to_node(parent);
-            let child = handle_to_node(child);
-            let before = handle_to_node(before);
+            let Some(parent) = resolve_handle(doc, parent) else {
+                return DomResponse::err(reply, "invalid parent node");
+            };
+            let Some(child) = resolve_handle(doc, child) else {
+                return DomResponse::err(reply, "invalid child node");
+            };
+            let before_id = if before == 0 {
+                None
+            } else {
+                resolve_handle(doc, before)
+            };
             let mut m = doc.mutate();
-            m.insert_nodes_before(before, &[child]);
-            if m.parent_id(child) != Some(parent) {
-                m.append_children(parent, &[child]);
+            match before_id {
+                None => m.append_children(parent, &[child]),
+                Some(anchor) => {
+                    m.insert_nodes_before(anchor, &[child]);
+                    if m.parent_id(child) != Some(parent) {
+                        m.append_children(parent, &[child]);
+                    }
+                }
             }
             DomResponse::ok(reply, DomValue::NodeId(node_to_handle(child)))
         }
@@ -87,13 +155,17 @@ pub fn apply_request(
             value,
             reply,
         } => {
-            let node = handle_to_node(node);
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
             let mut m = doc.mutate();
             m.set_attribute(node, html_qual(&name), &value);
             DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::GetAttribute { node, name, reply } => {
-            let node = handle_to_node(node);
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
             let value = doc
                 .get_node(node)
                 .and_then(|n| n.element_data())
@@ -103,19 +175,29 @@ pub fn apply_request(
             DomResponse::ok(reply, value)
         }
         DomRequest::RemoveAttribute { node, name, reply } => {
-            let node = handle_to_node(node);
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
             let mut m = doc.mutate();
             m.clear_attribute(node, html_qual(&name));
             DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::SetInnerHtml { node, html, reply } => {
-            let node = handle_to_node(node);
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
             let mut m = doc.mutate();
+            let children: Vec<_> = m.child_ids(node).into_iter().collect();
+            for child in children {
+                m.remove_and_drop_node(child);
+            }
             parse::parse_inner_html_into_mutator(&mut m, node, &html, true);
             DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::GetTextContent { node, reply } => {
-            let node = handle_to_node(node);
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
             let text = doc
                 .get_node(node)
                 .map(|n| n.text_content())
@@ -123,7 +205,9 @@ pub fn apply_request(
             DomResponse::ok(reply, DomValue::String(text))
         }
         DomRequest::SetTextContent { node, text, reply } => {
-            let node = handle_to_node(node);
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
             let is_text = doc
                 .get_node(node)
                 .is_some_and(|n| matches!(n.data, blitz_dom::node::NodeData::Text(..)));
@@ -147,7 +231,9 @@ pub fn apply_request(
             respond_class(op_remove, doc, node, &token, reply)
         }
         DomRequest::ClassListContains { node, token, reply } => {
-            let node = handle_to_node(node);
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
             let contains = doc
                 .get_node(node)
                 .and_then(|n| n.element_data())
@@ -156,13 +242,31 @@ pub fn apply_request(
             DomResponse::ok(reply, DomValue::Bool(contains))
         }
         DomRequest::StyleSet { node, name, value, reply } => {
-            let node = handle_to_node(node);
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
+            let css_name = camel_to_kebab(&name);
             let mut m = doc.mutate();
-            m.set_style_property(node, &name, &value);
+            m.set_style_property(node, &css_name, &value);
             DomResponse::ok(reply, DomValue::Null)
         }
-        DomRequest::DocumentUrl { reply } => DomResponse::ok(reply, DomValue::String(base_url.to_string())),
+        DomRequest::ParentId { node, reply } => {
+            let Some(node) = resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "invalid node");
+            };
+            let value = doc
+                .get_node(node)
+                .and_then(|n| n.parent)
+                .map(node_to_handle)
+                .map(DomValue::NodeId)
+                .unwrap_or(DomValue::Null);
+            DomResponse::ok(reply, value)
+        }
+        DomRequest::Listen { reply, .. } => DomResponse::ok(reply, DomValue::Null),
         DomRequest::Fetch { url, reply } => {
+            if let Some(body) = data_url_body(&url) {
+                return DomResponse::ok(reply, DomValue::String(body));
+            }
             let Some(net) = net else {
                 return DomResponse::err(reply, "no network provider");
             };
@@ -175,12 +279,31 @@ pub fn apply_request(
             let Ok(handle) = tokio::runtime::Handle::try_current() else {
                 return DomResponse::err(reply, "no async runtime");
             };
-            match handle.block_on(net.fetch_async(Request::get(parsed))) {
-                Ok((_url, bytes)) => {
+            let net = Arc::clone(net);
+            let (tx, rx) = mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name("glide-fetch".into())
+                .spawn(move || {
+                    let result = handle.block_on(async {
+                        tokio::time::timeout(
+                            Duration::from_secs(30),
+                            net.fetch_async(Request::get(parsed)),
+                        )
+                        .await
+                    });
+                    let _ = tx.send(result);
+                })
+                .ok();
+            let Ok(result) = rx.recv_timeout(Duration::from_secs(31)) else {
+                return DomResponse::err(reply, "fetch timeout");
+            };
+            match result {
+                Ok(Ok((_url, bytes))) => {
                     let text = String::from_utf8_lossy(&bytes).into_owned();
                     DomResponse::ok(reply, DomValue::String(text))
                 }
-                Err(err) => DomResponse::err(reply, format!("fetch failed: {err}")),
+                Ok(Err(err)) => DomResponse::err(reply, format!("fetch failed: {err}")),
+                Err(_) => DomResponse::err(reply, "fetch timed out"),
             }
         }
     }
@@ -194,16 +317,18 @@ fn class_tokens(class_attr: &str) -> impl Iterator<Item = &str> {
     class_attr.split_whitespace()
 }
 
-fn read_class(doc: &BaseDocument, node: u64) -> Option<String> {
-    let node = handle_to_node(node);
+fn read_class(doc: &BaseDocument, raw: u64) -> Option<String> {
+    let node = resolve_handle(doc, raw)?;
     doc.get_node(node)
         .and_then(|n| n.element_data())
         .and_then(|el| el.attr(local_name!("class")))
         .map(str::to_string)
 }
 
-fn write_class(doc: &mut BaseDocument, node: u64, value: &str) {
-    let node = handle_to_node(node);
+fn write_class(doc: &mut BaseDocument, raw: u64, value: &str) {
+    let Some(node) = resolve_handle(doc, raw) else {
+        return;
+    };
     let mut m = doc.mutate();
     m.set_attribute(node, qual_name!("class"), value);
 }
@@ -229,15 +354,40 @@ fn op_remove(mut class: String, token: &str) -> String {
 fn respond_class(
     op: fn(String, &str) -> String,
     doc: &mut BaseDocument,
-    node: u64,
+    raw: u64,
     token: &str,
     reply: u64,
 ) -> DomResponse {
-    let Some(class) = read_class(doc, node) else {
-        return DomResponse::ok(reply, DomValue::Bool(false));
+    let Some(_node) = resolve_handle(doc, raw) else {
+        return DomResponse::err(reply, "invalid node");
     };
-    write_class(doc, node, &op(class, token));
+    let class = read_class(doc, raw).unwrap_or_default();
+    write_class(doc, raw, &op(class, token));
     DomResponse::ok(reply, DomValue::Bool(true))
+}
+
+fn data_url_body(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    if meta.contains(";base64") {
+        return None;
+    }
+    Some(payload.to_string())
+}
+
+fn camel_to_kebab(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for ch in name.chars() {
+        if ch.is_ascii_uppercase() {
+            if !out.is_empty() {
+                out.push('-');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -346,5 +496,50 @@ mod tests {
         );
         let text = doc.get_node(id).map(|n| n.text_content()).unwrap_or_default();
         assert_eq!(text, "after");
+    }
+
+    #[test]
+    fn create_after_text_clear_preserves_generation() {
+        let mut doc = sample_doc(r#"<!DOCTYPE html><html><body><p id="t">x</p></body></html>"#);
+        let base = doc.url().to_string();
+        let handle = node_to_handle(doc.get_element_by_id("t").unwrap());
+        apply_request(
+            &mut doc,
+            None,
+            &base,
+            DomRequest::SetTextContent {
+                node: handle,
+                text: String::new(),
+                reply: 1,
+            },
+        );
+        let created = apply_request(
+            &mut doc,
+            None,
+            &base,
+            DomRequest::CreateElement {
+                tag: "span".into(),
+                reply: 2,
+            },
+        );
+        let DomValue::NodeId(child) = created.value else {
+            panic!("expected span");
+        };
+        let appended = apply_request(
+            &mut doc,
+            None,
+            &base,
+            DomRequest::AppendChild {
+                parent: handle,
+                child,
+                reply: 3,
+            },
+        );
+        assert!(!matches!(appended.value, DomValue::Error(_)));
+    }
+
+    #[test]
+    fn camel_case_style_maps_to_css() {
+        assert_eq!(camel_to_kebab("backgroundColor"), "background-color");
     }
 }

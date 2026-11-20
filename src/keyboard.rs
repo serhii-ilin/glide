@@ -6,7 +6,7 @@
 //! embedder setups never receive those callbacks reliably, and keyboard events are not
 //! forwarded into iframe sub-documents. Glide closes both gaps here.
 
-use blitz_dom::{BaseDocument, Document, local_name};
+use blitz_dom::BaseDocument;
 use blitz_shell::View;
 #[cfg(target_os = "macos")]
 use blitz_traits::SmolStr;
@@ -50,10 +50,6 @@ pub fn browser_shortcut(
     modifiers: ModifiersState,
     text_input_focused: bool,
 ) -> Option<BrowserShortcut> {
-  if text_input_focused {
-      return None;
-  }
-
     let primary = modifiers.control_key() || modifiers.meta_key();
     let alt = modifiers.alt_key();
     let shift = modifiers.shift_key();
@@ -61,13 +57,14 @@ pub fn browser_shortcut(
     match code {
         KeyCode::KeyL if primary && !shift => return Some(BrowserShortcut::FocusAddressBar),
         KeyCode::KeyR if primary && !shift => return Some(BrowserShortcut::Reload),
-        KeyCode::F5 if !primary && !alt => return Some(BrowserShortcut::Reload),
         KeyCode::KeyW if primary && !shift => return Some(BrowserShortcut::CloseWindow),
         KeyCode::KeyQ if primary && !shift => return Some(BrowserShortcut::Quit),
         KeyCode::BracketLeft if primary && !shift => return Some(BrowserShortcut::Back),
         KeyCode::BracketRight if primary && !shift => return Some(BrowserShortcut::Forward),
+        KeyCode::F5 if !primary && !alt => return Some(BrowserShortcut::Reload),
         KeyCode::ArrowLeft if alt && !primary => return Some(BrowserShortcut::Back),
         KeyCode::ArrowRight if alt && !primary => return Some(BrowserShortcut::Forward),
+        _ if text_input_focused => return None,
         KeyCode::Space if !primary && !alt && shift => {
             return Some(BrowserShortcut::Scroll(ScrollAction::PageUp));
         }
@@ -246,57 +243,83 @@ fn page_iframe_accepts_keys(chrome: &BaseDocument) -> bool {
 /// Returns `true` when the caller should skip the default winit keyboard handler for this event.
 pub fn dispatch_text_keys<Rend: WindowRenderer>(view: &mut View<Rend>, event: &KeyEvent) -> bool {
     let modifiers = view.keyboard_modifiers.state();
-    let mut chrome = view.doc.inner_mut();
-    let chrome = &mut *chrome;
 
-    // Page iframe: forward keyboard / macOS selector events into the sub-document.
-    if page_iframe_accepts_keys(chrome) {
-        let Some(page_id) = page_iframe_id(chrome) else {
-            return false;
-        };
-        let Some(sub) = chrome
-            .get_node_mut(page_id)
-            .and_then(|node| node.subdoc_mut())
-        else {
-            return false;
-        };
-
-        #[cfg(target_os = "macos")]
-        if event.state.is_pressed() {
-            if let PhysicalKey::Code(code) = event.physical_key {
-                if let Some(selector) = macos_standard_keybinding(code, modifiers) {
-                    sub.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(selector)));
-                    return true;
+    let iframe_handled = {
+        let mut guard = view.doc.inner_mut();
+        let chrome = &mut *guard;
+        if !page_iframe_accepts_keys(chrome) {
+            None
+        } else if let PhysicalKey::Code(code) = event.physical_key {
+            if event.state.is_pressed() && browser_shortcut(code, modifiers, false).is_some() {
+                Some(false)
+            } else if let Some(page_id) = page_iframe_id(chrome) {
+                if let Some(sub) = chrome
+                    .get_node_mut(page_id)
+                    .and_then(|node| node.subdoc_mut())
+                {
+                    let mut handled = false;
+                    #[cfg(target_os = "macos")]
+                    if event.state.is_pressed() {
+                        if let PhysicalKey::Code(code) = event.physical_key {
+                            if let Some(selector) = macos_standard_keybinding(code, modifiers) {
+                                sub.handle_ui_event(UiEvent::AppleStandardKeybinding(
+                                    SmolStr::new(selector),
+                                ));
+                                handled = true;
+                            }
+                        }
+                    }
+                    if !handled {
+                        let blitz_key = winit_key_to_blitz(event, modifiers);
+                        let ui = if event.state.is_pressed() {
+                            UiEvent::KeyDown(blitz_key)
+                        } else {
+                            UiEvent::KeyUp(blitz_key)
+                        };
+                        sub.handle_ui_event(ui);
+                    }
+                    Some(true)
+                } else {
+                    Some(false)
                 }
+            } else {
+                Some(false)
             }
-        }
-
-        let blitz_key = winit_key_to_blitz(event, modifiers);
-        let ui = if event.state.is_pressed() {
-            UiEvent::KeyDown(blitz_key)
         } else {
-            UiEvent::KeyUp(blitz_key)
-        };
-        sub.handle_ui_event(ui);
+            None
+        }
+    };
+
+    if let Some(true) = iframe_handled {
         return true;
     }
+    if matches!(iframe_handled, Some(false)) {
+        return false;
+    }
 
-    // Chrome text inputs (address bar): macOS needs selector-based editing for Backspace et al.
     #[cfg(target_os = "macos")]
-    if event.state.is_pressed() {
-        let PhysicalKey::Code(code) = event.physical_key else {
-            return false;
-        };
-        let focused_input = chrome
-            .get_focussed_node_id()
-            .is_some_and(|id| node_is_text_input(chrome, id));
-        if focused_input {
-            if let Some(selector) = macos_standard_keybinding(code, modifiers) {
-                view.doc.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(
-                    selector,
-                )));
-                return true;
+    {
+        let selector = {
+            let mut guard = view.doc.inner_mut();
+            let chrome = &mut *guard;
+            if !event.state.is_pressed() {
+                return false;
             }
+            let PhysicalKey::Code(code) = event.physical_key else {
+                return false;
+            };
+            let focused_input = chrome
+                .get_focussed_node_id()
+                .is_some_and(|id| node_is_text_input(chrome, id));
+            if !focused_input {
+                return false;
+            }
+            macos_standard_keybinding(code, modifiers).map(SmolStr::new)
+        };
+        if let Some(selector) = selector {
+            view.doc
+                .handle_ui_event(UiEvent::AppleStandardKeybinding(selector));
+            return true;
         }
     }
 
@@ -422,8 +445,12 @@ mod tests {
     }
 
     #[test]
-    fn browser_shortcuts_ignore_text_focus() {
-        assert!(browser_shortcut(KeyCode::KeyR, mods(true, false, false, false), true).is_none());
+    fn browser_chrome_shortcuts_work_in_text_fields() {
+        assert_eq!(
+            browser_shortcut(KeyCode::KeyL, mods(true, false, false, false), true),
+            Some(BrowserShortcut::FocusAddressBar)
+        );
+        assert!(browser_shortcut(KeyCode::Space, ModifiersState::empty(), true).is_none());
     }
 
     #[test]

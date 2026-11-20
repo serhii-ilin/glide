@@ -3,12 +3,12 @@
   'use strict';
 
   let nextReply = 1;
-  const pendingResolvers = new Map();
   const eventTargetData = new WeakMap();
+  const nodeCache = new Map();
 
   function rpc(op, ...args) {
     const reply = nextReply++;
-  const result = __glide_dom_sync(op, reply, ...args);
+    const result = __glide_dom_sync(op, reply, ...args);
     if (result && result.__error) {
       throw new Error(result.__error);
     }
@@ -17,8 +17,16 @@
 
   function wrapNode(id) {
     if (id === null || id === undefined) return null;
-    return {
-      __id: id,
+    const key = String(id);
+    const cached = nodeCache.get(key);
+    if (cached) return cached;
+    const self = {
+      __id: key,
+      parentNode: null,
+      get parentElement() {
+        const p = rpc('parentId', this.__id);
+        return p ? wrapNode(p) : null;
+      },
       appendChild(child) {
         rpc('appendChild', this.__id, child.__id);
         return child;
@@ -28,7 +36,7 @@
         return child;
       },
       insertBefore(child, before) {
-        rpc('insertBefore', this.__id, child.__id, before ? before.__id : 0);
+        rpc('insertBefore', this.__id, child.__id, before ? before.__id : '0');
         return child;
       },
       get textContent() {
@@ -50,54 +58,56 @@
         rpc('removeAttribute', this.__id, name);
       },
       get classList() {
-        const self = this;
+        const node = this;
         return {
-          add(t) { rpc('classAdd', self.__id, t); },
-          remove(t) { rpc('classRemove', self.__id, t); },
-          contains(t) { return !!rpc('classContains', self.__id, t); },
+          add(t) { rpc('classAdd', node.__id, t); },
+          remove(t) { rpc('classRemove', node.__id, t); },
+          contains(t) { return !!rpc('classContains', node.__id, t); },
         };
       },
       get style() {
-        const self = this;
+        const node = this;
         return new Proxy({}, {
           set(_, prop, value) {
-            rpc('styleSet', self.__id, String(prop), String(value));
+            rpc('styleSet', node.__id, String(prop), String(value));
             return true;
           },
         });
       },
       addEventListener(type, fn) {
-        let bag = eventTargetData.get(this);
+        let bag = eventTargetData.get(self);
         if (!bag) {
           bag = {};
-          eventTargetData.set(this, bag);
+          eventTargetData.set(self, bag);
         }
         if (!bag[type]) bag[type] = [];
         bag[type].push(fn);
-        rpc('listen', this.__id, type);
+        rpc('listen', self.__id, type);
       },
       removeEventListener(type, fn) {
-        const bag = eventTargetData.get(this);
+        const bag = eventTargetData.get(self);
         if (!bag || !bag[type]) return;
         bag[type] = bag[type].filter((f) => f !== fn);
       },
       dispatchEvent(evt) {
-        const bag = eventTargetData.get(this);
+        const bag = eventTargetData.get(self);
         const list = bag && bag[evt.type];
         if (!list) return true;
         list.slice().forEach((fn) => {
-          try { fn.call(this, evt); } catch (e) { console.error(e); }
+          try { fn.call(self, evt); } catch (e) { console.error(e); }
         });
         return true;
       },
       click() {
-        this.dispatchEvent({ type: 'click', target: this });
+        this.dispatchEvent({ type: 'click', target: this, bubbles: true });
       },
     };
+    nodeCache.set(key, self);
+    return self;
   }
 
   function wrapList(ids) {
-    const nodes = ids.map(wrapNode);
+    const nodes = (ids || []).map(wrapNode);
     nodes.item = (i) => nodes[i] || null;
     return nodes;
   }
@@ -110,7 +120,7 @@
       return wrapNode(rpc('querySelector', sel));
     },
     querySelectorAll(sel) {
-      return wrapList(rpc('querySelectorAll', sel) || []);
+      return wrapList(rpc('querySelectorAll', sel));
     },
     createElement(tag) {
       return wrapNode(rpc('createElement', tag));
@@ -126,7 +136,7 @@
       }
       if (!bag[type]) bag[type] = [];
       bag[type].push(fn);
-      rpc('listen', 0, type);
+      rpc('listen', '0', type);
     },
     removeEventListener(type, fn) {
       const bag = eventTargetData.get(document);
@@ -150,7 +160,9 @@
     warn(...args) { __glide_console('warn', args.map(String).join(' ')); },
   };
 
-  const timers = [];
+  const timers = new Map();
+  let nextTimerId = 1;
+  let nowMs = 0;
   let rafQueue = [];
   let microtaskQueue = [];
 
@@ -169,20 +181,21 @@
   };
 
   global.setTimeout = function (fn, ms) {
-    const id = timers.length;
-    timers.push({ id, fn, at: Date.now() + (ms || 0) });
+    const id = nextTimerId++;
+    timers.set(id, { fn, at: nowMs + (ms || 0), kind: 'timeout' });
     return id;
   };
   global.clearTimeout = function (id) {
-    timers[id] = null;
+    timers.delete(id);
   };
   global.setInterval = function (fn, ms) {
-    return global.setTimeout(function tick() {
-      try { fn(); } catch (e) { console.error(e); }
-      global.setTimeout(tick, ms || 0);
-    }, ms || 0);
+    const id = nextTimerId++;
+    timers.set(id, { fn, at: nowMs + (ms || 0), interval: ms || 0, kind: 'interval' });
+    return id;
   };
-  global.clearInterval = global.clearTimeout;
+  global.clearInterval = function (id) {
+    timers.delete(id);
+  };
 
   global.requestAnimationFrame = function (fn) {
     const id = rafQueue.length;
@@ -191,12 +204,16 @@
   };
 
   global.__glide_pump_timers = function (now) {
-    timers.forEach((t, i) => {
-      if (t && t.at <= now) {
-        timers[i] = null;
-        try { t.fn(); } catch (e) { console.error(e); }
-        runMicrotasks();
+    nowMs = now;
+    timers.forEach((t, id) => {
+      if (!t || t.at > now) return;
+      try { t.fn(); } catch (e) { console.error(e); }
+      if (t.kind === 'interval') {
+        t.at = now + t.interval;
+      } else {
+        timers.delete(id);
       }
+      runMicrotasks();
     });
   };
 
@@ -204,15 +221,29 @@
     const jobs = rafQueue.slice();
     rafQueue = [];
     jobs.forEach((fn) => {
-      try { fn(performance.now()); } catch (e) { console.error(e); }
+      try { fn(nowMs); } catch (e) { console.error(e); }
     });
     runMicrotasks();
   };
 
-  global.__glide_dispatch_event = function (nodeId, type) {
-    const node = wrapNode(nodeId);
-    if (!node) return;
-    node.dispatchEvent({ type, target: node });
+  function dispatchOnPath(path, type) {
+    if (!path || !path.length) return;
+    const target = wrapNode(path[0]);
+    const evt = { type, target, bubbles: true, cancelable: true };
+    for (const id of path) {
+      const node = wrapNode(id);
+      const bag = eventTargetData.get(node);
+      const list = bag && bag[type];
+      if (list) {
+        list.slice().forEach((fn) => {
+          try { fn.call(node, evt); } catch (e) { console.error(e); }
+        });
+      }
+    }
+  }
+
+  global.__glide_dispatch_bubble = function (path, type) {
+    dispatchOnPath(path, type);
   };
 
   global.fetch = function (url) {
@@ -233,7 +264,7 @@
   };
 
   global.Promise = Promise;
-  global.performance = { now: () => Date.now() };
+  global.performance = { now: () => nowMs };
   global.window = global;
   global.document = document;
   global.console = console;
@@ -247,4 +278,5 @@
   global.dispatchEvent = document.dispatchEvent.bind(document);
 
   global.__glide_fire_dom_content_loaded = fireLoaded;
+  global.__glide_drain_microtasks = runMicrotasks;
 })(globalThis);

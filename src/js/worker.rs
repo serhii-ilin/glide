@@ -231,19 +231,25 @@ fn install_bindings(scope: &mut v8::PinScope<'_, '_>, context: v8::Local<v8::Con
     let url_key = v8::String::new(scope, "__glide_url_parse").unwrap();
     global.set(scope, url_key.into(), url_fn.into());
 
-    // Debug/test builds only. Release pages have no node-count or resize hook.
+    // Viewport resize is a test hook used by the layout-cache fixture. The node
+    // count RPC stays out of release pages.
+    let resize = v8::String::new(
+        scope,
+        "globalThis.__glide_test_resize=function(w,h){\
+           __glide_dom_sync('testResize',0,String(w),String(h));};",
+    )
+    .expect("resize hook");
+    run_script(scope, resize, "<resize-hook>");
     #[cfg(debug_assertions)]
     {
         let hooks = v8::String::new(
             scope,
             "globalThis.__glide_node_count=function(){\
                if(typeof globalThis.__glide_flush_dom==='function')globalThis.__glide_flush_dom();\
-               return __glide_dom_sync('nodeCount',0);};\
-             globalThis.__glide_test_resize=function(w,h){\
-               __glide_dom_sync('testResize',0,String(w),String(h));};",
+               return __glide_dom_sync('nodeCount',0);};",
         )
-        .expect("test hooks");
-        run_script(scope, hooks, "<test-hooks>");
+        .expect("node count hook");
+        run_script(scope, hooks, "<node-count-hook>");
     }
 }
 
@@ -342,7 +348,6 @@ fn map_dom_op(
         },
         #[cfg(debug_assertions)]
         "nodeCount" => DomRequest::NodeCount { reply },
-        #[cfg(debug_assertions)]
         "testResize" => DomRequest::TestResize {
             width: arg_u32(scope, args, 2)?,
             height: arg_u32(scope, args, 3)?,
@@ -352,7 +357,6 @@ fn map_dom_op(
     })
 }
 
-#[cfg(debug_assertions)]
 fn arg_u32(
     scope: &v8::PinScope,
     args: &v8::FunctionCallbackArguments,

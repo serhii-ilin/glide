@@ -53,7 +53,6 @@ pub enum DomRequest {
         reply: u64,
     },
     /// Test hook: resize the viewport without a DOM mutation.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     TestResize {
         width: u32,
         height: u32,

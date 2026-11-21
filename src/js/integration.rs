@@ -233,6 +233,79 @@ fn tree_walker_walks_elements() {
 }
 
 #[test]
+fn window_capture_sees_event_target() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <p id="el">x</p><p id="t"></p>
+      <script>
+        var seen = 'missing';
+        var reenter = 'none';
+        window.addEventListener('click', function (e) {
+          seen = e.target && e.target.id;
+          try {
+            document.getElementById('el').dispatchEvent(e);
+            reenter = 'no-throw';
+          } catch (err) {
+            reenter = (err && (err.code === 11 || err.name === 'INVALID_STATE_ERR')) ? 'state' : 'other';
+          }
+        }, true);
+        document.getElementById('el').click();
+        document.getElementById('t').textContent = 'cap=' + seen + ' re=' + reenter;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "cap=el re=state");
+}
+
+#[test]
+fn window_bubble_prevent_default_fails_dispatch() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p>
+      <script>
+        window.addEventListener('x', function (e) { e.preventDefault(); });
+        var ev = new Event('x', { bubbles: true, cancelable: true });
+        var ret = document.body.dispatchEvent(ev);
+        document.getElementById('t').textContent = 'ret=' + ret;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ret=false");
+}
+
+#[test]
+fn once_listeners_remove_match_and_fire_once() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <button id="b"></button><p id="t">x</p>
+      <script>
+        var log = [];
+        var b = document.getElementById('b');
+        function removed() { log.push('removed'); }
+        b.addEventListener('click', removed, { once: true });
+        b.removeEventListener('click', removed);
+        b.click();
+        var n = 0;
+        var obj = { handleEvent: function () { n++; log.push('obj' + n); } };
+        b.addEventListener('click', obj, { once: true });
+        b.click();
+        b.click();
+        var twice = 0;
+        function onceFn() { twice++; log.push('fn' + twice); }
+        b.addEventListener('click', onceFn, { once: true });
+        b.addEventListener('click', onceFn, { once: true });
+        b.click();
+        b.click();
+        function cap() { log.push('cap'); }
+        b.addEventListener('click', cap, { capture: true });
+        b.removeEventListener('click', cap, { capture: true });
+        b.click();
+        var w = 0;
+        function winOnce() { w++; log.push('win' + w); }
+        window.addEventListener('click', winOnce, { once: true });
+        b.click();
+        b.click();
+        document.getElementById('t').textContent = log.join(',');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "obj1,fn1,win1");
+}
+
+#[test]
 fn inline_handler_does_not_leak_parameter_names() {
     // `element` is not a parameter. `defaultView` resolves through `with (document)`.
     // `form` is the button's form property, which is null (`typeof null` is "object").

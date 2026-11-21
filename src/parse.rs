@@ -125,20 +125,16 @@ fn note_doctype(doc_id: usize, html: &str) {
 }
 
 fn sniff_doctype(html: &str) -> Option<NotedDoctype> {
-    let rest = html.trim_start_matches('\u{feff}').trim_start();
-    let bytes = rest.as_bytes();
-    if bytes.len() < 9 || !bytes[..9].eq_ignore_ascii_case(b"<!doctype") {
-        return None;
-    }
+    let rest = skip_to_doctype(html)?;
     let after = rest[9..].trim_start();
-    let name_end = after
-        .find(|c: char| c.is_whitespace() || c == '>')
-        .unwrap_or(after.len());
-    let name = after[..name_end].to_string();
+    let end = after.find('>')?;
+    let inside = &after[..end];
+    let name_end = inside.find(char::is_whitespace).unwrap_or(inside.len());
+    let name = inside[..name_end].to_ascii_lowercase();
     if name.is_empty() {
         return None;
     }
-    let tail = after[name_end..].trim_start();
+    let tail = inside[name_end..].trim_start();
     let mut public_id = String::new();
     let mut system_id = String::new();
     let tail_l = tail.to_ascii_lowercase();
@@ -154,6 +150,25 @@ fn sniff_doctype(html: &str) -> Option<NotedDoctype> {
         public_id,
         system_id,
     })
+}
+
+/// Leading BOM, whitespace and comments, then a `<!DOCTYPE` at the cursor.
+fn skip_to_doctype(html: &str) -> Option<&str> {
+    let mut rest = html.trim_start_matches('\u{feff}');
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("<!--") {
+            let end = after.find("-->")?;
+            rest = &after[end + 3..];
+            continue;
+        }
+        break;
+    }
+    let bytes = rest.as_bytes();
+    if bytes.len() < 9 || !bytes[..9].eq_ignore_ascii_case(b"<!doctype") {
+        return None;
+    }
+    Some(rest)
 }
 
 fn quoted_ids(s: &str) -> (String, String) {
@@ -191,4 +206,42 @@ fn root_element_has_xhtml_namespace(html: &str) -> bool {
     };
     rest[..tag_end].contains("xmlns=\"http://www.w3.org/1999/xhtml\"")
         || rest[..tag_end].contains("xmlns='http://www.w3.org/1999/xhtml'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sniff_doctype;
+
+    #[test]
+    fn html401_public_doctype_stops_at_the_closing_bracket() {
+        let html =
+            r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en">"#;
+        let dt = sniff_doctype(html).expect("doctype");
+        assert_eq!(dt.name, "html");
+        assert_eq!(dt.public_id, "-//W3C//DTD HTML 4.01 Transitional//EN");
+        assert_eq!(dt.system_id, "");
+    }
+
+    #[test]
+    fn html401_doctype_keeps_system_id() {
+        let html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">"#;
+        let dt = sniff_doctype(html).expect("doctype");
+        assert_eq!(dt.name, "html");
+        assert_eq!(dt.public_id, "-//W3C//DTD HTML 4.01 Transitional//EN");
+        assert_eq!(dt.system_id, "http://www.w3.org/TR/html4/loose.dtd");
+    }
+
+    #[test]
+    fn doctype_after_comment_and_bom() {
+        let html = "\u{feff}<!-- c --><!doctype html>";
+        let dt = sniff_doctype(html).expect("doctype");
+        assert_eq!(dt.name, "html");
+        assert_eq!(dt.public_id, "");
+        assert_eq!(dt.system_id, "");
+    }
+
+    #[test]
+    fn missing_doctype_is_none() {
+        assert!(sniff_doctype("<html><body></body></html>").is_none());
+    }
 }

@@ -13,3 +13,7 @@
 ## Page `globalThis` is the window (2026-11-20)
 
 **Decision:** Merge domino’s `Window` prototype onto V8’s `globalThis` (`Object.setPrototypeOf`), set `document.defaultView === globalThis`, and bind `addEventListener` / `dispatchEvent` to `globalThis`. Vendored WPT `testharness.js` stays at `})(self);` unchanged from upstream.
+
+## Click activation stays inside domino’s dispatch (2026-11-20)
+
+**Decision:** A window bubble listener can cancel `dispatchEvent` (`preventDefault` makes it return false). Domino’s click activation (`HTMLElement._doClick` on the mouseup path) still runs inside `_dispatchEvent`, before that window bubble phase. A window listener cannot stop the activation that domino already performed.

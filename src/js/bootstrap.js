@@ -71,6 +71,7 @@
         timers.delete(id);
       }
       runMicrotasks();
+      if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
     });
   };
 
@@ -80,8 +81,9 @@
     jobs.forEach((fn) => {
       beginTask();
       try { fn(nowMs); } catch (e) { console.error(e); }
+      runMicrotasks();
+      if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
     });
-    runMicrotasks();
   };
 
   global.fetch = function (url) {

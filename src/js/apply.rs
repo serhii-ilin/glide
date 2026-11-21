@@ -37,8 +37,9 @@ fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::PageUrl { reply }
         | DomRequest::Navigate { reply, .. }
         | DomRequest::ListenTarget { reply, .. }
-        | DomRequest::NodeCount { reply }
-        | DomRequest::TestResize { reply, .. } => *reply,
+        | DomRequest::NodeCount { reply } => *reply,
+        #[cfg(debug_assertions)]
+        DomRequest::TestResize { reply, .. } => *reply,
     }
 }
 
@@ -82,6 +83,7 @@ fn apply_inner(
             reply,
             DomValue::Number(super::batch::live_node_count(doc) as f64),
         ),
+        #[cfg(debug_assertions)]
         DomRequest::TestResize {
             width,
             height,

@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><body><div id=host></div><script>
+var host = document.getElementById('host');
+var x = document.createElement('div');
+x.id = 'x';
+host.appendChild(x);
+__glide_test_skip_node(x);
+var y = document.createElement('span');
+y.id = 'y';
+y.textContent = 'YONCE';
+x.appendChild(y);
+</script></body></html>

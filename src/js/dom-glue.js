@@ -175,7 +175,9 @@
 
   function subtreeOps(parentNode, before, root, out) {
     if (!root || root.nodeType === 11 || root.nodeType === 9 || root.nodeType === 10) return;
-    if (nodeToBlitz.get(root) != null) return;
+    // A pending cid means this node is already queued in the batch (for example
+    // remirrorSkipped walked it, then the INSERT handler saw the child).
+    if (nodeToBlitz.get(root) != null || nodeToCid.has(root)) return;
     const parent = refOf(parentNode);
     if (parent == null) return;
     const cid = ensureCid(root);
@@ -405,6 +407,54 @@
     }
   }
 
+  function listenerOptions(options) {
+    if (options && typeof options === 'object') {
+      return { capture: !!options.capture, once: !!options.once };
+    }
+    return { capture: !!options, once: false };
+  }
+
+  function removeListenerRecord(target, type, entry) {
+    const list = target._listeners && target._listeners[type];
+    if (!list) return;
+    const index = list.indexOf(entry);
+    if (index < 0) return;
+    if (list.length === 1) target._listeners[type] = undefined;
+    else list.splice(index, 1);
+  }
+
+  function callListener(entry, event) {
+    const listener = entry.listener;
+    if (typeof listener === 'function') return listener.call(event.currentTarget, event);
+    if (listener && typeof listener.handleEvent === 'function') {
+      return listener.handleEvent.call(listener, event);
+    }
+    return undefined;
+  }
+
+  // `once` lives on domino's listener record. The record is removed before the
+  // call so removeEventListener(original) still matches, and a second add is a no-op.
+  function armOnce(target, type, entry) {
+    if (!entry || entry._glideOnce) return;
+    entry._glideOnce = true;
+    entry.once = true;
+    const listener = entry.listener;
+    entry.f = function (event) {
+      removeListenerRecord(target, type, entry);
+      if (typeof listener === 'function') return listener.call(this, event);
+      if (listener && typeof listener.handleEvent === 'function') {
+        return listener.handleEvent.call(listener, event);
+      }
+      return undefined;
+    };
+  }
+
+  function invokeListenerEntry(target, type, entry, event) {
+    if (entry.once || entry._glideOnce) removeListenerRecord(target, type, entry);
+    if (entry.f && !entry._glideOnce) return entry.f.call(event.currentTarget, event);
+    return callListener(entry, event);
+  }
+
   function invokeWindowPhase(event, phase) {
     const Event = domino.impl.Event;
     event.eventPhase = phase;
@@ -424,14 +474,10 @@
     const copy = list.slice();
     for (let i = 0; i < copy.length; i++) {
       if (event._immediatePropagationStopped) return;
-      const l = copy[i];
-      if ((phase === Event.CAPTURING_PHASE && !l.capture) ||
-          (phase === Event.BUBBLING_PHASE && l.capture)) continue;
-      if (l.once) global.removeEventListener(type, l.listener, !!l.capture);
-      if (l.f) l.f.call(global, event);
-      else if (l.listener && typeof l.listener.handleEvent === 'function') {
-        l.listener.handleEvent.call(l.listener, event);
-      }
+      const entry = copy[i];
+      if ((phase === Event.CAPTURING_PHASE && !entry.capture) ||
+          (phase === Event.BUBBLING_PHASE && entry.capture)) continue;
+      invokeListenerEntry(global, type, entry, event);
     }
   }
 
@@ -446,45 +492,58 @@
     if (typeof orig !== 'function' || typeof origAdd !== 'function') return;
     eventPathPatched = true;
     etProto.addEventListener = function (type, listener, options) {
-      let capture = false;
-      let once = false;
-      if (options && typeof options === 'object') {
-        capture = !!options.capture;
-        once = !!options.once;
-      } else {
-        capture = !!options;
+      const opts = listenerOptions(options);
+      origAdd.call(this, type, listener, opts.capture);
+      if (!opts.once || !this._listeners || !this._listeners[type]) return;
+      const list = this._listeners[type];
+      for (let i = list.length - 1; i >= 0; i--) {
+        const entry = list[i];
+        if (entry.listener === listener && entry.capture === opts.capture) {
+          armOnce(this, type, entry);
+          break;
+        }
       }
-      if (once && typeof listener === 'function' && typeof origRemove === 'function') {
-        const wrapped = function (event) {
-          origRemove.call(this, type, wrapped, capture);
-          return listener.call(this, event);
-        };
-        origAdd.call(this, type, wrapped, capture);
-        return;
-      }
-      origAdd.call(this, type, listener, capture);
     };
+    if (typeof origRemove === 'function') {
+      etProto.removeEventListener = function (type, listener, options) {
+        const opts = listenerOptions(options);
+        origRemove.call(this, type, listener, opts.capture);
+      };
+    }
     etProto._dispatchEvent = function (event, trusted) {
       const Event = domino.impl.Event;
       const targetIsWindow = this === global;
       const doc = this && this.nodeType === 9 ? this : this && this.ownerDocument;
       const inPage = targetIsWindow || (doc && doc === pageDocument);
       if (!inPage || !event) return orig.call(this, event, trusted);
+      // Same check domino makes. A re-entrant dispatch of this event throws.
+      if (!event._initialized || event._dispatching) return orig.call(this, event, trusted);
+      if (typeof trusted !== 'boolean') trusted = false;
       if (!targetIsWindow) {
+        event.isTrusted = trusted;
+        event.target = this;
+        event._dispatching = true;
         invokeWindowPhase(event, Event.CAPTURING_PHASE);
         if (event._propagationStopped) {
+          event._dispatching = false;
           event.eventPhase = Event.AT_TARGET;
           event.currentTarget = null;
           return !event.defaultPrevented;
         }
+        // orig sets `_dispatching` itself. Clear the flag only for that check.
+        event._dispatching = false;
       }
-      const result = orig.call(this, event, trusted);
+      orig.call(this, event, trusted);
+      let prevented = event.defaultPrevented;
       if (!targetIsWindow && event.bubbles && !event._propagationStopped) {
+        event._dispatching = true;
         invokeWindowPhase(event, Event.BUBBLING_PHASE);
+        event._dispatching = false;
         event.eventPhase = Event.AT_TARGET;
         event.currentTarget = null;
+        prevented = event.defaultPrevented;
       }
-      return result;
+      return !prevented;
     };
   }
 
@@ -820,6 +879,22 @@
   };
 
   global.__glide_flush_dom = endTask;
+  if (global.__glide_debug_hooks) {
+    global.__glide_test_skip_node = function (node) {
+      if (!node) return;
+      const id = nodeToBlitz.get(node);
+      if (id != null) {
+        blitzToNode.delete(String(id));
+        nodeToBlitz.delete(node);
+      }
+      const cid = nodeToCid.get(node);
+      if (cid) {
+        cidMap.delete(cid);
+        nodeToCid.delete(node);
+      }
+      skippedInserts.add(node);
+    };
+  }
   global.__glide_wrap_node = function (id) {
     return blitzToNode.get(String(id)) || null;
   };

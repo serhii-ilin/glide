@@ -204,6 +204,23 @@ fn onclick_attribute_calls_get_element_by_id() {
 }
 
 #[test]
+fn skipped_insert_is_not_mirrored_twice() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("dom-repro/skip-insert.html"), true).expect("load");
+    assert_eq!(text.matches("YONCE").count(), 1, "{text}");
+}
+
+#[test]
+fn timer_tasks_reset_document_write_state() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("dom-repro/timer-write.html"), true).expect("load");
+    assert!(text.contains("replaced"), "{text}");
+    assert!(!text.contains("FIRST"), "{text}");
+}
+
+#[test]
 fn body_onload_fixture_runs() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

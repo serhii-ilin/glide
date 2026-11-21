@@ -77,7 +77,7 @@ cargo build --release        # when user-facing behavior changes
 - Any change that adds, changes or removes behavior updates `docs/features.md` in the same
   branch: the feature row (status, requirement IDs, covering tests, notes) and any new
   requirement.
-- Status values: `planned`, `in-progress`, `done`, `deferred` (with a reason), `removed`.
+- Status values: `planned`, `in-progress`, `done`, `partial`, `deferred` (with a reason), `removed`.
 - A feature is `done` only when its tests exist and pass, or its manual check is listed in
   `docs/manual-tests.md`.
 - New ideas or out-of-scope findings become `planned` or `deferred` rows instead of

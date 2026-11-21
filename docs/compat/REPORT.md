@@ -1,7 +1,7 @@
 # Glide compatibility report
 
 Date: 2026-11-20
-Git: `aae2048`
+Git: `504b190`
 OS: macos
 
 ## Summary
@@ -33,17 +33,17 @@ None recorded.
 - probe:api — Web API missing (undefined typeof): 22
 - wpt:testharness — missing __glide_results JSON in dump-text: 3
 - wpt:testharness — 1 failed, 0 timeout: 2
-- wpt:testharness — harness did not load (ReferenceError: async_test is not defined): 2
 - wpt:testharness — 2 failed, 0 timeout: 2
-- wpt:testharness — harness did not load (Error: assert_throws_dom: function "() => document.createCDATASection("foo")" threw object "TypeError: document.createCDATASection is not a function" that is not a DOMException NotSupportedError: property "code" is equal to undefined, expected 9): 1
+- wpt:testharness — harness did not load (ReferenceError: async_test is not defined): 2
 - wpt:testharness — harness did not load (ReferenceError: setup is not defined): 1
-- wpt:testharness — 148 failed, 0 timeout: 1
-- wpt:testharness — 3 failed, 0 timeout: 1
-- wpt:testharness — 47 failed, 0 timeout: 1
 - acid:reftest — Acid2 test page vs reference (expected differences): 1
 - wpt:testharness — 117 failed, 0 timeout: 1
-- wpt:testharness — 5 failed, 0 timeout: 1
+- wpt:testharness — 47 failed, 0 timeout: 1
 - wpt:testharness — harness did not load (INVALID_CHARACTER_ERR: INVALID_CHARACTER_ERR (5): the string contains invalid characters): 1
+- wpt:testharness — 148 failed, 0 timeout: 1
+- wpt:testharness — 5 failed, 0 timeout: 1
+- wpt:testharness — 3 failed, 0 timeout: 1
+- wpt:testharness — harness did not load (Error: assert_throws_dom: function "() => document.createCDATASection("foo")" threw object "TypeError: document.createCDATASection is not a function" that is not a DOMException NotSupportedError: property "code" is equal to undefined, expected 9): 1
 
 ## API probe
 
@@ -113,7 +113,7 @@ Rows marked **available** for language built-ins (e.g. `Map`, `Set`, `Proxy`, `I
 
 - `acid1/test5526c.htm` — **unreachable** 
 - `acid2/compare` — **fail** {"diff_pct":3.7385167464114835}
-- `acid3/with-js` — **pass** {"acid3_score":33}
+- `acid3/with-js` — **pass** {"acid3_score":34}
 - `acid3/no-js` — **info** 
 
 ## ECMAScript

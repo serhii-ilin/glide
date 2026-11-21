@@ -23,7 +23,7 @@
     "kind": "score",
     "status": "pass",
     "metrics": {
-      "acid3_score": 33
+      "acid3_score": 34
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text http://acid3.acidtests.org/"
   },
@@ -34,18 +34,6 @@
     "status": "info",
     "reason": "no-JS baseline (score not parsed)",
     "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text --no-js http://acid3.acidtests.org/"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/floats/floats-in-table-caption-001.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.07033492822966507,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/floats-in-table-caption-001.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_floats-in-table-caption-001_html.png"
   },
   {
     "suite": "wpt",
@@ -61,28 +49,15 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/inline-text-after-block-in-inline-margin.html",
+    "path": "css/CSS2/floats/floats-in-table-caption-001.html",
     "kind": "reftest",
     "status": "pass",
     "metrics": {
-      "diff_pct": 0.0,
+      "diff_pct": 0.07033492822966507,
       "rel": "match",
       "tolerance_pct": 0.1
     },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/inline-text-after-block-in-inline-margin.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_inline-text-after-block-in-inline-margin_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-margin-root-002.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 64.11483253588517,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 64.1148%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-margin-root-002.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-margin-root-002_html.png"
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/floats-in-table-caption-001.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_floats-in-table-caption-001_html.png"
   },
   {
     "suite": "wpt",
@@ -111,30 +86,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/css-backgrounds/background-clip-color.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip-color.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip-color_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/inline-text-after-block-in-inline-with-intervening-float.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/inline-text-after-block-in-inline-with-intervening-float.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_inline-text-after-block-in-inline-with-intervening-float_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/box-display/block-in-inline-followed-by-empty-span.html",
     "kind": "reftest",
     "status": "pass",
@@ -144,19 +95,6 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-followed-by-empty-span.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-followed-by-empty-span_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-clip-color-repaint.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 1.30622009569378,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 1.3062%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip-color-repaint.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip-color-repaint_html.png"
   },
   {
     "suite": "wpt",
@@ -173,18 +111,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/multiple-block-in-inlines-margins-collapse.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/multiple-block-in-inlines-margins-collapse.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_multiple-block-in-inlines-margins-collapse_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/box-display/block-in-inline-followed-by-line-break-and-text.html",
     "kind": "reftest",
     "status": "pass",
@@ -194,18 +120,6 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-followed-by-line-break-and-text.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-followed-by-line-break-and-text_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-clip/clip-border-area-background-geometry.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-background-geometry.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-background-geometry_html.png"
   },
   {
     "suite": "wpt",
@@ -222,18 +136,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/nested-spans-with-block-in-inline-margin.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/nested-spans-with-block-in-inline-margin.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_nested-spans-with-block-in-inline-margin_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/box-display/block-in-inline-large-margin-bottom.html",
     "kind": "reftest",
     "status": "pass",
@@ -243,30 +145,6 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-large-margin-bottom.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-large-margin-bottom_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-clip/clip-border-area-border-image.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-border-image.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-border-image_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/three-block-in-inlines-cascading-margins.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/three-block-in-inlines-cascading-margins.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_three-block-in-inlines-cascading-margins_html.png"
   },
   {
     "suite": "wpt",
@@ -295,19 +173,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/css-backgrounds/background-clip/clip-border-area-border-on-top.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 4.784688995215311,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 4.7847%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-border-on-top.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-border-on-top_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/floats/negative-block-margin-pushing-float-out-of-block-formatting-context.html",
     "kind": "reftest",
     "status": "pass",
@@ -317,18 +182,6 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/negative-block-margin-pushing-float-out-of-block-formatting-context.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_negative-block-margin-pushing-float-out-of-block-formatting-context_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/two-block-in-inlines-with-text-between.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/two-block-in-inlines-with-text-between.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_two-block-in-inlines-with-text-between_html.png"
   },
   {
     "suite": "wpt",
@@ -344,19 +197,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/css-backgrounds/background-clip/clip-border-area-border-shape-background-position.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 3.4449760765550237,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 3.4450%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-border-shape-background-position.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-border-shape-background-position_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/floats/overflow-scroll-float-paint-order.html",
     "kind": "reftest",
     "status": "pass",
@@ -369,18 +209,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/floats/float-avoids-float-with-margin-002.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-002.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-002_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/box-display/block-in-inline-margin-collapses-through-multiple-floats.html",
     "kind": "reftest",
     "status": "pass",
@@ -390,19 +218,6 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-collapses-through-multiple-floats.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-collapses-through-multiple-floats_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-clip/clip-border-area-border-shape-overflow.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 1.9291866028708133,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 1.9292%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-border-shape-overflow.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-border-shape-overflow_html.png"
   },
   {
     "suite": "wpt",
@@ -419,6 +234,607 @@
   },
   {
     "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-margin-collapses-with-parent-bottom.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-collapses-with-parent-bottom.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-collapses-with-parent-bottom_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-fixed-border-radius-offset.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-fixed-border-radius-offset.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-fixed-border-radius-offset_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-fixed-inline-scrolled.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-fixed-inline-scrolled.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-fixed-inline-scrolled_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-margin-with-leading-and-trailing-text.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-leading-and-trailing-text.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-leading-and-trailing-text_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-margin-with-leading-text.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-leading-text.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-leading-text_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-fixed-inside-transform-1.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-fixed-inside-transform-1.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-fixed-inside-transform-1_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-1.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 9.37799043062201,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 9.3780%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-1.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-color-1_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-margin-with-line-break-then-block-in-inline.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-line-break-then-block-in-inline.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-line-break-then-block-in-inline_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-after.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-after.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-multi-line-text-after_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-3.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 6.100478468899522,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 6.1005%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-3.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-color-3_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-before.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-before.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-multi-line-text-before_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-4.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 7.373684210526315,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 7.3737%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-4.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-color-4_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-6.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 5.754545454545455,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 5.7545%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-6.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-color-6_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-margin-with-text-then-block-in-inline.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-text-then-block-in-inline.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-text-then-block-in-inline_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-1.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.03325358851674641,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-1.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-image-1_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-margins-collapse-with-trailing-block.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margins-collapse-with-trailing-block.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margins-collapse-with-trailing-block_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-3.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.03325358851674641,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-3.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-image-3_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-negative-margin-bottom-with-trailing-block.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-negative-margin-bottom-with-trailing-block.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-negative-margin-bottom-with-trailing-block_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-negative-margin-with-intervening-float.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-negative-margin-with-intervening-float.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-negative-margin-with-intervening-float_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-4.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.03325358851674641,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-4.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-image-4_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-negative-mb-collapses-with-positive-mt.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-negative-mb-collapses-with-positive-mt.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-negative-mb-collapses-with-positive-mt_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-6.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.03325358851674641,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-6.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-image-6_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-positioning-2.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 0.18385167464114832,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 0.1839%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-positioning-2.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-positioning-2_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-self-collapsing-only-child.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-self-collapsing-only-child.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-self-collapsing-only-child_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-positioning-3.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 0.20299043062200955,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 0.2030%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-positioning-3.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-positioning-3_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-vertical-margins-on-span-ignored.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-vertical-margins-on-span-ignored.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-vertical-margins-on-span-ignored_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-with-padded-parent.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-with-padded-parent.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-with-padded-parent_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-positioning-4.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 0.18456937799043063,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 0.1846%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-positioning-4.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-positioning-4_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-local-positioning-5.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.03325358851674641,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-positioning-5.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-positioning-5_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inline-zero-height-margin-collapse.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-zero-height-margin-collapse.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-zero-height-margin-collapse_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/block-in-inlines-in-different-spans-margin-collapse.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inlines-in-different-spans-margin-collapse.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inlines-in-different-spans-margin-collapse_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-local/attachment-scroll-positioning-1.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.03325358851674641,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-scroll-positioning-1.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-scroll-positioning-1_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/inline-block-after-block-in-inline-with-intervening-float.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/inline-block-after-block-in-inline-with-intervening-float.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_inline-block-after-block-in-inline-with-intervening-float_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-margin-root-001.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 64.11483253588517,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 64.1148%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-margin-root-001.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-margin-root-001_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/inline-text-after-block-in-inline-margin.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/inline-text-after-block-in-inline-margin.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_inline-text-after-block-in-inline-margin_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-attachment-margin-root-002.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 64.11483253588517,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 64.1148%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-margin-root-002.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-margin-root-002_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/inline-text-after-block-in-inline-with-intervening-float.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/inline-text-after-block-in-inline-with-intervening-float.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_inline-text-after-block-in-inline-with-intervening-float_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-clip-color.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip-color.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip-color_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/multiple-block-in-inlines-margins-collapse.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/multiple-block-in-inlines-margins-collapse.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_multiple-block-in-inlines-margins-collapse_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-clip-color-repaint.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 1.30622009569378,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 1.3062%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip-color-repaint.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip-color-repaint_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/nested-spans-with-block-in-inline-margin.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/nested-spans-with-block-in-inline-margin.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_nested-spans-with-block-in-inline-margin_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-clip/clip-border-area-background-geometry.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-background-geometry.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-background-geometry_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/three-block-in-inlines-cascading-margins.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/three-block-in-inlines-cascading-margins.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_three-block-in-inlines-cascading-margins_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-clip/clip-border-area-border-image.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-border-image.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-border-image_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/box-display/two-block-in-inlines-with-text-between.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/two-block-in-inlines-with-text-between.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_two-block-in-inlines-with-text-between_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-clip/clip-border-area-border-on-top.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 4.784688995215311,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 4.7847%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-border-on-top.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-border-on-top_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-clip/clip-border-area-border-shape-background-position.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 3.4449760765550237,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 3.4450%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-border-shape-background-position.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-border-shape-background-position_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/CSS2/floats/float-avoids-float-with-margin-002.html",
+    "kind": "reftest",
+    "status": "pass",
+    "metrics": {
+      "diff_pct": 0.0,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-002.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-002_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "css/css-backgrounds/background-clip/clip-border-area-border-shape-overflow.html",
+    "kind": "reftest",
+    "status": "fail",
+    "metrics": {
+      "diff_pct": 1.9291866028708133,
+      "rel": "match",
+      "tolerance_pct": 0.1
+    },
+    "reason": "pixel diff 1.9292%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-border-shape-overflow.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-border-shape-overflow_html.png"
+  },
+  {
+    "suite": "wpt",
     "path": "css/CSS2/floats/float-avoids-float-with-margin-003.html",
     "kind": "reftest",
     "status": "pass",
@@ -431,7 +847,7 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-margin-collapses-with-parent-bottom.html",
+    "path": "css/CSS2/floats/float-avoids-float-with-margin-004.html",
     "kind": "reftest",
     "status": "pass",
     "metrics": {
@@ -439,7 +855,7 @@
       "rel": "match",
       "tolerance_pct": 0.1
     },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-collapses-with-parent-bottom.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-collapses-with-parent-bottom_html.png"
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-004.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-004_html.png"
   },
   {
     "suite": "wpt",
@@ -456,7 +872,7 @@
   },
   {
     "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-fixed-border-radius-offset.html",
+    "path": "css/CSS2/floats/float-avoids-float-with-margin-006.html",
     "kind": "reftest",
     "status": "pass",
     "metrics": {
@@ -464,43 +880,7 @@
       "rel": "match",
       "tolerance_pct": 0.1
     },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-fixed-border-radius-offset.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-fixed-border-radius-offset_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/floats/float-avoids-float-with-margin-004.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-004.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-004_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-margin-with-leading-and-trailing-text.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-leading-and-trailing-text.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-leading-and-trailing-text_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-fixed-inline-scrolled.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-fixed-inline-scrolled.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-fixed-inline-scrolled_html.png"
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-006.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-006_html.png"
   },
   {
     "suite": "wpt",
@@ -516,18 +896,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/floats/float-avoids-float-with-margin-006.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-006.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-006_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/css-backgrounds/background-clip/clip-border-area-complex-color.html",
     "kind": "reftest",
     "status": "fail",
@@ -538,30 +906,6 @@
     },
     "reason": "pixel diff 5.0321%",
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-complex-color.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-complex-color_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-fixed-inside-transform-1.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-fixed-inside-transform-1.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-fixed-inside-transform-1_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-margin-with-leading-text.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-leading-text.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-leading-text_html.png"
   },
   {
     "suite": "wpt",
@@ -602,31 +946,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-margin-with-line-break-then-block-in-inline.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-line-break-then-block-in-inline.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-line-break-then-block-in-inline_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-1.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 9.37799043062201,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 9.3780%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-1.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-color-1_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/floats/float-avoids-float-with-margin-009.html",
     "kind": "reftest",
     "status": "pass",
@@ -652,7 +971,7 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-after.html",
+    "path": "css/CSS2/floats/float-avoids-float-with-margin-010.html",
     "kind": "reftest",
     "status": "pass",
     "metrics": {
@@ -660,20 +979,7 @@
       "rel": "match",
       "tolerance_pct": 0.1
     },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-after.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-multi-line-text-after_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-3.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 6.100478468899522,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 6.1005%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-3.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-color-3_html.png"
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-010.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-010_html.png"
   },
   {
     "suite": "wpt",
@@ -687,43 +993,6 @@
     },
     "reason": "pixel diff 2.8469%",
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-double.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-double_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/floats/float-avoids-float-with-margin-010.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-010.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-010_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-4.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 7.373684210526315,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 7.3737%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-4.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-color-4_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-before.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-before.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-multi-line-text-before_html.png"
   },
   {
     "suite": "wpt",
@@ -752,31 +1021,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-margin-with-text-then-block-in-inline.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margin-with-text-then-block-in-inline.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margin-with-text-then-block-in-inline_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-6.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 5.754545454545455,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 5.7545%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-color-6.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-color-6_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/css-backgrounds/background-clip/clip-border-area-missing-border.html",
     "kind": "reftest",
     "status": "fail",
@@ -799,42 +1043,6 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-avoids-float-with-margin-012.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-avoids-float-with-margin-012_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-margins-collapse-with-trailing-block.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-margins-collapse-with-trailing-block.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-margins-collapse-with-trailing-block_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-1.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.03325358851674641,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-1.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-image-1_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-negative-margin-bottom-with-trailing-block.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-negative-margin-bottom-with-trailing-block.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-negative-margin-bottom-with-trailing-block_html.png"
   },
   {
     "suite": "wpt",
@@ -863,42 +1071,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-3.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.03325358851674641,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-3.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-image-3_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-4.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.03325358851674641,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-4.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-image-4_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-negative-margin-with-intervening-float.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-negative-margin-with-intervening-float.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-negative-margin-with-intervening-float_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/floats/float-nowrap-3.html",
     "kind": "reftest",
     "status": "pass",
@@ -921,30 +1093,6 @@
     },
     "reason": "pixel diff 91.2008%",
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-clip/clip-border-area-on-body-not-propagated-to-root.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-clip_clip-border-area-on-body-not-propagated-to-root_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-6.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.03325358851674641,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-clipping-image-6.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-clipping-image-6_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-negative-mb-collapses-with-positive-mt.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-negative-mb-collapses-with-positive-mt.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-negative-mb-collapses-with-positive-mt_html.png"
   },
   {
     "suite": "wpt",
@@ -973,18 +1121,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-self-collapsing-only-child.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-self-collapsing-only-child.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-self-collapsing-only-child_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/floats/float-nowrap-5.html",
     "kind": "reftest",
     "status": "pass",
@@ -994,19 +1130,6 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-nowrap-5.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-nowrap-5_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-positioning-2.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 0.18385167464114832,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 0.1839%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-positioning-2.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-positioning-2_html.png"
   },
   {
     "suite": "wpt",
@@ -1023,15 +1146,16 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-vertical-margins-on-span-ignored.html",
+    "path": "css/CSS2/floats/float-nowrap-hyphen-rewind-1.html",
     "kind": "reftest",
-    "status": "pass",
+    "status": "fail",
     "metrics": {
-      "diff_pct": 0.0,
+      "diff_pct": 0.2181818181818182,
       "rel": "match",
       "tolerance_pct": 0.1
     },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-vertical-margins-on-span-ignored.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-vertical-margins-on-span-ignored_html.png"
+    "reason": "pixel diff 0.2182%",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-nowrap-hyphen-rewind-1.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-nowrap-hyphen-rewind-1_html.png"
   },
   {
     "suite": "wpt",
@@ -1048,29 +1172,15 @@
   },
   {
     "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-positioning-3.html",
+    "path": "css/CSS2/floats/float-root.html",
     "kind": "reftest",
-    "status": "fail",
+    "status": "pass",
     "metrics": {
-      "diff_pct": 0.20299043062200955,
+      "diff_pct": 0.027751196172248804,
       "rel": "match",
       "tolerance_pct": 0.1
     },
-    "reason": "pixel diff 0.2030%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-positioning-3.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-positioning-3_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/floats/float-nowrap-hyphen-rewind-1.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 0.2181818181818182,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 0.2182%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-nowrap-hyphen-rewind-1.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-nowrap-hyphen-rewind-1_html.png"
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-root.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-root_html.png"
   },
   {
     "suite": "wpt",
@@ -1087,43 +1197,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-with-padded-parent.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-with-padded-parent.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-with-padded-parent_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-positioning-4.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 0.18456937799043063,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 0.1846%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-positioning-4.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-positioning-4_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/floats/float-root.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.027751196172248804,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-root.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-root_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/css-backgrounds/background-clip/clip-rounded-corner.html",
     "kind": "reftest",
     "status": "pass",
@@ -1136,30 +1209,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-local-positioning-5.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.03325358851674641,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-local-positioning-5.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-local-positioning-5_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inline-zero-height-margin-collapse.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inline-zero-height-margin-collapse.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inline-zero-height-margin-collapse_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/floats/float-table-align-left-quirk.html",
     "kind": "reftest",
     "status": "pass",
@@ -1169,30 +1218,6 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-table-align-left-quirk.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-table-align-left-quirk_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/CSS2/box-display/block-in-inlines-in-different-spans-margin-collapse.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/block-in-inlines-in-different-spans-margin-collapse.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_block-in-inlines-in-different-spans-margin-collapse_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-local/attachment-scroll-positioning-1.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.03325358851674641,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-local/attachment-scroll-positioning-1.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-local_attachment-scroll-positioning-1_html.png"
   },
   {
     "suite": "wpt",
@@ -1220,31 +1245,6 @@
   },
   {
     "suite": "wpt",
-    "path": "css/CSS2/box-display/inline-block-after-block-in-inline-with-intervening-float.html",
-    "kind": "reftest",
-    "status": "pass",
-    "metrics": {
-      "diff_pct": 0.0,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/box-display/inline-block-after-block-in-inline-with-intervening-float.html /Users/serhii/work/glide/target/compat-out/css_CSS2_box-display_inline-block-after-block-in-inline-with-intervening-float_html.png"
-  },
-  {
-    "suite": "wpt",
-    "path": "css/css-backgrounds/background-attachment-margin-root-001.html",
-    "kind": "reftest",
-    "status": "fail",
-    "metrics": {
-      "diff_pct": 64.11483253588517,
-      "rel": "match",
-      "tolerance_pct": 0.1
-    },
-    "reason": "pixel diff 64.1148%",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/css-backgrounds/background-attachment-margin-root-001.html /Users/serhii/work/glide/target/compat-out/css_css-backgrounds_background-attachment-margin-root-001_html.png"
-  },
-  {
-    "suite": "wpt",
     "path": "css/CSS2/floats/float-with-absolutely-positioned-child-with-static-inset.html",
     "kind": "reftest",
     "status": "pass",
@@ -1254,6 +1254,20 @@
       "tolerance_pct": 0.1
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --screenshot file:///Users/serhii/work/glide/tests/compat/wpt/css/CSS2/floats/float-with-absolutely-positioned-child-with-static-inset.html /Users/serhii/work/glide/target/compat-out/css_CSS2_floats_float-with-absolutely-positioned-child-with-static-inset_html.png"
+  },
+  {
+    "suite": "wpt",
+    "path": "dom/nodes/DOMImplementation-createDocument-no-browsing-context.html",
+    "kind": "testharness",
+    "status": "fail",
+    "metrics": {
+      "failed": 5,
+      "harness_status": "OK",
+      "passed": 0,
+      "timeout": 0
+    },
+    "reason": "5 failed, 0 timeout",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/DOMImplementation-createDocument-no-browsing-context.html"
   },
   {
     "suite": "wpt",
@@ -1276,47 +1290,12 @@
     "status": "fail",
     "metrics": {
       "failed": 148,
-      "harness_status": "ERROR",
+      "harness_status": "OK",
       "passed": 286,
       "timeout": 0
     },
     "reason": "148 failed, 0 timeout",
     "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/DOMImplementation-createDocument.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/Document-characterSet-normalization-2.html",
-    "kind": "testharness",
-    "status": "fail",
-    "reason": "harness did not load: ReferenceError: async_test is not defined",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-characterSet-normalization-2.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/CharacterData-replaceData.html",
-    "kind": "testharness",
-    "status": "pass",
-    "metrics": {
-      "failed": 0,
-      "harness_status": "OK",
-      "passed": 34,
-      "timeout": 0
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-replaceData.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/Document-constructor.html",
-    "kind": "testharness",
-    "status": "fail",
-    "metrics": {
-      "failed": 3,
-      "harness_status": "OK",
-      "passed": 2,
-      "timeout": 0
-    },
-    "reason": "3 failed, 0 timeout",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-constructor.html"
   },
   {
     "suite": "wpt",
@@ -1334,19 +1313,6 @@
   },
   {
     "suite": "wpt",
-    "path": "dom/nodes/CharacterData-substringData.html",
-    "kind": "testharness",
-    "status": "pass",
-    "metrics": {
-      "failed": 0,
-      "harness_status": "OK",
-      "passed": 28,
-      "timeout": 0
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-substringData.html"
-  },
-  {
-    "suite": "wpt",
     "path": "dom/nodes/DOMImplementation-createDocumentType.html",
     "kind": "testharness",
     "status": "fail",
@@ -1358,14 +1324,6 @@
     },
     "reason": "47 failed, 0 timeout",
     "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/DOMImplementation-createDocumentType.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/Document-createAttribute.html",
-    "kind": "testharness",
-    "status": "fail",
-    "reason": "harness did not load: ReferenceError: setup is not defined",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-createAttribute.html"
   },
   {
     "suite": "wpt",
@@ -1382,14 +1340,6 @@
   },
   {
     "suite": "wpt",
-    "path": "dom/nodes/CharacterData-surrogates.html",
-    "kind": "testharness",
-    "status": "fail",
-    "reason": "missing __glide_results JSON in dump-text",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-surrogates.html"
-  },
-  {
-    "suite": "wpt",
     "path": "dom/nodes/DOMImplementation-createHTMLDocument-with-saved-implementation.html",
     "kind": "testharness",
     "status": "pass",
@@ -1400,14 +1350,6 @@
       "timeout": 0
     },
     "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/DOMImplementation-createHTMLDocument-with-saved-implementation.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/Document-createCDATASection.html",
-    "kind": "testharness",
-    "status": "fail",
-    "reason": "harness did not load: Error: assert_throws_dom: function \"() => document.createCDATASection(\"foo\")\" threw object \"TypeError: document.createCDATASection is not a function\" that is not a DOMException NotSupportedError: property \"code\" is equal to undefined, expected 9",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-createCDATASection.html"
   },
   {
     "suite": "wpt",
@@ -1438,30 +1380,16 @@
   },
   {
     "suite": "wpt",
-    "path": "dom/nodes/ChildNode-after.html",
+    "path": "dom/nodes/CharacterData-data.html",
     "kind": "testharness",
     "status": "pass",
     "metrics": {
       "failed": 0,
       "harness_status": "OK",
-      "passed": 45,
+      "passed": 16,
       "timeout": 0
     },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/ChildNode-after.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/Document-createComment.html",
-    "kind": "testharness",
-    "status": "fail",
-    "metrics": {
-      "failed": 2,
-      "harness_status": "OK",
-      "passed": 4,
-      "timeout": 0
-    },
-    "reason": "2 failed, 0 timeout",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-createComment.html"
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-data.html"
   },
   {
     "suite": "wpt",
@@ -1479,53 +1407,6 @@
   },
   {
     "suite": "wpt",
-    "path": "dom/nodes/CharacterData-data.html",
-    "kind": "testharness",
-    "status": "pass",
-    "metrics": {
-      "failed": 0,
-      "harness_status": "OK",
-      "passed": 16,
-      "timeout": 0
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-data.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/ChildNode-before.html",
-    "kind": "testharness",
-    "status": "pass",
-    "metrics": {
-      "failed": 0,
-      "harness_status": "OK",
-      "passed": 45,
-      "timeout": 0
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/ChildNode-before.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/Document-URL.html",
-    "kind": "testharness",
-    "status": "fail",
-    "reason": "missing __glide_results JSON in dump-text",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-URL.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/ChildNode-replaceWith.html",
-    "kind": "testharness",
-    "status": "pass",
-    "metrics": {
-      "failed": 0,
-      "harness_status": "OK",
-      "passed": 33,
-      "timeout": 0
-    },
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/ChildNode-replaceWith.html"
-  },
-  {
-    "suite": "wpt",
     "path": "dom/nodes/CharacterData-deleteData.html",
     "kind": "testharness",
     "status": "pass",
@@ -1539,19 +1420,11 @@
   },
   {
     "suite": "wpt",
-    "path": "dom/nodes/Comment-constructor.html",
+    "path": "dom/nodes/Document-URL.html",
     "kind": "testharness",
     "status": "fail",
     "reason": "missing __glide_results JSON in dump-text",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Comment-constructor.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/Document-adoptNode.html",
-    "kind": "testharness",
-    "status": "fail",
-    "reason": "harness did not load: INVALID_CHARACTER_ERR: INVALID_CHARACTER_ERR (5): the string contains invalid characters",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-adoptNode.html"
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-URL.html"
   },
   {
     "suite": "wpt",
@@ -1568,28 +1441,6 @@
   },
   {
     "suite": "wpt",
-    "path": "dom/nodes/Document-characterSet-normalization-1.html",
-    "kind": "testharness",
-    "status": "fail",
-    "reason": "harness did not load: ReferenceError: async_test is not defined",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-characterSet-normalization-1.html"
-  },
-  {
-    "suite": "wpt",
-    "path": "dom/nodes/DOMImplementation-createDocument-no-browsing-context.html",
-    "kind": "testharness",
-    "status": "fail",
-    "metrics": {
-      "failed": 5,
-      "harness_status": "OK",
-      "passed": 0,
-      "timeout": 0
-    },
-    "reason": "5 failed, 0 timeout",
-    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/DOMImplementation-createDocument-no-browsing-context.html"
-  },
-  {
-    "suite": "wpt",
     "path": "dom/nodes/CharacterData-remove.html",
     "kind": "testharness",
     "status": "pass",
@@ -1602,101 +1453,157 @@
     "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-remove.html"
   },
   {
-    "suite": "probe",
-    "path": "WebSocket",
-    "kind": "api",
+    "suite": "wpt",
+    "path": "dom/nodes/Document-adoptNode.html",
+    "kind": "testharness",
+    "status": "fail",
+    "reason": "harness did not load: INVALID_CHARACTER_ERR: INVALID_CHARACTER_ERR (5): the string contains invalid characters",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-adoptNode.html"
+  },
+  {
+    "suite": "wpt",
+    "path": "dom/nodes/CharacterData-replaceData.html",
+    "kind": "testharness",
+    "status": "pass",
+    "metrics": {
+      "failed": 0,
+      "harness_status": "OK",
+      "passed": 34,
+      "timeout": 0
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-replaceData.html"
+  },
+  {
+    "suite": "wpt",
+    "path": "dom/nodes/Document-characterSet-normalization-1.html",
+    "kind": "testharness",
+    "status": "fail",
+    "reason": "harness did not load: ReferenceError: async_test is not defined",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-characterSet-normalization-1.html"
+  },
+  {
+    "suite": "wpt",
+    "path": "dom/nodes/CharacterData-substringData.html",
+    "kind": "testharness",
+    "status": "pass",
+    "metrics": {
+      "failed": 0,
+      "harness_status": "OK",
+      "passed": 28,
+      "timeout": 0
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-substringData.html"
+  },
+  {
+    "suite": "wpt",
+    "path": "dom/nodes/Document-characterSet-normalization-2.html",
+    "kind": "testharness",
+    "status": "fail",
+    "reason": "harness did not load: ReferenceError: async_test is not defined",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-characterSet-normalization-2.html"
+  },
+  {
+    "suite": "wpt",
+    "path": "dom/nodes/Document-constructor.html",
+    "kind": "testharness",
     "status": "fail",
     "metrics": {
-      "typeof": "undefined"
+      "failed": 3,
+      "harness_status": "OK",
+      "passed": 2,
+      "timeout": 0
     },
-    "reason": "missing"
+    "reason": "3 failed, 0 timeout",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-constructor.html"
   },
   {
-    "suite": "probe",
-    "path": "CustomEvent",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
+    "suite": "wpt",
+    "path": "dom/nodes/Document-createAttribute.html",
+    "kind": "testharness",
+    "status": "fail",
+    "reason": "harness did not load: ReferenceError: setup is not defined",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-createAttribute.html"
   },
   {
-    "suite": "probe",
-    "path": "Map",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
+    "suite": "wpt",
+    "path": "dom/nodes/Document-createCDATASection.html",
+    "kind": "testharness",
+    "status": "fail",
+    "reason": "harness did not load: Error: assert_throws_dom: function \"() => document.createCDATASection(\"foo\")\" threw object \"TypeError: document.createCDATASection is not a function\" that is not a DOMException NotSupportedError: property \"code\" is equal to undefined, expected 9",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-createCDATASection.html"
   },
   {
-    "suite": "probe",
-    "path": "document.documentElement.classList",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "object"
-    }
+    "suite": "wpt",
+    "path": "dom/nodes/CharacterData-surrogates.html",
+    "kind": "testharness",
+    "status": "fail",
+    "reason": "missing __glide_results JSON in dump-text",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/CharacterData-surrogates.html"
   },
   {
-    "suite": "probe",
-    "path": "MutationObserver",
-    "kind": "api",
+    "suite": "wpt",
+    "path": "dom/nodes/Document-createComment.html",
+    "kind": "testharness",
     "status": "fail",
     "metrics": {
-      "typeof": "undefined"
+      "failed": 2,
+      "harness_status": "OK",
+      "passed": 4,
+      "timeout": 0
     },
-    "reason": "missing"
+    "reason": "2 failed, 0 timeout",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Document-createComment.html"
   },
   {
-    "suite": "probe",
-    "path": "document.documentElement.innerHTML",
-    "kind": "api",
+    "suite": "wpt",
+    "path": "dom/nodes/ChildNode-after.html",
+    "kind": "testharness",
     "status": "pass",
     "metrics": {
-      "typeof": "string"
-    }
+      "failed": 0,
+      "harness_status": "OK",
+      "passed": 45,
+      "timeout": 0
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/ChildNode-after.html"
   },
   {
-    "suite": "probe",
-    "path": "Intl",
-    "kind": "api",
+    "suite": "wpt",
+    "path": "dom/nodes/ChildNode-before.html",
+    "kind": "testharness",
     "status": "pass",
     "metrics": {
-      "typeof": "object"
-    }
+      "failed": 0,
+      "harness_status": "OK",
+      "passed": 45,
+      "timeout": 0
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/ChildNode-before.html"
   },
   {
-    "suite": "probe",
-    "path": "document.addEventListener",
-    "kind": "api",
+    "suite": "wpt",
+    "path": "dom/nodes/ChildNode-replaceWith.html",
+    "kind": "testharness",
     "status": "pass",
     "metrics": {
-      "typeof": "function"
-    }
+      "failed": 0,
+      "harness_status": "OK",
+      "passed": 33,
+      "timeout": 0
+    },
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/ChildNode-replaceWith.html"
   },
   {
-    "suite": "probe",
-    "path": "window",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "object"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "TextEncoder",
-    "kind": "api",
+    "suite": "wpt",
+    "path": "dom/nodes/Comment-constructor.html",
+    "kind": "testharness",
     "status": "fail",
-    "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
+    "reason": "missing __glide_results JSON in dump-text",
+    "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/wpt/dom/nodes/Comment-constructor.html"
   },
   {
     "suite": "probe",
-    "path": "Set",
+    "path": "queueMicrotask",
     "kind": "api",
     "status": "pass",
     "metrics": {
@@ -1705,62 +1612,7 @@
   },
   {
     "suite": "probe",
-    "path": "fetch",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "Element.prototype.insertAdjacentHTML",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "document",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "object"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "Element.prototype.attachShadow",
-    "kind": "api",
-    "status": "fail",
-    "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
-  },
-  {
-    "suite": "probe",
-    "path": "Symbol",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "WeakMap",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "requestAnimationFrame",
+    "path": "document.documentElement.getBoundingClientRect",
     "kind": "api",
     "status": "pass",
     "metrics": {
@@ -1779,25 +1631,6 @@
   },
   {
     "suite": "probe",
-    "path": "Blob",
-    "kind": "api",
-    "status": "fail",
-    "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
-  },
-  {
-    "suite": "probe",
-    "path": "URLSearchParams",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
     "path": "indexedDB",
     "kind": "api",
     "status": "fail",
@@ -1805,53 +1638,6 @@
       "typeof": "undefined"
     },
     "reason": "missing"
-  },
-  {
-    "suite": "probe",
-    "path": "CSS.supports",
-    "kind": "api",
-    "status": "fail",
-    "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
-  },
-  {
-    "suite": "probe",
-    "path": "Array.prototype.at",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "localStorage",
-    "kind": "api",
-    "status": "fail",
-    "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
-  },
-  {
-    "suite": "probe",
-    "path": "Element.prototype.closest",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "document.documentElement.cloneNode",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
   },
   {
     "suite": "probe",
@@ -1865,17 +1651,16 @@
   },
   {
     "suite": "probe",
-    "path": "sessionStorage",
+    "path": "performance",
     "kind": "api",
-    "status": "fail",
+    "status": "pass",
     "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
+      "typeof": "object"
+    }
   },
   {
     "suite": "probe",
-    "path": "URL",
+    "path": "requestAnimationFrame",
     "kind": "api",
     "status": "pass",
     "metrics": {
@@ -1884,13 +1669,21 @@
   },
   {
     "suite": "probe",
-    "path": "FileReader",
+    "path": "DOMParser",
     "kind": "api",
-    "status": "fail",
+    "status": "pass",
     "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "Array.prototype.at",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
   },
   {
     "suite": "probe",
@@ -1900,34 +1693,6 @@
     "metrics": {
       "typeof": "function"
     }
-  },
-  {
-    "suite": "probe",
-    "path": "queueMicrotask",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "navigator",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "object"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "ResizeObserver",
-    "kind": "api",
-    "status": "fail",
-    "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
   },
   {
     "suite": "probe",
@@ -1949,7 +1714,7 @@
   },
   {
     "suite": "probe",
-    "path": "DOMParser",
+    "path": "Element.prototype.closest",
     "kind": "api",
     "status": "pass",
     "metrics": {
@@ -1958,44 +1723,7 @@
   },
   {
     "suite": "probe",
-    "path": "document.documentElement.scrollIntoView",
-    "kind": "api",
-    "status": "fail",
-    "metrics": {
-      "typeof": "undefined"
-    },
-    "reason": "missing"
-  },
-  {
-    "suite": "probe",
-    "path": "location",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "object"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "document.documentElement.focus",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "Promise",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "customElements",
+    "path": "Element.prototype.attachShadow",
     "kind": "api",
     "status": "fail",
     "metrics": {
@@ -2014,7 +1742,7 @@
   },
   {
     "suite": "probe",
-    "path": "Object.hasOwn",
+    "path": "Set",
     "kind": "api",
     "status": "pass",
     "metrics": {
@@ -2024,6 +1752,185 @@
   {
     "suite": "probe",
     "path": "Worker",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "Element.prototype.insertAdjacentHTML",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "MutationObserver",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "IntersectionObserver",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "localStorage",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "FormData",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "FileReader",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "document.documentElement.cloneNode",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "document.documentElement.innerHTML",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "string"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "CSS.supports",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "Object.hasOwn",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "document.addEventListener",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "document.documentElement.classList",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "object"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "document",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "object"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "URL",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "Map",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "getComputedStyle",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "history.pushState",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "URLSearchParams",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "crypto.getRandomValues",
     "kind": "api",
     "status": "fail",
     "metrics": {
@@ -2043,7 +1950,72 @@
   },
   {
     "suite": "probe",
-    "path": "history.pushState",
+    "path": "Blob",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "Symbol",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "Intl",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "object"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "window",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "object"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "location",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "object"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "TextEncoder",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
+    "path": "document.documentElement.focus",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "customElements",
     "kind": "api",
     "status": "fail",
     "metrics": {
@@ -2062,7 +2034,7 @@
   },
   {
     "suite": "probe",
-    "path": "FormData",
+    "path": "WebSocket",
     "kind": "api",
     "status": "fail",
     "metrics": {
@@ -2072,7 +2044,43 @@
   },
   {
     "suite": "probe",
-    "path": "document.documentElement.getBoundingClientRect",
+    "path": "navigator",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "object"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "WeakMap",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "Promise",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "CustomEvent",
+    "kind": "api",
+    "status": "pass",
+    "metrics": {
+      "typeof": "function"
+    }
+  },
+  {
+    "suite": "probe",
+    "path": "fetch",
     "kind": "api",
     "status": "pass",
     "metrics": {
@@ -2091,6 +2099,16 @@
   },
   {
     "suite": "probe",
+    "path": "document.documentElement.scrollIntoView",
+    "kind": "api",
+    "status": "fail",
+    "metrics": {
+      "typeof": "undefined"
+    },
+    "reason": "missing"
+  },
+  {
+    "suite": "probe",
     "path": "document.querySelector",
     "kind": "api",
     "status": "pass",
@@ -2100,16 +2118,7 @@
   },
   {
     "suite": "probe",
-    "path": "getComputedStyle",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "function"
-    }
-  },
-  {
-    "suite": "probe",
-    "path": "IntersectionObserver",
+    "path": "ResizeObserver",
     "kind": "api",
     "status": "fail",
     "metrics": {
@@ -2119,22 +2128,13 @@
   },
   {
     "suite": "probe",
-    "path": "crypto.getRandomValues",
+    "path": "sessionStorage",
     "kind": "api",
     "status": "fail",
     "metrics": {
       "typeof": "undefined"
     },
     "reason": "missing"
-  },
-  {
-    "suite": "probe",
-    "path": "performance",
-    "kind": "api",
-    "status": "pass",
-    "metrics": {
-      "typeof": "object"
-    }
   },
   {
     "suite": "probe",
@@ -2145,7 +2145,7 @@
       "missing": 22,
       "present": 35
     },
-    "reason": "missing: WebSocket, MutationObserver, TextEncoder, Element.prototype.attachShadow, structuredClone, Blob, indexedDB, CSS.supports, localStorage, document.documentElement.dataset, sessionStorage, FileReader, ResizeObserver, document.documentElement.scrollIntoView, customElements, Worker, matchMedia, history.pushState, FormData, XMLHttpRequest, IntersectionObserver, crypto.getRandomValues",
+    "reason": "missing: structuredClone, indexedDB, document.documentElement.dataset, Element.prototype.attachShadow, Worker, MutationObserver, IntersectionObserver, localStorage, FormData, FileReader, CSS.supports, history.pushState, crypto.getRandomValues, matchMedia, Blob, TextEncoder, customElements, WebSocket, XMLHttpRequest, document.documentElement.scrollIntoView, ResizeObserver, sessionStorage",
     "reproduce": "/Users/serhii/work/glide/target/release/glide --dump-text file:///Users/serhii/work/glide/tests/compat/probe.html"
   },
   {

@@ -11,6 +11,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 
 use super::apply::apply_request;
 use super::bridge::{DomRequest, DomResponse, bubble_handles};
+use super::paint_prune::prune_stale_paint_children;
 use super::scripts::{
     ScriptSource, ScriptSpec, collect_scripts, execution_plan, source_body, spawn_resolve_sources,
 };
@@ -295,10 +296,10 @@ fn dispatch_tap_event(
     }
 }
 
-/// Resolve a fresh paint tree, then hit test. JS mutations drain asynchronously;
-/// without this, a click can hit a paint list that still names a removed node.
+/// Prune stale paint/stacking entries, resolve layout, then hit test. JS mutations
+/// drain asynchronously; without the prune, a click can hit a list that still names a
+/// removed node and panic.
 fn hit_test(doc: &mut BaseDocument, x: f32, y: f32) -> Option<blitz_traits::events::HitResult> {
-    doc.resolve(0.0);
     let pruned = prune_stale_paint_children(doc);
     if pruned > 0 {
         logging::warn(
@@ -309,50 +310,14 @@ fn hit_test(doc: &mut BaseDocument, x: f32, y: f32) -> Option<blitz_traits::even
                 ("count", pruned.to_string()),
                 (
                     "hint",
-                    "A removed node stayed in a paint list; Blitz would panic on hit testing it."
+                    "A removed node stayed in a paint or stacking list; Blitz would panic while hit testing it."
                         .into(),
                 ),
             ],
         );
     }
+    doc.resolve(0.0);
     doc.hit(x, y)
-}
-
-/// Remove dropped node ids from paint lists before hit testing.
-///
-/// A DOM mutation can remove and drop a subtree while a parent still holds it in
-/// `paint_children`; Blitz's `Node::with` unwraps that missing id and panics on the
-/// next click. Pruning only touches stale ids, so live paint order is unchanged.
-fn prune_stale_paint_children(doc: &BaseDocument) -> usize {
-    let mut seen = std::collections::HashSet::new();
-    prune_paint_children(doc, doc.root_node(), &mut seen)
-}
-
-fn prune_paint_children(
-    doc: &BaseDocument,
-    node: &blitz_dom::Node,
-    seen: &mut std::collections::HashSet<blitz_dom::NodeId>,
-) -> usize {
-    if !seen.insert(node.id) {
-        return 0;
-    }
-    let mut removed = 0;
-    let mut paint_children = Vec::new();
-    {
-        let mut paint = node.paint_children.borrow_mut();
-        if let Some(children) = paint.as_mut() {
-            let before = children.len();
-            children.retain(|id| doc.get_node(*id).is_some());
-            removed += before - children.len();
-            paint_children.extend(children.iter().copied());
-        }
-    }
-    for id in node.children.iter().copied().chain(paint_children) {
-        if let Some(child) = doc.get_node(id) {
-            removed += prune_paint_children(doc, child, seen);
-        }
-    }
-    removed
 }
 
 fn ui_event_target(
@@ -470,7 +435,9 @@ mod tests {
 
         doc.mutate().remove_and_drop_node(child);
         assert!(doc.get_node(child).is_none());
-        assert_eq!(prune_stale_paint_children(&doc), 1);
+        // The child is listed in both the layout and paint lists, so prune reports
+        // both; the assertions below pin down the paint entry specifically.
+        assert!(prune_stale_paint_children(&mut doc) >= 1);
         assert!(
             !doc.get_node(parent)
                 .expect("parent node")
@@ -480,6 +447,32 @@ mod tests {
                 .is_some_and(|children| children.contains(&child))
         );
         let _ = hit_test(&mut doc, 1.0, 1.0);
+    }
+
+    #[test]
+    fn paint_after_removed_positioned_node_does_not_panic() {
+        let html = concat!(
+            "<!DOCTYPE html><html><head><style>",
+            "#p { position: relative; width: 100px; height: 100px; }",
+            "#c { position: absolute; z-index: 1; width: 50px; height: 50px; }",
+            "</style></head><body>",
+            "<div id=\"p\"><div id=\"c\">child</div></div>",
+            "</body></html>"
+        );
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        doc.resolve(0.0);
+        let child = doc.get_element_by_id("c").expect("child");
+        doc.mutate().remove_and_drop_node(child);
+        assert!(doc.get_node(child).is_none());
+        assert!(
+            prune_stale_paint_children(&mut doc) >= 1,
+            "expected a stale hoisted stacking entry"
+        );
+        // Hit before the next resolve: this is the frame that panicked without the
+        // prune, because the stale entry is only replaced when layout is rebuilt.
+        let _ = doc.hit(10.0, 10.0);
+        doc.resolve(0.0);
+        let _ = doc.hit(10.0, 10.0);
     }
 
     #[test]

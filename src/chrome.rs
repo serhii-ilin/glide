@@ -1489,6 +1489,38 @@ mod tests {
     }
 
     #[test]
+    fn menu_rebuild_keeps_hit_testing_safe() {
+        let open = ChromeViewState {
+            url: "about:blank".into(),
+            open_menu: Some(MenuId::File),
+            ..ChromeViewState::default()
+        };
+        let mut doc = parse_chrome(&chrome_document_from_state(&open));
+        doc.resolve(0.0);
+        assert!(doc.hit(10.0, 10.0).is_some(), "initial chrome hit test");
+
+        let closed = ChromeViewState {
+            open_menu: None,
+            ..open.clone()
+        };
+        render_menu_bar(&mut doc, &closed);
+        // The shell hit-tests the next hovered window before any resolve. Without the
+        // prune that `sync` runs after chrome mutations, this hit panics on the stale
+        // hoisted dropdown entry ("invalid SlotMap key").
+        let pruned = crate::js::prune_stale_paint_children(&mut doc);
+        assert!(
+            pruned > 0,
+            "replacing an open menu bar should leave stale hoisted entries"
+        );
+        assert!(
+            doc.hit(10.0, 10.0).is_some(),
+            "hit test after a menu bar rebuild"
+        );
+        doc.resolve(0.0);
+        assert!(doc.hit(10.0, 10.0).is_some(), "hit test after resolving");
+    }
+
+    #[test]
     fn toolbar_height_stable_across_page_zoom() {
         let mut doc = parse_chrome(&chrome_document("about:blank", true, false));
         doc.resolve(0.0);

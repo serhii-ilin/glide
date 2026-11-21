@@ -133,6 +133,7 @@ pub fn apply_batch(doc: &mut BaseDocument, payload: &str, reply: u64) -> DomResp
             new_ids.insert(cid, json!(node_to_handle(id)));
         }
     }
+    super::paint_prune::prune_stale_paint_children(doc);
     DomResponse::ok(reply, DomValue::Json(json!({ "ids": new_ids })))
 }
 

@@ -380,6 +380,24 @@ fn inline_handler_does_not_leak_parameter_names() {
 }
 
 #[test]
+fn removed_positioned_child_stays_paintable() {
+    let html = r#"<!DOCTYPE html><html><head><style>
+      #p { position: relative; width: 120px; height: 120px; }
+      #c { position: absolute; z-index: 2; }
+    </style></head><body>
+      <div id="p"><p id="c">remove me</p></div>
+      <p id="t">before</p>
+      <script>
+        var removed = document.getElementById('c');
+        removed.parentNode.removeChild(removed);
+        document.getElementById('t').textContent = 'after';
+      </script>
+    </body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert_eq!(result.final_text, "after");
+}
+
+#[test]
 fn failed_external_script_does_not_panic() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

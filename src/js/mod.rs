@@ -5,6 +5,7 @@ mod batch;
 mod bridge;
 pub mod diagnostics;
 mod host;
+mod paint_prune;
 pub mod scripts;
 mod snapshot;
 mod tap;
@@ -17,4 +18,5 @@ mod harness;
 mod integration;
 
 pub use host::JsHost;
+pub(crate) use paint_prune::prune_stale_paint_children;
 pub use tap::JsTap;

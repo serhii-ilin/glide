@@ -789,6 +789,11 @@ impl Glide {
                     doc.shell_provider.set_window_title(window_title);
                 }
             }
+
+            // Chrome rebuilds (tab strip, menu bar, address text, loading icon) drop
+            // nodes; a surviving paint or stacking entry would panic the next hit test
+            // or paint, which the shell runs after this sync.
+            crate::js::prune_stale_paint_children(&mut doc);
         }
 
         if let Some(cmd) = pending_history {

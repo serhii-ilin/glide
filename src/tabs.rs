@@ -104,6 +104,16 @@ impl TabManager {
         self.add("about:blank")
     }
 
+    /// Make sure the window shows at least one tab.
+    ///
+    /// A restored session can be empty; browsers still show a tab strip with one
+    /// tab, so the window never opens with an empty tab row.
+    pub fn ensure_one_tab(&mut self, url: impl Into<String>) {
+        if self.tabs.is_empty() {
+            self.add(url);
+        }
+    }
+
     /// Append an existing tab snapshot with a fresh identity (used by Duplicate Tab).
     pub fn insert(&mut self, mut tab: Tab) -> TabId {
         let id = self.next_id;
@@ -404,6 +414,17 @@ mod tests {
             tabs.add(*url);
         }
         tabs
+    }
+
+    #[test]
+    fn ensure_one_tab_opens_a_default_tab() {
+        let mut tabs = TabManager::new();
+        assert!(tabs.is_empty());
+        tabs.ensure_one_tab("https://example.com/");
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs.active().map(Tab::url), Some("https://example.com/"));
+        tabs.ensure_one_tab("https://example.com/");
+        assert_eq!(tabs.len(), 1);
     }
 
     #[test]

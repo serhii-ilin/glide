@@ -101,6 +101,8 @@ pub struct TabView {
 #[derive(Debug, Clone, Default)]
 pub struct ChromeViewState {
     pub url: String,
+    /// Title of the active page, shown in the address field.
+    pub title: String,
     pub js_enabled: bool,
     pub bookmarked: bool,
     pub can_go_back: bool,
@@ -187,8 +189,17 @@ pub fn chrome_document(start_url: &str, js_enabled: bool, bookmarked: bool) -> S
 }
 
 /// Render the chrome from the window's current view of tabs, menus and page.
+/// Reload glyph. The system fonts have no circular-arrow character, so the
+/// icon is inline SVG.
+const RELOAD_ICON: &str = "<svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"#3d3933\" d=\"M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-8 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z\"/></svg>";
+
 pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     let url = escape_attr(&view.url);
+    let address_title = if view.title.trim().is_empty() {
+        url.clone()
+    } else {
+        escape_attr(&view.title)
+    };
     let js_label = if view.js_enabled { "JS on" } else { "JS off" };
     let star = if view.bookmarked {
         "&#9733;"
@@ -208,6 +219,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
         "<nav id=\"menu-bar\">\n{}</nav>\n",
         menu_bar_inner_html(view)
     );
+    let reload_icon = RELOAD_ICON;
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -325,8 +337,8 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     display: flex;
     align-items: flex-end;
     gap: calc(4px * var(--ui));
-    padding: calc(7px * var(--ui)) calc(8px * var(--ui)) 0;
-    background: #cfcac0;
+    padding: calc(6px * var(--ui)) calc(8px * var(--ui)) 0;
+    background: #e8e4dc;
     flex: none;
   }}
   div.tab {{
@@ -338,22 +350,30 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     height: calc(28px * var(--ui));
     padding: 0 calc(9px * var(--ui));
     border-radius: calc(8px * var(--ui)) calc(8px * var(--ui)) 0 0;
-    background: #b4afa6;
+    background: #d4cfc5;
     font-size: calc(12px * var(--ui));
-    color: #3c3933;
+    color: #4d4841;
     overflow: hidden;
-    box-shadow: inset 0 calc(-1px * var(--ui)) 0 rgba(0,0,0,0.08);
+    box-shadow: inset 0 calc(-1px * var(--ui)) 0 rgba(0,0,0,0.06);
   }}
   div.tab:hover {{
-    background: #bdb8ae;
+    background: #dcd7cd;
   }}
   div.tab.active {{
-    background: #f7f5f1;
+    background: #f7f5f2;
     color: #1c1915;
+    margin-bottom: calc(-1px * var(--ui));
     box-shadow: inset 0 calc(1px * var(--ui)) 0 rgba(255,255,255,0.9);
   }}
   span.tab-favicon {{
-    color: #7a756b;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(14px * var(--ui));
+    height: calc(14px * var(--ui));
+    border-radius: calc(4px * var(--ui));
+    background: #bdb7ac;
+    color: transparent;
     font-size: calc(9px * var(--ui));
   }}
   span.tab-title {{
@@ -363,15 +383,15 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     text-overflow: ellipsis;
   }}
   div.tab.loading span.tab-favicon {{
-    color: #2f6fe0;
+    background: #2f6fe0;
   }}
   a.tab-close {{
     color: #6b665c;
     text-decoration: none;
-    font-size: calc(14px * var(--ui));
+    font-size: calc(15px * var(--ui));
     line-height: 1;
     border-radius: calc(4px * var(--ui));
-    padding: 0 calc(2px * var(--ui));
+    padding: 0 calc(3px * var(--ui));
     opacity: 0;
     transition: opacity 80ms linear;
   }}
@@ -401,11 +421,126 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   nav#toolbar {{
     display: flex;
     align-items: center;
-    gap: calc(6px * var(--ui));
-    padding: calc(8px * var(--ui)) calc(10px * var(--ui));
-    background: #f7f4ee;
-    border-bottom: calc(1px * var(--ui)) solid #e4ddd0;
+    gap: calc(10px * var(--ui));
+    padding: calc(8px * var(--ui)) calc(12px * var(--ui));
+    background: #f7f5f2;
+    border-bottom: calc(1px * var(--ui)) solid #e0dbd1;
     flex: none;
+  }}
+  .toolbar-side {{
+    display: flex;
+    align-items: center;
+    gap: calc(2px * var(--ui));
+    flex: 1 1 0;
+    min-width: 0;
+  }}
+  #toolbar-trailing {{
+    justify-content: flex-end;
+  }}
+  a.icon-btn {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: calc(30px * var(--ui));
+    height: calc(30px * var(--ui));
+    padding: 0 calc(6px * var(--ui));
+    border: 0;
+    border-radius: calc(8px * var(--ui));
+    background: transparent;
+    color: #3d3933;
+    text-decoration: none;
+    font-size: calc(19px * var(--ui));
+    line-height: 1;
+  }}
+  a.icon-btn:hover {{
+    background: rgba(0,0,0,0.07);
+  }}
+  a.icon-btn:active {{
+    background: rgba(0,0,0,0.12);
+  }}
+  a.chip {{
+    display: flex;
+    align-items: center;
+    height: calc(24px * var(--ui));
+    padding: 0 calc(9px * var(--ui));
+    border: calc(1px * var(--ui)) solid #d8d2c6;
+    border-radius: calc(12px * var(--ui));
+    background: #fffdfa;
+    color: #55504a;
+    text-decoration: none;
+    font-size: calc(11px * var(--ui));
+    letter-spacing: calc(0.02em * var(--ui));
+  }}
+  a.chip:hover {{
+    background: #f0ece4;
+  }}
+  form.address {{
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 0 1 auto;
+    width: calc(560px * var(--ui));
+    max-width: 55%;
+    height: calc(32px * var(--ui));
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    border: calc(1px * var(--ui)) solid #dcd6cb;
+    border-radius: calc(10px * var(--ui));
+    box-shadow: 0 calc(1px * var(--ui)) calc(2px * var(--ui)) rgba(0,0,0,0.05);
+  }}
+  form.address:focus-within {{
+    border-color: #6f9df0;
+    box-shadow: 0 0 0 calc(3px * var(--ui)) rgba(52,120,246,0.16);
+  }}
+  form.address input {{
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    padding: 0 calc(34px * var(--ui));
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    color: transparent;
+    font-size: calc(13px * var(--ui));
+    text-align: center;
+  }}
+  form.address input:focus {{
+    outline: none;
+    color: #1c1915;
+    text-align: left;
+  }}
+  span.address-title {{
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 calc(34px * var(--ui));
+    color: #35312b;
+    font-size: calc(13px * var(--ui));
+    white-space: nowrap;
+    overflow: hidden;
+    pointer-events: none;
+  }}
+  form.address:focus-within span.address-title {{
+    display: none;
+  }}
+  form.address.focused span.address-title {{
+    display: none;
+  }}
+  form.address.focused input {{
+    color: #1c1915;
+    text-align: left;
+  }}
+  span.address-icon {{
+    position: absolute;
+    left: calc(12px * var(--ui));
+    width: calc(7px * var(--ui));
+    height: calc(7px * var(--ui));
+    border-radius: 50%;
+    background: #b8b2a7;
+    pointer-events: none;
   }}
   a.btn {{
     min-width: calc(32px * var(--ui));
@@ -490,22 +625,28 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   {menu_bar}
   {tab_strip}
   <nav id="toolbar">
-    <a class="btn" href="glide://back" title="Back">&#8592;</a>
-    <a class="btn" href="glide://forward" title="Forward">&#8594;</a>
-    <a id="reload" class="btn" href="glide://reload" title="Reload">&#8635;</a>
-    <a id="js-toggle" class="btn" href="glide://toggle-js" title="Toggle JavaScript">{js_label}</a>
-    <a id="bookmark-star" class="btn" href="glide://bookmark" title="{star_title}">{star}</a>
-    <span id="zoom-label"></span>
-    <form action="https://glide.invalid/go" method="get">
-      <input id="url" name="q" type="text" value="{url}" spellcheck="false" autocomplete="off">
+    <div id="toolbar-leading" class="toolbar-side">
+      <a id="back" class="icon-btn" href="glide://back" title="Back" aria-label="Back">&#8592;</a>
+      <a id="forward" class="icon-btn" href="glide://forward" title="Forward" aria-label="Forward">&#8594;</a>
+      <a id="reload" class="icon-btn" href="glide://reload" title="Reload" aria-label="Reload">{reload_icon}</a>
+    </div>
+    <form id="url-form" class="address" action="https://glide.invalid/go" method="get">
+      <span class="address-icon" aria-hidden="true"></span>
+      <span id="url-title" class="address-title">{address_title}</span>
+      <input id="url" name="q" type="text" value="{url}" spellcheck="false" autocomplete="off" aria-label="Address">
     </form>
+    <div id="toolbar-trailing" class="toolbar-side">
+      <a id="js-toggle" class="chip" href="glide://toggle-js" title="Toggle JavaScript">{js_label}</a>
+      <a id="bookmark-star" class="icon-btn" href="glide://bookmark" title="{star_title}" aria-label="{star_title}">{star}</a>
+      <span id="zoom-label"></span>
+    </div>
   </nav>
   <div id="find-bar">
     <input id="find-input" type="text" spellcheck="false" autocomplete="off" placeholder="Find in page">
     <span id="find-count"></span>
     <a class="btn" href="glide://find-prev" title="Previous match">&#8593;</a>
     <a class="btn" href="glide://find-next" title="Next match">&#8595;</a>
-    <a class="btn" href="glide://find-close" title="Close find">&#10005;</a>
+    <a class="btn" href="glide://find-close" title="Close find">&times;</a>
   </div>
   <div id="loading"></div>
   <iframe id="page" src="{url}"></iframe>
@@ -534,13 +675,13 @@ fn tab_strip_inner_html(view: &ChromeViewState) -> String {
             escape_attr(&tab.title)
         };
         html.push_str(&format!(
-            r#"<div id="tab-{id}" class="{classes}"><span class="tab-favicon">&#9679;</span><span class="tab-title">{title}</span><a class="tab-close" href="glide://close-tab?id={id}" title="Close tab">&#10005;</a></div>
+            r#"<div id="tab-{id}" class="{classes}"><span class="tab-favicon"></span><span class="tab-title">{title}</span><a class="tab-close" href="glide://close-tab?id={id}" title="Close tab" aria-label="Close tab">&times;</a></div>
 "#,
             id = tab.id,
         ));
     }
     html.push_str(
-        "<a id=\"new-tab\" class=\"btn\" href=\"glide://new-tab\" title=\"New tab\">+</a>\n",
+        "<a id=\"new-tab\" class=\"icon-btn\" href=\"glide://new-tab\" title=\"New tab\" aria-label=\"New tab\">+</a>\n",
     );
     html
 }
@@ -838,6 +979,47 @@ pub fn set_address(doc: &mut BaseDocument, url: &str) {
     doc.mutate().set_attribute(id, qual_name!("value"), url);
 }
 
+/// Show the page title in the address field; the URL stays in the input value.
+pub fn set_address_title(doc: &mut BaseDocument, title: &str) {
+    let Some(id) = doc.get_element_by_id("url-title") else {
+        return;
+    };
+    let current = doc
+        .get_node(id)
+        .map(|node| node.text_content())
+        .unwrap_or_default();
+    if current == title {
+        return;
+    }
+    let mut m = doc.mutate();
+    let children: Vec<_> = m.child_ids(id).into_iter().collect();
+    for child in children {
+        m.remove_and_drop_node(child);
+    }
+    let text_id = m.create_text_node(title);
+    m.append_children(id, &[text_id]);
+}
+
+/// Mark the address field as focused, so it shows the URL instead of the title.
+pub fn set_address_focused(doc: &mut BaseDocument, focused: bool) {
+    let Some(id) = doc.get_element_by_id("url-form") else {
+        return;
+    };
+    let class = if focused {
+        "address focused"
+    } else {
+        "address"
+    };
+    let current = doc
+        .get_node(id)
+        .and_then(|node| node.attr(local_name!("class")))
+        .unwrap_or_default();
+    if current == class {
+        return;
+    }
+    doc.mutate().set_attribute(id, qual_name!("class"), class);
+}
+
 pub fn set_loading_ui(doc: &mut BaseDocument, loading: bool) {
     if let Some(id) = doc.get_element_by_id("loading") {
         let class = if loading { "active" } else { "" };
@@ -861,8 +1043,7 @@ pub fn set_loading_ui(doc: &mut BaseDocument, loading: bool) {
             for child in children {
                 m.remove_and_drop_node(child);
             }
-            let text_id = m.create_text_node("↻");
-            m.append_children(id, &[text_id]);
+            crate::parse::parse_inner_html_into_mutator(&mut m, id, RELOAD_ICON, false);
         }
     }
 }
@@ -993,7 +1174,7 @@ mod tests {
 
     use super::{
         ChromeViewState, MenuId, NavCommand, TabView, chrome_document_from_state,
-        command_closes_menu, command_from_url, render_menu_bar, set_ui_scale,
+        command_closes_menu, command_from_url, render_menu_bar, set_address_focused, set_ui_scale,
         should_write_committed_address, toolbar_layout_height,
     };
     use blitz_dom::{BaseDocument, DocumentConfig, local_name};
@@ -1180,6 +1361,53 @@ mod tests {
         assert!(html.contains(
             "<span class=\"menu-item disabled\"><span class=\"menu-label\">Previous Tab</span>"
         ));
+    }
+
+    #[test]
+    fn toolbar_has_navigation_address_and_actions() {
+        let view = ChromeViewState {
+            url: "https://example.test/".into(),
+            title: "Example Domain".into(),
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains("id=\"toolbar-leading\""));
+        assert!(html.contains("id=\"toolbar-trailing\""));
+        assert!(html.contains("id=\"url-form\""));
+        assert!(html.contains("class=\"address\""));
+    }
+
+    #[test]
+    fn address_field_shows_the_page_title() {
+        let view = ChromeViewState {
+            url: "https://example.test/".into(),
+            title: "Example Domain".into(),
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains("id=\"url-title\""));
+        assert!(html.contains("Example Domain"));
+        assert!(html.contains("value=\"https://example.test/\""));
+    }
+
+    #[test]
+    fn toolbar_uses_borderless_icon_buttons() {
+        let html = chrome_document_from_state(&ChromeViewState::default());
+        assert!(html.contains("class=\"icon-btn\""));
+        let start = html.find(".icon-btn {").expect("icon button style");
+        let block = &html[start..start + 400];
+        assert!(block.contains("border: 0;"), "{block}");
+        assert!(!block.contains("1px solid"), "{block}");
+    }
+
+    #[test]
+    fn address_field_marks_the_focus_state() {
+        let mut doc = parse_chrome(&chrome_document_from_state(&ChromeViewState::default()));
+        set_address_focused(&mut doc, true);
+        let id = doc.get_element_by_id("url-form").expect("address form");
+        assert!(class_of(&doc, id).contains("focused"));
+        set_address_focused(&mut doc, false);
+        assert!(!class_of(&doc, id).contains("focused"));
     }
 
     #[test]

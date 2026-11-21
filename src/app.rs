@@ -64,7 +64,8 @@ pub fn prepare_window_launch(
     let js_enabled = effective_js_enabled(cli_no_js, &saved_settings);
     let session = profile.load_session();
     let defer_session_save = cli_url.is_some();
-    let tabs = TabManager::from_session(&session, cli_url);
+    let mut tabs = TabManager::from_session(&session, cli_url);
+    tabs.ensure_one_tab(crate::profile::DEFAULT_START_URL);
     let start_url = tabs
         .active()
         .map(Tab::url)
@@ -268,6 +269,7 @@ fn chrome_view_state(
     ChromeViewState {
         bookmarked: bookmarks.is_bookmarked(&url),
         url,
+        title: active.map(|tab| tab.title.clone()).unwrap_or_default(),
         js_enabled,
         can_go_back,
         can_go_forward,
@@ -744,6 +746,16 @@ impl Glide {
             if titles_changed(&self.tabs, &titles_before) {
                 structure_changed = true;
             }
+            if let Some(tab) = self.tabs.active() {
+                let display = if tab.title.trim().is_empty() {
+                    tab.url().to_string()
+                } else {
+                    tab.title.clone()
+                };
+                crate::chrome::set_address_title(&mut doc, &display);
+            }
+            let address_focused = crate::chrome::address_bar_focused(&doc);
+            crate::chrome::set_address_focused(&mut doc, address_focused);
             let loading = self.load_state.page_loading();
             if loading != self.chrome_loading {
                 let was_loading = self.chrome_loading;

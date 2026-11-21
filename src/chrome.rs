@@ -4,6 +4,8 @@
 
 use url::Url;
 
+use crate::tabs::TabId;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavCommand {
     Back,
@@ -12,11 +14,101 @@ pub enum NavCommand {
     Stop,
     ToggleJs,
     ToggleBookmark,
+    Find,
     FindClose,
     FindNext,
     FindPrev,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    NewTab,
+    CloseActiveTab,
+    CloseTab(TabId),
+    SelectTab(TabId),
+    SelectTabIndex(usize),
+    NextTab,
+    PrevTab,
+    DuplicateTab,
+    CloseWindow,
+    MenuOpen(MenuId),
+    MenuClose,
     /// Raw address-bar text, not yet classified as a URL or a search.
     Go(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuId {
+    File,
+    Edit,
+    View,
+    History,
+    Bookmarks,
+    Tabs,
+    Help,
+}
+
+impl MenuId {
+    pub const ALL: [MenuId; 7] = [
+        MenuId::File,
+        MenuId::Edit,
+        MenuId::View,
+        MenuId::History,
+        MenuId::Bookmarks,
+        MenuId::Tabs,
+        MenuId::Help,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuId::File => "File",
+            MenuId::Edit => "Edit",
+            MenuId::View => "View",
+            MenuId::History => "History",
+            MenuId::Bookmarks => "Bookmarks",
+            MenuId::Tabs => "Tabs",
+            MenuId::Help => "Help",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|menu| {
+            menu.label().eq_ignore_ascii_case(name) || menu.name().eq_ignore_ascii_case(name)
+        })
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            MenuId::File => "file",
+            MenuId::Edit => "edit",
+            MenuId::View => "view",
+            MenuId::History => "history",
+            MenuId::Bookmarks => "bookmarks",
+            MenuId::Tabs => "tabs",
+            MenuId::Help => "help",
+        }
+    }
+}
+
+/// One tab as shown in the chrome strip.
+#[derive(Debug, Clone, Default)]
+pub struct TabView {
+    pub id: TabId,
+    pub title: String,
+    pub loading: bool,
+}
+
+/// Everything the chrome renderer needs to draw the window.
+#[derive(Debug, Clone, Default)]
+pub struct ChromeViewState {
+    pub url: String,
+    pub js_enabled: bool,
+    pub bookmarked: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub page_loading: bool,
+    pub tabs: Vec<TabView>,
+    pub active_index: Option<usize>,
+    pub open_menu: Option<MenuId>,
 }
 
 pub fn command_from_url(url: &Url) -> Option<NavCommand> {
@@ -28,9 +120,31 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
             Some("stop") => Some(NavCommand::Stop),
             Some("toggle-js") => Some(NavCommand::ToggleJs),
             Some("bookmark") => Some(NavCommand::ToggleBookmark),
+            Some("find") => Some(NavCommand::Find),
             Some("find-close") => Some(NavCommand::FindClose),
             Some("find-next") => Some(NavCommand::FindNext),
             Some("find-prev") => Some(NavCommand::FindPrev),
+            Some("zoom-in") => Some(NavCommand::ZoomIn),
+            Some("zoom-out") => Some(NavCommand::ZoomOut),
+            Some("zoom-reset") => Some(NavCommand::ZoomReset),
+            Some("new-tab") => Some(NavCommand::NewTab),
+            Some("close-active-tab") => Some(NavCommand::CloseActiveTab),
+            Some("close-tab") => query_value(url, "id")
+                .and_then(|id| id.parse().ok())
+                .map(NavCommand::CloseTab),
+            Some("select-tab") => query_value(url, "id")
+                .and_then(|id| id.parse().ok())
+                .map(NavCommand::SelectTab),
+            Some("next-tab") => Some(NavCommand::NextTab),
+            Some("prev-tab") => Some(NavCommand::PrevTab),
+            Some("duplicate-tab") => Some(NavCommand::DuplicateTab),
+            Some("close-window") => Some(NavCommand::CloseWindow),
+            Some("menu-open") => query_value(url, "menu")
+                .and_then(|name| MenuId::from_name(&name))
+                .map(NavCommand::MenuOpen),
+            Some("menu-close") => Some(NavCommand::MenuClose),
+            Some("bookmarks") => Some(NavCommand::Go("glide://bookmarks".into())),
+            Some("help") => Some(NavCommand::Go("glide://help".into())),
             _ => None,
         };
     }
@@ -51,15 +165,49 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
     Some(NavCommand::Go(url.to_string()))
 }
 
+/// Whether running a command should dismiss an open menu dropdown.
+pub fn command_closes_menu(command: &NavCommand) -> bool {
+    !matches!(command, NavCommand::MenuOpen(_) | NavCommand::MenuClose)
+}
+
+fn query_value(url: &Url, key: &str) -> Option<String> {
+    url.query_pairs()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.into_owned())
+}
+
+/// Render a minimal chrome document for tests that only need the page frame.
 pub fn chrome_document(start_url: &str, js_enabled: bool, bookmarked: bool) -> String {
-    let url = escape_attr(start_url);
-    let js_label = if js_enabled { "JS on" } else { "JS off" };
-    let star = if bookmarked { "&#9733;" } else { "&#9734;" };
-    let star_title = if bookmarked {
+    chrome_document_from_state(&ChromeViewState {
+        url: start_url.to_string(),
+        js_enabled,
+        bookmarked,
+        ..ChromeViewState::default()
+    })
+}
+
+/// Render the chrome from the window's current view of tabs, menus and page.
+pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
+    let url = escape_attr(&view.url);
+    let js_label = if view.js_enabled { "JS on" } else { "JS off" };
+    let star = if view.bookmarked {
+        "&#9733;"
+    } else {
+        "&#9734;"
+    };
+    let star_title = if view.bookmarked {
         "Remove bookmark"
     } else {
         "Add bookmark"
     };
+    let tab_strip = format!(
+        "<div id=\"tab-strip\">\n{}</div>\n",
+        tab_strip_inner_html(view)
+    );
+    let menu_bar = format!(
+        "<nav id=\"menu-bar\">\n{}</nav>\n",
+        menu_bar_inner_html(view)
+    );
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -80,6 +228,175 @@ pub fn chrome_document(start_url: &str, js_enabled: bool, bookmarked: bool) -> S
   body {{
     display: flex;
     flex-direction: column;
+  }}
+  #menu-bar {{
+    display: flex;
+    align-items: center;
+    gap: calc(1px * var(--ui));
+    padding: calc(4px * var(--ui)) calc(6px * var(--ui));
+    background: #f5f3ef;
+    border-bottom: calc(1px * var(--ui)) solid #d9d3c8;
+    flex: none;
+  }}
+  div.menu {{
+    position: relative;
+  }}
+  a.menu-trigger {{
+    display: block;
+    padding: calc(4px * var(--ui)) calc(11px * var(--ui));
+    border-radius: calc(6px * var(--ui));
+    color: #23201c;
+    text-decoration: none;
+    font-size: calc(13px * var(--ui));
+    line-height: calc(16px * var(--ui));
+    letter-spacing: calc(0.01em * var(--ui));
+  }}
+  a.menu-trigger:hover {{
+    background: #e8e4dc;
+  }}
+  a.menu-trigger.active {{
+    background: #3478f6;
+    color: #fff;
+  }}
+  div.menu-dropdown {{
+    display: none;
+    position: absolute;
+    top: calc(100% + calc(3px * var(--ui)));
+    left: 0;
+    z-index: 10;
+    min-width: calc(230px * var(--ui));
+    padding: calc(6px * var(--ui)) 0;
+    background: #fcfbfa;
+    border: calc(1px * var(--ui)) solid #d8d2c7;
+    border-radius: calc(9px * var(--ui));
+    box-shadow:
+      0 calc(1px * var(--ui)) calc(1px * var(--ui)) rgba(0,0,0,0.06),
+      0 calc(8px * var(--ui)) calc(24px * var(--ui)) rgba(0,0,0,0.18);
+  }}
+  div.menu-dropdown.open {{
+    display: block;
+  }}
+  a.menu-item, span.menu-item {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(20px * var(--ui));
+    padding: calc(5px * var(--ui)) calc(12px * var(--ui));
+    color: #23201c;
+    text-decoration: none;
+    font-size: calc(13px * var(--ui));
+    line-height: calc(18px * var(--ui));
+    white-space: nowrap;
+  }}
+  a.menu-item:hover {{
+    background: #3478f6;
+    color: #fff;
+  }}
+  a.menu-item:hover span.menu-shortcut {{
+    color: rgba(255,255,255,0.85);
+  }}
+  span.menu-item.disabled {{
+    color: #b1ab9f;
+  }}
+  span.menu-item.disabled span.menu-shortcut {{
+    color: #cdc7bb;
+  }}
+  span.menu-label {{
+    flex: 1;
+  }}
+  span.menu-shortcut {{
+    color: #8a8377;
+    font-size: calc(12px * var(--ui));
+  }}
+  span.menu-heading {{
+    display: block;
+    padding: calc(8px * var(--ui)) calc(12px * var(--ui)) calc(3px * var(--ui));
+    color: #9a9285;
+    font-size: calc(11px * var(--ui));
+    letter-spacing: calc(0.03em * var(--ui));
+  }}
+  span.menu-separator {{
+    display: block;
+    height: calc(1px * var(--ui));
+    margin: calc(6px * var(--ui)) calc(8px * var(--ui));
+    background: #e3ddd2;
+  }}
+  #tab-strip {{
+    display: flex;
+    align-items: flex-end;
+    gap: calc(4px * var(--ui));
+    padding: calc(7px * var(--ui)) calc(8px * var(--ui)) 0;
+    background: #cfcac0;
+    flex: none;
+  }}
+  div.tab {{
+    display: flex;
+    align-items: center;
+    gap: calc(7px * var(--ui));
+    max-width: calc(230px * var(--ui));
+    min-width: calc(96px * var(--ui));
+    height: calc(28px * var(--ui));
+    padding: 0 calc(9px * var(--ui));
+    border-radius: calc(8px * var(--ui)) calc(8px * var(--ui)) 0 0;
+    background: #b4afa6;
+    font-size: calc(12px * var(--ui));
+    color: #3c3933;
+    overflow: hidden;
+    box-shadow: inset 0 calc(-1px * var(--ui)) 0 rgba(0,0,0,0.08);
+  }}
+  div.tab:hover {{
+    background: #bdb8ae;
+  }}
+  div.tab.active {{
+    background: #f7f5f1;
+    color: #1c1915;
+    box-shadow: inset 0 calc(1px * var(--ui)) 0 rgba(255,255,255,0.9);
+  }}
+  span.tab-favicon {{
+    color: #7a756b;
+    font-size: calc(9px * var(--ui));
+  }}
+  span.tab-title {{
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  div.tab.loading span.tab-favicon {{
+    color: #2f6fe0;
+  }}
+  a.tab-close {{
+    color: #6b665c;
+    text-decoration: none;
+    font-size: calc(14px * var(--ui));
+    line-height: 1;
+    border-radius: calc(4px * var(--ui));
+    padding: 0 calc(2px * var(--ui));
+    opacity: 0;
+    transition: opacity 80ms linear;
+  }}
+  div.tab:hover a.tab-close, div.tab.active a.tab-close {{
+    opacity: 1;
+  }}
+  a.tab-close:hover {{
+    background: #c8c3b9;
+    color: #1c1915;
+  }}
+  div.tab.active a.tab-close:hover {{
+    background: #d8d4cb;
+  }}
+  a#new-tab {{
+    min-width: calc(26px * var(--ui));
+    height: calc(26px * var(--ui));
+    margin-bottom: calc(2px * var(--ui));
+    border-radius: calc(7px * var(--ui));
+    background: transparent;
+    border-color: transparent;
+    color: #5a564d;
+  }}
+  a#new-tab:hover {{
+    background: #ded9cf;
+    color: #1c1915;
   }}
   nav#toolbar {{
     display: flex;
@@ -170,6 +487,8 @@ pub fn chrome_document(start_url: &str, js_enabled: bool, bookmarked: bool) -> S
 </style>
 </head>
 <body>
+  {menu_bar}
+  {tab_strip}
   <nav id="toolbar">
     <a class="btn" href="glide://back" title="Back">&#8592;</a>
     <a class="btn" href="glide://forward" title="Forward">&#8594;</a>
@@ -194,6 +513,298 @@ pub fn chrome_document(start_url: &str, js_enabled: bool, bookmarked: bool) -> S
 </html>
 "#
     )
+}
+
+fn tab_strip_inner_html(view: &ChromeViewState) -> String {
+    let mut html = String::new();
+    for (index, tab) in view.tabs.iter().enumerate() {
+        let classes = if Some(index) == view.active_index {
+            "tab active"
+        } else {
+            "tab"
+        };
+        let classes = if tab.loading {
+            format!("{classes} loading")
+        } else {
+            classes.to_string()
+        };
+        let title = if tab.title.trim().is_empty() {
+            "New tab".to_string()
+        } else {
+            escape_attr(&tab.title)
+        };
+        html.push_str(&format!(
+            r#"<div id="tab-{id}" class="{classes}"><span class="tab-favicon">&#9679;</span><span class="tab-title">{title}</span><a class="tab-close" href="glide://close-tab?id={id}" title="Close tab">&#10005;</a></div>
+"#,
+            id = tab.id,
+        ));
+    }
+    html.push_str(
+        "<a id=\"new-tab\" class=\"btn\" href=\"glide://new-tab\" title=\"New tab\">+</a>\n",
+    );
+    html
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuItemKind {
+    Action,
+    Disabled,
+    Separator,
+    Heading,
+}
+
+struct MenuItem {
+    label: String,
+    href: String,
+    shortcut: &'static str,
+    kind: MenuItemKind,
+}
+
+impl MenuItem {
+    fn action(label: &str, href: &str, shortcut: &'static str) -> Self {
+        Self {
+            label: label.to_string(),
+            href: href.to_string(),
+            shortcut,
+            kind: MenuItemKind::Action,
+        }
+    }
+
+    fn disabled(label: &str, shortcut: &'static str) -> Self {
+        Self {
+            label: label.to_string(),
+            href: String::new(),
+            shortcut,
+            kind: MenuItemKind::Disabled,
+        }
+    }
+
+    fn separator() -> Self {
+        Self {
+            label: String::new(),
+            href: String::new(),
+            shortcut: "",
+            kind: MenuItemKind::Separator,
+        }
+    }
+
+    fn heading(label: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            href: String::new(),
+            shortcut: "",
+            kind: MenuItemKind::Heading,
+        }
+    }
+}
+
+fn menu_items_html(menu: MenuId, view: &ChromeViewState) -> String {
+    let mut items = Vec::new();
+    let single_tab = view.tabs.len() <= 1;
+
+    match menu {
+        MenuId::File => {
+            items.push(MenuItem::action("New Tab", "glide://new-tab", "⌘T"));
+            items.push(MenuItem::separator());
+            if single_tab {
+                items.push(MenuItem::disabled("Close Tab", "⌘W"));
+            } else {
+                items.push(MenuItem::action(
+                    "Close Tab",
+                    "glide://close-active-tab",
+                    "⌘W",
+                ));
+            }
+            items.push(MenuItem::action(
+                "Close Window",
+                "glide://close-window",
+                "⇧⌘W",
+            ));
+        }
+        MenuId::Edit => {
+            items.push(MenuItem::action("Find", "glide://find", "⌘F"));
+            items.push(MenuItem::separator());
+            items.push(MenuItem::heading("Editing"));
+            items.push(MenuItem::disabled("Undo", "⌘Z"));
+            items.push(MenuItem::disabled("Redo", "⇧⌘Z"));
+            items.push(MenuItem::disabled("Cut", "⌘X"));
+            items.push(MenuItem::disabled("Copy", "⌘C"));
+            items.push(MenuItem::disabled("Paste", "⌘V"));
+            items.push(MenuItem::disabled("Select All", "⌘A"));
+        }
+        MenuId::View => {
+            items.push(MenuItem::action("Zoom In", "glide://zoom-in", "⌘+"));
+            items.push(MenuItem::action("Zoom Out", "glide://zoom-out", "⌘−"));
+            items.push(MenuItem::action("Reset Zoom", "glide://zoom-reset", "⌘0"));
+            items.push(MenuItem::separator());
+            items.push(MenuItem::action("Reload Page", "glide://reload", "⌘R"));
+            items.push(MenuItem::separator());
+            let js_label = if view.js_enabled {
+                "Turn JavaScript Off"
+            } else {
+                "Turn JavaScript On"
+            };
+            items.push(MenuItem::action(js_label, "glide://toggle-js", "⇧⌘J"));
+        }
+        MenuId::History => {
+            if view.can_go_back {
+                items.push(MenuItem::action("Back", "glide://back", "⌘["));
+            } else {
+                items.push(MenuItem::disabled("Back", "⌘["));
+            }
+            if view.can_go_forward {
+                items.push(MenuItem::action("Forward", "glide://forward", "⌘]"));
+            } else {
+                items.push(MenuItem::disabled("Forward", "⌘]"));
+            }
+            items.push(MenuItem::separator());
+            if view.page_loading {
+                items.push(MenuItem::action("Stop Loading", "glide://stop", "⎋"));
+            } else {
+                items.push(MenuItem::action("Reload Page", "glide://reload", "⌘R"));
+            }
+        }
+        MenuId::Bookmarks => {
+            let label = if view.bookmarked {
+                "Remove Bookmark"
+            } else {
+                "Add Bookmark"
+            };
+            items.push(MenuItem::action(label, "glide://bookmark", "⌘D"));
+            items.push(MenuItem::separator());
+            items.push(MenuItem::action(
+                "Show Bookmarks",
+                "glide://bookmarks",
+                "⇧⌘B",
+            ));
+        }
+        MenuId::Tabs => {
+            items.push(MenuItem::action("New Tab", "glide://new-tab", "⌘T"));
+            items.push(MenuItem::action(
+                "Duplicate Tab",
+                "glide://duplicate-tab",
+                "",
+            ));
+            items.push(MenuItem::separator());
+            if single_tab {
+                items.push(MenuItem::disabled("Next Tab", "⌃⇥"));
+                items.push(MenuItem::disabled("Previous Tab", "⌃⇧⇥"));
+            } else {
+                items.push(MenuItem::action("Next Tab", "glide://next-tab", "⌃⇥"));
+                items.push(MenuItem::action("Previous Tab", "glide://prev-tab", "⌃⇧⇥"));
+            }
+        }
+        MenuId::Help => {
+            items.push(MenuItem::action(
+                "Keyboard Shortcuts",
+                "glide://help",
+                "⇧⌘?",
+            ));
+            items.push(MenuItem::separator());
+            items.push(MenuItem::heading("Glide"));
+            items.push(MenuItem::disabled("About Glide", ""));
+        }
+    }
+
+    if menu == MenuId::Tabs && view.tabs.len() > 1 {
+        items.push(MenuItem::separator());
+        items.push(MenuItem::heading("Open Tabs"));
+        for (index, tab) in view.tabs.iter().enumerate() {
+            let title = if tab.title.trim().is_empty() {
+                format!("{}: New tab", index + 1)
+            } else {
+                format!("{}: {}", index + 1, tab.title)
+            };
+            let is_active = Some(index) == view.active_index;
+            let href = format!("glide://select-tab?id={}", tab.id);
+            if is_active {
+                items.push(MenuItem::action(&title, &href, "✓"));
+            } else {
+                items.push(MenuItem::action(&title, &href, ""));
+            }
+        }
+    }
+
+    let mut html = String::new();
+    for item in items {
+        match item.kind {
+            MenuItemKind::Action => {
+                html.push_str(&format!(
+                    "<a class=\"menu-item\" href=\"{href}\"><span class=\"menu-label\">{label}</span><span class=\"menu-shortcut\">{shortcut}</span></a>\n",
+                    href = escape_attr(&item.href),
+                    label = escape_attr(&item.label),
+                    shortcut = item.shortcut,
+                ));
+            }
+            MenuItemKind::Disabled => {
+                html.push_str(&format!(
+                    "<span class=\"menu-item disabled\"><span class=\"menu-label\">{label}</span><span class=\"menu-shortcut\">{shortcut}</span></span>\n",
+                    label = escape_attr(&item.label),
+                    shortcut = item.shortcut,
+                ));
+            }
+            MenuItemKind::Separator => {
+                html.push_str("<span class=\"menu-separator\" role=\"separator\"></span>\n");
+            }
+            MenuItemKind::Heading => {
+                html.push_str(&format!(
+                    "<span class=\"menu-heading\">{label}</span>\n",
+                    label = escape_attr(&item.label),
+                ));
+            }
+        }
+    }
+    html
+}
+
+fn menu_bar_inner_html(view: &ChromeViewState) -> String {
+    let mut html = String::new();
+    for menu in MenuId::ALL {
+        let active = if view.open_menu == Some(menu) {
+            " active"
+        } else {
+            ""
+        };
+        html.push_str(&format!(
+            "<div class=\"menu\"><a id=\"menu-{name}\" class=\"menu-trigger{active}\" href=\"glide://menu-open?menu={name}\">{label}</a>",
+            name = menu.name(),
+            label = menu.label(),
+        ));
+        let open = if view.open_menu == Some(menu) {
+            " open"
+        } else {
+            ""
+        };
+        html.push_str(&format!(
+            "<div id=\"menu-{name}-dropdown\" class=\"menu-dropdown{open}\">\n{items}</div></div>\n",
+            name = menu.name(),
+            items = menu_items_html(menu, view),
+        ));
+    }
+    html
+}
+
+/// Replace the tab strip inside an existing chrome document.
+pub fn render_tab_strip(doc: &mut BaseDocument, view: &ChromeViewState) {
+    if let Some(id) = doc.get_element_by_id("tab-strip") {
+        replace_inner_html(doc, id, &tab_strip_inner_html(view));
+    }
+}
+
+/// Replace the menu bar inside an existing chrome document.
+pub fn render_menu_bar(doc: &mut BaseDocument, view: &ChromeViewState) {
+    if let Some(id) = doc.get_element_by_id("menu-bar") {
+        replace_inner_html(doc, id, &menu_bar_inner_html(view));
+    }
+}
+
+fn replace_inner_html(doc: &mut BaseDocument, id: blitz_traits::node_id::NodeId, html: &str) {
+    let mut m = doc.mutate();
+    let children: Vec<_> = m.child_ids(id).into_iter().collect();
+    for child in children {
+        m.remove_and_drop_node(child);
+    }
+    crate::parse::parse_inner_html_into_mutator(&mut m, id, html, false);
 }
 
 use blitz_dom::{BaseDocument, local_name, qual_name};
@@ -275,6 +886,16 @@ pub fn find_input_value(doc: &BaseDocument) -> Option<String> {
     let id = doc.get_element_by_id("find-input")?;
     let input = doc.get_node(id)?.element_data()?.text_input_data()?;
     Some(input.editor.text().to_string())
+}
+
+pub fn set_find_input_value(doc: &mut BaseDocument, value: &str) {
+    let Some(id) = doc.get_element_by_id("find-input") else {
+        return;
+    };
+    doc.with_text_input(id, |mut driver| {
+        driver.editor.set_text(value);
+        driver.refresh_layout();
+    });
 }
 
 pub fn set_find_bar_open(doc: &mut BaseDocument, open: bool) {
@@ -371,10 +992,12 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        NavCommand, command_from_url, set_ui_scale, should_write_committed_address,
-        toolbar_layout_height,
+        ChromeViewState, MenuId, NavCommand, TabView, chrome_document_from_state,
+        command_closes_menu, command_from_url, render_menu_bar, set_ui_scale,
+        should_write_committed_address, toolbar_layout_height,
     };
-    use blitz_dom::DocumentConfig;
+    use blitz_dom::{BaseDocument, DocumentConfig, local_name};
+    use blitz_traits::node_id::NodeId;
     use blitz_traits::shell::{ColorScheme, Viewport};
     use url::Url;
 
@@ -411,6 +1034,205 @@ mod tests {
     }
 
     #[test]
+    fn tab_strip_renders_tabs_and_controls() {
+        let view = ChromeViewState {
+            url: "https://a/".into(),
+            tabs: vec![TabView {
+                id: 4,
+                title: "Example".into(),
+                ..TabView::default()
+            }],
+            active_index: Some(0),
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains("id=\"tab-strip\""));
+        assert!(html.contains("Example"));
+        assert!(html.contains("id=\"new-tab\""));
+        assert!(html.contains("glide://close-tab?id=4"));
+    }
+
+    #[test]
+    fn active_tab_is_marked_in_tab_strip() {
+        let view = ChromeViewState {
+            tabs: vec![
+                TabView {
+                    id: 1,
+                    title: "A".into(),
+                    ..TabView::default()
+                },
+                TabView {
+                    id: 2,
+                    title: "B".into(),
+                    ..TabView::default()
+                },
+            ],
+            active_index: Some(1),
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains("id=\"tab-1\" class=\"tab\""));
+        assert!(html.contains("id=\"tab-2\" class=\"tab active\""));
+    }
+
+    #[test]
+    fn tab_close_buttons_carry_tab_ids() {
+        let view = ChromeViewState {
+            tabs: vec![
+                TabView {
+                    id: 7,
+                    ..TabView::default()
+                },
+                TabView {
+                    id: 9,
+                    ..TabView::default()
+                },
+            ],
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains("glide://close-tab?id=7"));
+        assert!(html.contains("glide://close-tab?id=9"));
+    }
+
+    #[test]
+    fn menu_bar_renders_all_menus() {
+        let html = chrome_document_from_state(&ChromeViewState::default());
+        for menu in MenuId::ALL {
+            assert!(html.contains(&format!("id=\"menu-{}\"", menu.name())));
+        }
+    }
+
+    #[test]
+    fn menu_open_command_exposes_items() {
+        let url = Url::parse("glide://menu-open?menu=file").unwrap();
+        assert_eq!(
+            command_from_url(&url),
+            Some(NavCommand::MenuOpen(MenuId::File))
+        );
+        let view = ChromeViewState {
+            open_menu: Some(MenuId::File),
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains("class=\"menu-dropdown open\""));
+        assert!(html.contains("Close Window"));
+    }
+
+    #[test]
+    fn history_disables_back_and_forward_when_unavailable() {
+        let html = chrome_document_from_state(&ChromeViewState::default());
+        assert!(
+            html.contains(
+                "<span class=\"menu-item disabled\"><span class=\"menu-label\">Back</span>"
+            )
+        );
+        assert!(html.contains(
+            "<span class=\"menu-item disabled\"><span class=\"menu-label\">Forward</span>"
+        ));
+        assert!(!html.contains("<a class=\"menu-item\" href=\"glide://back\""));
+        assert!(!html.contains("<a class=\"menu-item\" href=\"glide://forward\""));
+    }
+
+    #[test]
+    fn history_enables_back_and_forward_when_available() {
+        let view = ChromeViewState {
+            can_go_back: true,
+            can_go_forward: true,
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains("href=\"glide://back\""));
+        assert!(html.contains("href=\"glide://forward\""));
+    }
+
+    #[test]
+    fn close_tab_is_disabled_with_a_single_tab() {
+        let view = ChromeViewState {
+            tabs: vec![TabView {
+                id: 1,
+                title: "Only".into(),
+                ..TabView::default()
+            }],
+            active_index: Some(0),
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains(
+            "<span class=\"menu-item disabled\"><span class=\"menu-label\">Close Tab</span>"
+        ));
+        assert!(!html.contains("href=\"glide://close-active-tab\""));
+    }
+
+    #[test]
+    fn tab_cycling_is_disabled_with_a_single_tab() {
+        let view = ChromeViewState {
+            tabs: vec![TabView {
+                id: 1,
+                ..TabView::default()
+            }],
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains(
+            "<span class=\"menu-item disabled\"><span class=\"menu-label\">Next Tab</span>"
+        ));
+        assert!(html.contains(
+            "<span class=\"menu-item disabled\"><span class=\"menu-label\">Previous Tab</span>"
+        ));
+    }
+
+    #[test]
+    fn menu_action_closes_dropdown() {
+        let action = command_from_url(&Url::parse("glide://back").unwrap()).expect("menu action");
+        assert!(command_closes_menu(&action));
+        assert!(!command_closes_menu(&NavCommand::MenuOpen(MenuId::File)));
+        assert!(!command_closes_menu(&NavCommand::MenuClose));
+    }
+
+    #[test]
+    fn menu_close_hides_dropdown() {
+        let view = ChromeViewState {
+            open_menu: Some(MenuId::File),
+            ..ChromeViewState::default()
+        };
+        let mut doc = parse_chrome(&chrome_document_from_state(&view));
+        let id = doc
+            .get_element_by_id("menu-file-dropdown")
+            .expect("dropdown");
+        assert!(class_of(&doc, id).contains("open"));
+
+        render_menu_bar(
+            &mut doc,
+            &ChromeViewState {
+                open_menu: None,
+                ..view
+            },
+        );
+        let id = doc
+            .get_element_by_id("menu-file-dropdown")
+            .expect("dropdown");
+        assert!(!class_of(&doc, id).contains("open"));
+    }
+
+    #[test]
+    fn classifies_tab_commands() {
+        let parse = |url| command_from_url(&Url::parse(url).unwrap());
+        assert_eq!(parse("glide://new-tab"), Some(NavCommand::NewTab));
+        assert_eq!(
+            parse("glide://close-tab?id=3"),
+            Some(NavCommand::CloseTab(3))
+        );
+        assert_eq!(
+            parse("glide://select-tab?id=3"),
+            Some(NavCommand::SelectTab(3))
+        );
+        assert_eq!(parse("glide://next-tab"), Some(NavCommand::NextTab));
+        assert_eq!(parse("glide://prev-tab"), Some(NavCommand::PrevTab));
+        assert_eq!(parse("glide://close-window"), Some(NavCommand::CloseWindow));
+    }
+
+    #[test]
     fn address_sync_skips_when_focused_writes_when_stale() {
         assert!(!should_write_committed_address(
             true,
@@ -440,13 +1262,7 @@ mod tests {
 
     #[test]
     fn toolbar_height_stable_across_page_zoom() {
-        let html = chrome_document("about:blank", true, false);
-        let config = DocumentConfig {
-            viewport: Some(Viewport::new(1100, 760, 1.0, ColorScheme::Light)),
-            html_parser_provider: Some(Arc::new(GlideHtmlProvider::default())),
-            ..DocumentConfig::default()
-        };
-        let mut doc = parse::document_from_html(&html, config, false);
+        let mut doc = parse_chrome(&chrome_document("about:blank", true, false));
         doc.resolve(0.0);
         let zoom_at_100 = doc.viewport().zoom();
         let visual_h100 =
@@ -464,5 +1280,21 @@ mod tests {
             (visual_h100 - visual_h200).abs() < 2.0,
             "toolbar visual height should stay stable: {visual_h100} vs {visual_h200}"
         );
+    }
+
+    fn parse_chrome(html: &str) -> BaseDocument {
+        let config = DocumentConfig {
+            viewport: Some(Viewport::new(1100, 760, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(GlideHtmlProvider::default())),
+            ..DocumentConfig::default()
+        };
+        parse::document_from_html(html, config, false)
+    }
+
+    fn class_of(doc: &BaseDocument, id: NodeId) -> String {
+        doc.get_node(id)
+            .and_then(|node| node.attr(local_name!("class")))
+            .unwrap_or_default()
+            .to_string()
     }
 }

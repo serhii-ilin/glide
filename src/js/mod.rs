@@ -3,6 +3,7 @@
 mod apply;
 mod batch;
 mod bridge;
+pub mod diagnostics;
 mod host;
 pub mod scripts;
 mod snapshot;

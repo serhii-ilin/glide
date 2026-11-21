@@ -41,7 +41,12 @@
 
   function consoleError(err) {
     try {
-      const msg = err && err.stack ? String(err.stack) : String(err);
+      let msg = err && err.stack ? String(err.stack) : String(err);
+      const href = global.location && global.location.href ? String(global.location.href) : '';
+      const script = global.__glideCurrentScript && global.__glideCurrentScript.src
+        ? String(global.__glideCurrentScript.src)
+        : '';
+      if (href || script) msg += ' [page=' + href + (script ? ' script=' + script : '') + ']';
       __glide_console('error', msg);
     } catch (_) { /* console may be unavailable during early init */ }
   }
@@ -360,6 +365,73 @@
         return cachedRpc('computedStyle', id, prop);
       },
     });
+  }
+
+  function patchDataset(htmlProto) {
+    if (!htmlProto || typeof Proxy !== 'function') return;
+    if (global.DOMStringMap == null) {
+      global.DOMStringMap = function DOMStringMap() {};
+    }
+    const maps = new WeakMap();
+    const attrFor = (prop) => 'data-' + String(prop).replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase());
+    const propFor = (attr) => attr.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
+    const datasetFor = (el) => {
+      const cached = maps.get(el);
+      if (cached) return cached;
+      const map = new Proxy(Object.create(global.DOMStringMap.prototype), {
+        get(target, prop) {
+          if (prop in target || typeof prop !== 'string') return target[prop];
+          const value = el.getAttribute(attrFor(prop));
+          return value == null ? undefined : value;
+        },
+        set(target, prop, value) {
+          if (typeof prop === 'string') {
+            el.setAttribute(attrFor(prop), String(value));
+            return true;
+          }
+          target[prop] = value;
+          return true;
+        },
+        deleteProperty(target, prop) {
+          if (typeof prop === 'string') {
+            el.removeAttribute(attrFor(prop));
+            return true;
+          }
+          return delete target[prop];
+        },
+        has(target, prop) {
+          return prop in target || (typeof prop === 'string' && el.hasAttribute(attrFor(prop)));
+        },
+        ownKeys(target) {
+          const keys = [];
+          const attrs = el.attributes || [];
+          for (let i = 0; i < attrs.length; i += 1) {
+            const name = attrs[i].name;
+            if (name && name.indexOf('data-') === 0) keys.push(propFor(name));
+          }
+          return keys;
+        },
+        getOwnPropertyDescriptor(target, prop) {
+          if (typeof prop === 'string' && el.hasAttribute(attrFor(prop))) {
+            return {
+              value: el.getAttribute(attrFor(prop)),
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            };
+          }
+          return Reflect.getOwnPropertyDescriptor(target, prop);
+        },
+      });
+      maps.set(el, map);
+      return map;
+    };
+    try {
+      Object.defineProperty(htmlProto, 'dataset', {
+        configurable: true,
+        get() { return datasetFor(this); },
+      });
+    } catch (_) { /* domino already exposes a dataset property */ }
   }
 
   function patchDomParser() {
@@ -767,6 +839,7 @@
     global.CustomEvent = impl.CustomEvent;
     global.MouseEvent = impl.MouseEvent;
     patchLayout(global.Element.prototype);
+    patchDataset(global.HTMLElement.prototype);
     const gcsImpl = function (el) {
       flushMutations();
       const id = blitzId(el);

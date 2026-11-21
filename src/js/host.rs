@@ -17,6 +17,7 @@ use super::scripts::{
 use super::snapshot;
 use super::tap::JsTap;
 use super::worker::JsWorker;
+use crate::logging;
 
 pub struct DomRpc {
     pub request: DomRequest,
@@ -273,7 +274,7 @@ impl JsHost {
 }
 
 fn dispatch_tap_event(
-    chrome: &BaseDocument,
+    chrome: &mut BaseDocument,
     worker: &Option<JsWorker>,
     evt: &UiEvent,
     redraw: &mut bool,
@@ -281,12 +282,9 @@ fn dispatch_tap_event(
     let Some(worker) = worker else {
         return;
     };
-    if let Some(page_id) = chrome.get_element_by_id("page")
-        && let Some(sub) = chrome.get_node(page_id).and_then(|n| n.subdoc())
-    {
-        let inner = sub.inner();
-        if let Some((target, ty)) = ui_event_target(evt, &inner) {
-            worker.dispatch_dom_bubble(bubble_handles(&inner, target), ty);
+    if let Some(inner) = page_subdoc_mut(chrome) {
+        if let Some((target, ty)) = ui_event_target(evt, inner) {
+            worker.dispatch_dom_bubble(bubble_handles(inner, target), ty);
             *redraw = true;
         }
         return;
@@ -297,13 +295,73 @@ fn dispatch_tap_event(
     }
 }
 
+/// Resolve a fresh paint tree, then hit test. JS mutations drain asynchronously;
+/// without this, a click can hit a paint list that still names a removed node.
+fn hit_test(doc: &mut BaseDocument, x: f32, y: f32) -> Option<blitz_traits::events::HitResult> {
+    doc.resolve(0.0);
+    let pruned = prune_stale_paint_children(doc);
+    if pruned > 0 {
+        logging::warn(
+            "dom.hit",
+            "pruned stale paint children before hit test",
+            &[
+                ("doc_id", doc.id().to_string()),
+                ("count", pruned.to_string()),
+                (
+                    "hint",
+                    "A removed node stayed in a paint list; Blitz would panic on hit testing it."
+                        .into(),
+                ),
+            ],
+        );
+    }
+    doc.hit(x, y)
+}
+
+/// Remove dropped node ids from paint lists before hit testing.
+///
+/// A DOM mutation can remove and drop a subtree while a parent still holds it in
+/// `paint_children`; Blitz's `Node::with` unwraps that missing id and panics on the
+/// next click. Pruning only touches stale ids, so live paint order is unchanged.
+fn prune_stale_paint_children(doc: &BaseDocument) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    prune_paint_children(doc, doc.root_node(), &mut seen)
+}
+
+fn prune_paint_children(
+    doc: &BaseDocument,
+    node: &blitz_dom::Node,
+    seen: &mut std::collections::HashSet<blitz_dom::NodeId>,
+) -> usize {
+    if !seen.insert(node.id) {
+        return 0;
+    }
+    let mut removed = 0;
+    let mut paint_children = Vec::new();
+    {
+        let mut paint = node.paint_children.borrow_mut();
+        if let Some(children) = paint.as_mut() {
+            let before = children.len();
+            children.retain(|id| doc.get_node(*id).is_some());
+            removed += before - children.len();
+            paint_children.extend(children.iter().copied());
+        }
+    }
+    for id in node.children.iter().copied().chain(paint_children) {
+        if let Some(child) = doc.get_node(id) {
+            removed += prune_paint_children(doc, child, seen);
+        }
+    }
+    removed
+}
+
 fn ui_event_target(
     evt: &UiEvent,
-    doc: &BaseDocument,
+    doc: &mut BaseDocument,
 ) -> Option<(blitz_traits::node_id::NodeId, &'static str)> {
     match evt {
         UiEvent::PointerUp(ptr) => {
-            let hit = doc.hit(ptr.coords.client_x, ptr.coords.client_y)?;
+            let hit = hit_test(doc, ptr.coords.client_x, ptr.coords.client_y)?;
             Some((hit.node_id, "click"))
         }
         UiEvent::Ime(BlitzImeEvent::Commit(_)) => {
@@ -388,6 +446,40 @@ mod tests {
             .enable_all()
             .build()
             .expect("tokio runtime")
+    }
+
+    #[test]
+    fn stale_paint_child_is_pruned_before_hit_test() {
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<div id=\"p\"><div id=\"c\">child</div></div>",
+            "</body></html>"
+        );
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        doc.resolve(0.0);
+        let parent = doc.get_element_by_id("p").expect("parent");
+        let child = doc.get_element_by_id("c").expect("child");
+        assert!(
+            doc.get_node(parent)
+                .expect("parent node")
+                .paint_children
+                .borrow()
+                .as_ref()
+                .is_some_and(|children| children.contains(&child))
+        );
+
+        doc.mutate().remove_and_drop_node(child);
+        assert!(doc.get_node(child).is_none());
+        assert_eq!(prune_stale_paint_children(&doc), 1);
+        assert!(
+            !doc.get_node(parent)
+                .expect("parent node")
+                .paint_children
+                .borrow()
+                .as_ref()
+                .is_some_and(|children| children.contains(&child))
+        );
+        let _ = hit_test(&mut doc, 1.0, 1.0);
     }
 
     #[test]

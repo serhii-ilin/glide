@@ -206,7 +206,7 @@ pub fn clear_page_selection(chrome: &mut BaseDocument) {
 }
 
 /// Chrome find UI state for one window.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FindSession {
     pub open: bool,
     synced_query: String,
@@ -214,6 +214,27 @@ pub struct FindSession {
 }
 
 impl FindSession {
+    /// Query currently shown by the find bar, for per-tab session state.
+    pub fn query(&self) -> &str {
+        &self.synced_query
+    }
+
+    /// Restore the saved query without touching the chrome document yet.
+    pub fn set_query(&mut self, query: &str) {
+        self.synced_query = query.to_string();
+    }
+
+    /// Restore a tab's find state after switching to it. Matches are recomputed
+    /// from the page on the next `sync_from_input` call.
+    pub fn restore(&mut self, chrome: &mut BaseDocument, open: bool, query: &str) {
+        self.open = open;
+        self.synced_query.clear();
+        self.state.clear();
+        crate::chrome::set_find_bar_open(chrome, open);
+        crate::chrome::set_find_input_value(chrome, query);
+        crate::chrome::set_find_count(chrome, 0, 0);
+    }
+
     pub fn open_bar(&mut self, chrome: &mut BaseDocument) {
         self.open = true;
         crate::chrome::set_find_bar_open(chrome, true);

@@ -17,7 +17,7 @@ Each row names the feature it covers.
 | M-009 | F-005 | Visit two URLs, press Alt+Left and Alt+Right (Option+arrows on macOS) | Back and forward navigate history |
 | M-010 | F-005 | Press Cmd/Ctrl+[ then Cmd/Ctrl+] | Back then forward |
 | M-011 | F-005 | Press Ctrl+R, F5, and on macOS Cmd+R | Page reloads each time |
-| M-012 | F-005 | Press Cmd/Ctrl+W | Window closes |
+| M-012 | F-005, F-046 | Press Cmd/Ctrl+W with one tab open | The tab closes and the window closes |
 | M-013 | F-005 | Press Cmd/Ctrl+Q | The process exits |
 | M-014 | F-006 | Focus the address bar, type `hello`, Cmd/Ctrl+A, Cmd/Ctrl+C, move caret to end, Cmd/Ctrl+V | Field shows `hellohello` |
 | M-031 | F-006 | Open a page with a paragraph, drag to select a word, press Cmd/Ctrl+C, focus the address bar, Cmd/Ctrl+V | The selected word is pasted into the address bar |
@@ -37,3 +37,11 @@ Each row names the feature it covers.
 | M-027 | F-025 | Toggle JS off (toolbar or Cmd/Ctrl+Shift+J), quit, relaunch with no URL | JS stays off until toggled again |
 | M-028 | F-025 | Bookmark a page (star or Cmd/Ctrl+D). In the address bar open `glide://bookmarks` and click a link | Bookmarks page lists the entry; the link navigates the page iframe |
 | M-029 | F-025 | Log into a cookie-based site, navigate to another page on that host, confirm still logged in | Session cookies work for the lifetime of one Glide process (not across restarts) |
+| M-032 | F-044, F-046 | Open two local `file://` fixtures. Click a tab, then its close button, then the new-tab button | The clicked tab becomes active and its page is shown; the close button removes that tab and selects a neighbour; new-tab adds and activates a tab |
+| M-033 | F-046 | With three tabs open, press Cmd/Ctrl+Tab, Cmd/Ctrl+Shift+Tab and Cmd/Ctrl+1..3 (on macOS also Cmd+Shift+] and Cmd+Shift+[) | Selection moves to the next, previous and numbered tab, wrapping at the ends |
+| M-034 | F-045 | Open each of the File, Edit, View, History, Bookmarks, Tabs and Help menus; choose New Tab from File, Back from History and Zoom In from View | Each dropdown opens and closes; each action runs on the active tab; opening another menu replaces the previous dropdown |
+| M-035 | F-047 | Open two tabs with different pages, zoom the first to 130% and run a find query, then quit and relaunch with no URL | Both tabs return with their addresses, titles and per-tab state; the same tab is active |
+| M-036 | F-048 | Open a local link fixture. Plain-click a link, then Cmd/Ctrl-click another link, then Cmd/Ctrl+Shift-click a third link | Plain click replaces the active page; Cmd/Ctrl click opens a background tab; Cmd/Ctrl+Shift click opens a foreground tab |
+| M-037 | F-050 | Run `cargo run --release -- tests/fixtures/js-throw.html` from a terminal, then repeat with `GLIDE_LOG=error` | The first run prints one `level=ERROR target="js.uncaught"` record with `page_url`, `script`, `line`, `error_kind` and `hint`; console info is also logged. With `GLIDE_LOG=error`, only error records are printed |
+| M-038 | F-051 | Run `cargo run --release -- --dump-text tests/fixtures/web-api-shims.html` | The page reads `SHIMS-OK`; no `atob`, `matchMedia`, `console.info`, storage, `AbortController`, `MutationObserver` or `DOMStringMap`/`dataset` errors appear in the terminal |
+| M-039 | F-053 | Open `tests/fixtures/noscript-refresh.html` with page JavaScript enabled | The noscript fallback meta tag is not shown as text; "Visible page content" starts at the top. Toggle JavaScript off and reload: the fallback content is visible |

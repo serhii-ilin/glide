@@ -9,15 +9,49 @@ pub enum RunFailureKind {
 }
 
 /// First `Uncaught …` JavaScript error line from headless `glide` stderr, if any.
+///
+/// Glide emits structured `msg="Uncaught …"` records now; the raw V8 format is still
+/// accepted so older fixtures and embedded V8 diagnostics keep working.
 pub fn first_uncaught_js_error(stderr: &str) -> Option<String> {
     for line in stderr.lines() {
-        let trimmed = line.trim();
-        let Some(idx) = trimmed.find("Uncaught ") else {
+        let message = structured_message(line).unwrap_or_else(|| line.trim().to_string());
+        let Some(idx) = message.find("Uncaught ") else {
             continue;
         };
-        let msg = trimmed[idx + "Uncaught ".len()..].trim();
+        let msg = message[idx + "Uncaught ".len()..].trim();
         if !msg.is_empty() {
             return Some(msg.to_string());
+        }
+    }
+    None
+}
+
+fn structured_message(line: &str) -> Option<String> {
+    const MARKER: &str = "msg=\"";
+    let start = line.find(MARKER)? + MARKER.len();
+    let mut out = String::new();
+    let mut chars = line[start..].chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(out),
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if let Ok(code) = u32::from_str_radix(&hex, 16)
+                        && let Some(decoded) = char::from_u32(code)
+                    {
+                        out.push(decoded);
+                    }
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            ch => out.push(ch),
         }
     }
     None
@@ -84,6 +118,19 @@ mod tests {
         assert_eq!(
             first_uncaught_js_error(err),
             Some("ReferenceError: self is not defined".into())
+        );
+    }
+
+    #[test]
+    fn first_uncaught_from_structured_log() {
+        let err = concat!(
+            "level=ERROR target=\"js.uncaught\" ",
+            "msg=\"Uncaught TypeError: atob is not defined\" ",
+            "page_url=\"file:///page.html\" error_kind=\"missing_api\"\n"
+        );
+        assert_eq!(
+            first_uncaught_js_error(err),
+            Some("TypeError: atob is not defined".into())
         );
     }
 }

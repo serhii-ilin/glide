@@ -28,7 +28,8 @@ src/parse.rs      html5ever with configurable scripting flag
 src/location.rs   URL vs. search
 src/headless.rs   headless load/settle and --dump-text text extraction
 src/shot.rs       paint a loaded page to PNG
-docs/features.md  requirements + feature registry (keep current)
+docs/features.md  requirements + feature registry + spec links (keep current)
+tests/features/   Gherkin acceptance specs, one F-xxx-<slug>.feature per feature
 tests/fixtures/   local HTML used by tests
 ```
 
@@ -52,9 +53,21 @@ tests/fixtures/   local HTML used by tests
 
 ## Tests
 
-- Write the test first, then the code.
+- **TDD is the default.** For every new or changed behavior: (1) add or edit the Gherkin
+  scenario, (2) write a failing automated test that implements that scenario, (3) write the
+  code, (4) refactor with the test green. Where automation is possible, TDD takes priority
+  over adding tests after the implementation. Doc-only changes are exempt.
+- Derive acceptance criteria from standards and browser benchmarks, not from the current
+  implementation: HTML Living Standard, DOM Standard, ECMA-262, CSS specifications, WPT
+  tests and Acid1–3. Record the source in the `Source / basis` column of the requirement
+  row and in a comment above the Gherkin scenario or test. Use `docs/compat/REPORT.md`
+  to choose representative cases; when a benchmark exposes a gap, add a local `file://`
+  fixture that reproduces it before fixing the gap.
+- Every Gherkin `Scenario` maps to at least one test named in the feature row's `Tests`
+  column, or to a row in `docs/manual-tests.md` when real window input, focus or OS
+  integration is required.
 - Every behavior change ships with tests: unit tests in a `#[cfg(test)] mod tests` next to
-  the code, or integration tests in `tests/` once the lib target exists.
+  the code, or integration tests in `tests/`.
 - Tests never touch the network. Use `file://` fixtures in `tests/fixtures/` or `data:` URLs.
 - Name tests after the behavior: `back_at_first_entry_returns_none`, not `test_history_2`.
 - Do not delete, weaken or `#[ignore]` existing tests to get green. If a test is wrong,
@@ -71,19 +84,41 @@ cargo test
 cargo build --release        # when user-facing behavior changes
 ```
 
-## Requirements and feature registry
+## Requirements, feature descriptions and Gherkin specs
 
 `docs/features.md` is the single registry of requirements (`R-xxx`) and features (`F-xxx`).
 
-- Any change that adds, changes or removes behavior updates `docs/features.md` in the same
-  branch: the feature row (status, requirement IDs, covering tests, notes) and any new
-  requirement.
+**Requirements are structured.** Every `R-xxx` row has an ID, a testable requirement
+statement, a `Source / basis` (the HTML/DOM/ECMAScript/CSS spec, WPT or Acid benchmark, or an
+explicit product decision), the `Features` that satisfy it, and a milestone. Do not add a
+requirement that cannot be expressed as a Gherkin scenario.
+
+**Features are structured.** Every `F-xxx` row has:
+
+- `Description`: one or two sentences of user-visible behavior, written from the user's
+  point of view, not implementation detail.
+- `Gherkin`: the path to `tests/features/F-xxx-<slug>.feature`, the feature's acceptance
+  spec. One file per feature ID; use `Background` and `Scenario Outline` where they reduce
+  duplication. Copy `tests/features/_TEMPLATE.feature` when adding a feature.
+- `Status`, `Req`, `Tests` and `Notes` as before.
+
+Update rules:
+
+- Any change that adds, changes or removes behavior updates the requirement row(s), the
+  feature row (description, status, requirement IDs, Gherkin path, covering tests, notes)
+  and the `.feature` file in the same branch.
+- Add or edit the Gherkin scenario **before** writing code, then write the failing test,
+  then implement. TDD takes priority over post-hoc test writing wherever automation is
+  possible.
 - Status values: `planned`, `in-progress`, `done`, `partial`, `deferred` (with a reason), `removed`.
-- A feature is `done` only when its tests exist and pass, or its manual check is listed in
-  `docs/manual-tests.md`.
+- A feature is `done` only when its description and Gherkin spec exist, its tests exist and
+  pass (or its manual check is listed in `docs/manual-tests.md`), and the compatibility
+  report shows no regression for that behavior.
 - New ideas or out-of-scope findings become `planned` or `deferred` rows instead of
-  drive-by code.
-- A branch that changes behavior without a registry update is not merged.
+  drive-by code; when promoted, add the description and Gherkin spec in the same branch.
+- Existing features that still lack a `.feature` file are backfilled on the next change to
+  that feature; new or changed behavior must include its script immediately.
+- A branch that changes behavior without a registry + Gherkin update is not merged.
 
 ## Docs and commits
 

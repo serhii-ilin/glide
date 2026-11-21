@@ -17,12 +17,14 @@ mod http;
 pub mod js;
 pub mod keyboard;
 pub mod location;
+pub mod logging;
 pub mod nav;
 pub mod net;
 pub mod parse;
 pub mod profile;
 mod runtime;
 pub mod shot;
+pub mod tabs;
 pub mod zoom;
 
 pub use app::{WindowLaunch, prepare_window_launch, run_window};

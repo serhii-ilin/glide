@@ -10,6 +10,9 @@ use std::thread;
 use tokio::runtime::Handle;
 use url::Url;
 
+use super::diagnostics;
+use crate::logging;
+
 #[derive(Debug, Clone)]
 pub struct ScriptSpec {
     pub inline: Option<String>,
@@ -138,7 +141,7 @@ pub fn resolve_sources(
                 match Url::parse(src).or_else(|_| Url::parse(base_url).and_then(|b| b.join(src))) {
                     Ok(u) => u,
                     Err(err) => {
-                        eprintln!("[js] script url invalid ({src}): {err}");
+                        log_fetch_failure(base_url, src, err.to_string(), None);
                         return ScriptSource::Failed;
                     }
                 };
@@ -148,11 +151,16 @@ pub fn resolve_sources(
                         ScriptSource::External(String::from_utf8_lossy(&resp.body).into_owned())
                     }
                     Ok(resp) => {
-                        eprintln!("[js] script fetch failed ({src}): HTTP {}", resp.status);
+                        log_fetch_failure(
+                            base_url,
+                            src,
+                            "non-success status".into(),
+                            Some(resp.status),
+                        );
                         ScriptSource::Failed
                     }
                     Err(err) => {
-                        eprintln!("[js] script fetch failed ({src}): {err}");
+                        log_fetch_failure(base_url, src, err.to_string(), None);
                         ScriptSource::Failed
                     }
                 };
@@ -162,12 +170,33 @@ pub fn resolve_sources(
                     ScriptSource::External(String::from_utf8_lossy(&bytes).into_owned())
                 }
                 Err(err) => {
-                    eprintln!("[js] script fetch failed ({src}): {err}");
+                    log_fetch_failure(base_url, src, err.to_string(), None);
                     ScriptSource::Failed
                 }
             }
         })
         .collect()
+}
+
+fn log_fetch_failure(base_url: &str, src: &str, detail: String, status: Option<u16>) {
+    let kind = match status {
+        Some(_) => "http_status".to_string(),
+        None => diagnostics::classify(&detail).as_str().to_string(),
+    };
+    let mut fields = vec![
+        ("page_url", base_url.to_string()),
+        ("script_src", src.to_string()),
+        ("error", detail),
+        ("error_kind", kind),
+    ];
+    if let Some(status) = status {
+        fields.push(("status", status.to_string()));
+    }
+    fields.push((
+        "hint",
+        "The script was skipped; check the script URL and its response.".to_string(),
+    ));
+    logging::error("js.loader", "script fetch failed", &fields);
 }
 
 pub fn source_body(source: &ScriptSource) -> Option<String> {

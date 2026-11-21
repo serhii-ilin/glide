@@ -238,6 +238,15 @@ fn onclick_attr_fixture_runs() {
 }
 
 #[test]
+fn common_web_api_shims_work() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("web-api-shims.html"), true).expect("load");
+    assert!(text.contains("SHIMS-OK"), "{text}");
+    assert!(!text.contains("SHIMS-FAIL"), "{text}");
+}
+
+#[test]
 fn counter_fixture_runs_with_js() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

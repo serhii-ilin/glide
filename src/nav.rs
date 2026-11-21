@@ -113,6 +113,16 @@ impl NavTracker {
         ObserveEffect::Unchanged
     }
 
+    /// Switch to a tab whose tracker was parked while another tab was active.
+    /// The newly loaded iframe still reports the old URL until its replacement
+    /// arrives, so that URL is remembered as already seen.
+    pub fn switch_to(&mut self, url: &str, observed: Option<&str>) {
+        self.expecting = Some(url.to_string());
+        self.last_seen = observed.map(str::to_string);
+        self.pending = None;
+        self.shown = url.to_string();
+    }
+
     pub fn stop(&mut self, displayed: &str) {
         self.expecting = None;
         if let Some(pending) = self.pending.take() {

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Web API shims</title>
+</head>
+<body>
+  <p id="out">pending</p>
+  <script>
+    (function () {
+      var failures = [];
+      function check(name, fn) {
+        try {
+          if (!fn()) failures.push(name);
+        } catch (err) {
+          failures.push(name + ': ' + err);
+        }
+      }
+
+      check('atob', function () {
+        return atob('R2xpZGU=') === 'Glide' && btoa('Glide') === 'R2xpZGU=';
+      });
+      check('matchMedia', function () {
+        var list = window.matchMedia('(min-width: 1px)');
+        list.addListener(function () {});
+        list.addEventListener('change', function () {});
+        return list.matches === false && list.media === '(min-width: 1px)';
+      });
+      check('console-info', function () {
+        console.info('shim check');
+        console.debug('shim check');
+        return true;
+      });
+      check('storage', function () {
+        localStorage.setItem('a', 'one');
+        sessionStorage.setItem('b', 'two');
+        localStorage.c = 'three';
+        return localStorage.getItem('a') === 'one'
+          && sessionStorage.getItem('b') === 'two'
+          && localStorage.c === 'three'
+          && localStorage.length >= 2;
+      });
+      check('abort', function () {
+        var controller = new AbortController();
+        var calls = 0;
+        controller.signal.addEventListener('abort', function () { calls += 1; });
+        controller.abort();
+        controller.abort();
+        return controller.signal.aborted === true && calls === 1;
+      });
+      check('mutation-observer', function () {
+        var observer = new MutationObserver(function () {});
+        observer.observe(document.body, { childList: true });
+        return observer.takeRecords().length === 0;
+      });
+      check('dataset', function () {
+        var el = document.createElement('div');
+        el.dataset.fooBar = 'baz';
+        return el.dataset instanceof window.DOMStringMap
+          && el.getAttribute('data-foo-bar') === 'baz'
+          && el.dataset.fooBar === 'baz';
+      });
+
+      document.getElementById('out').textContent = failures.length
+        ? 'SHIMS-FAIL:' + failures.join(',')
+        : 'SHIMS-OK';
+    })();
+  </script>
+</body>
+</html>

@@ -9,6 +9,8 @@ use std::sync::Mutex;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use crate::logging;
+pub use crate::tabs::{Session, TabSession};
 use crate::zoom::PageZoom;
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -49,12 +51,32 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct Session {
+/// Session files written before tabs existed: one history stack in one window.
+#[derive(Debug, Deserialize)]
+struct LegacySession {
     #[serde(default)]
-    pub entries: Vec<String>,
+    entries: Vec<String>,
     #[serde(default)]
-    pub index: usize,
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SessionOnDisk {
+    V2(Session),
+    Legacy(LegacySession),
+}
+
+impl SessionOnDisk {
+    fn into_session(self) -> Session {
+        match self {
+            Self::V2(mut session) => {
+                session.validate();
+                session
+            }
+            Self::Legacy(legacy) => Session::from_legacy(legacy.entries, legacy.index),
+        }
+    }
 }
 
 /// Disk-backed profile, or disabled when the data dir is unavailable.
@@ -70,7 +92,14 @@ impl ProfileStore {
                 inner: Some(profile),
             },
             Err(err) => {
-                eprintln!("glide: profile unavailable ({err}); running without persistence");
+                logging::warn(
+                    "profile",
+                    "profile unavailable; running without persistence",
+                    &[
+                        ("error", err),
+                        ("hint", "Check permissions or set GLIDE_PROFILE_DIR.".into()),
+                    ],
+                );
                 Self { inner: None }
             }
         }
@@ -199,41 +228,6 @@ pub fn should_append_history_log(
     }
 }
 
-/// Build a session snapshot for disk, dropping internal URLs and failed loads.
-pub fn session_for_disk(
-    entries: &[String],
-    index: usize,
-    failed_urls: &HashSet<String>,
-) -> Session {
-    let kept: Vec<String> = entries
-        .iter()
-        .filter(|url| should_persist_url(url) && !failed_urls.contains(url.as_str()))
-        .cloned()
-        .collect();
-    if kept.is_empty() {
-        return Session::default();
-    }
-    let current = entries.get(index).cloned().unwrap_or_default();
-    let mapped_index = if should_persist_url(&current) && !failed_urls.contains(current.as_str()) {
-        kept.iter().position(|u| u == &current)
-    } else {
-        None
-    };
-    let mapped_index = mapped_index.unwrap_or_else(|| {
-        entries
-            .iter()
-            .take(index + 1)
-            .filter(|url| should_persist_url(url) && !failed_urls.contains(url.as_str()))
-            .count()
-            .saturating_sub(1)
-    });
-    let mapped_index = mapped_index.min(kept.len().saturating_sub(1));
-    Session {
-        entries: kept,
-        index: mapped_index,
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub ts_unix: u64,
@@ -285,14 +279,9 @@ impl Profile {
     }
 
     pub fn load_session(&self) -> Session {
-        let mut session: Session = self.read_json(SESSION_FILE, Session::default());
-        if !session.entries.is_empty() {
-            let max = session.entries.len() - 1;
-            session.index = session.index.min(max);
-        } else {
-            session.index = 0;
-        }
-        session
+        let raw: SessionOnDisk =
+            self.read_json(SESSION_FILE, SessionOnDisk::V2(Session::default()));
+        raw.into_session()
     }
 
     pub fn save_session(&self, session: &Session) -> Result<(), String> {
@@ -385,9 +374,17 @@ fn log_corrupt_once(path: &Path, err: &serde_json::Error) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let set = guard.get_or_insert_with(HashSet::new);
     if set.insert(path.to_path_buf()) {
-        eprintln!(
-            "glide: ignoring corrupt profile file {} ({err})",
-            path.display()
+        logging::warn(
+            "profile",
+            "ignoring corrupt profile file",
+            &[
+                ("path", path.display().to_string()),
+                ("error", err.to_string()),
+                (
+                    "hint",
+                    "The file was left in place; defaults are used for this run.".into(),
+                ),
+            ],
         );
     }
 }
@@ -407,13 +404,25 @@ pub fn window_start_state(
     if let Some(url) = cli_url {
         return (url.to_string(), vec![url.to_string()], 0);
     }
-    if session.entries.is_empty() {
+    let Some(tab) = session
+        .tabs
+        .get(session.active_index)
+        .or(session.tabs.first())
+    else {
         let url = DEFAULT_START_URL.to_string();
         return (url.clone(), vec![url], 0);
-    }
-    let index = session.index.min(session.entries.len() - 1);
-    let current = session.entries[index].clone();
-    (current, session.entries.clone(), index)
+    };
+    let entries = if tab.entries.is_empty() {
+        vec![tab.url.clone()]
+    } else {
+        tab.entries.clone()
+    };
+    let index = tab.index.min(entries.len().saturating_sub(1));
+    let current = entries
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| tab.url.clone());
+    (current, entries, index)
 }
 
 pub fn settings_from_saved(saved: &Settings) -> (Settings, PageZoom) {
@@ -464,6 +473,59 @@ pub fn bookmarks_page_html(bookmarks: &[Bookmark]) -> String {
     )
 }
 
+/// Internal keyboard-shortcuts page linked from the Help menu.
+pub fn help_page_html() -> String {
+    let rows = [
+        ("Cmd/Ctrl+T", "New tab"),
+        (
+            "Cmd/Ctrl+W",
+            "Close the active tab (the window closes with the last tab)",
+        ),
+        ("Cmd/Ctrl+Tab", "Next tab"),
+        ("Cmd/Ctrl+Shift+Tab", "Previous tab"),
+        ("Cmd+Shift+] / Cmd+Shift+[", "Next / previous tab on macOS"),
+        ("Cmd/Ctrl+1…9", "Select a tab by position"),
+        ("Cmd/Ctrl+L", "Focus the address bar"),
+        ("Cmd/Ctrl+R or F5", "Reload"),
+        ("Cmd/Ctrl+[ / ]", "Back / forward"),
+        ("Cmd/Ctrl+F", "Find in page"),
+        ("Cmd/Ctrl+= / - / 0", "Zoom in / out / reset (current tab)"),
+        ("Cmd/Ctrl+D", "Bookmark the active tab"),
+        ("Cmd/Ctrl+Shift+J", "Toggle page JavaScript (global)"),
+        ("Cmd/Ctrl+Q", "Quit"),
+    ];
+    let mut items = String::new();
+    for (key, action) in rows {
+        items.push_str(&format!(
+            "<tr><th>{}</th><td>{}</td></tr>\n",
+            escape_html(key),
+            escape_html(action)
+        ));
+    }
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Keyboard shortcuts</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 2rem; color: #1c1915; }}
+  h1 {{ font-size: 1.25rem; }}
+  table {{ border-collapse: collapse; }}
+  th, td {{ border-bottom: 1px solid #e4ddd0; padding: 0.35rem 0.9rem; text-align: left; }}
+  th {{ font-family: ui-monospace, monospace; white-space: nowrap; }}
+</style>
+</head>
+<body>
+<h1>Glide keyboard shortcuts</h1>
+<table>
+{items}</table>
+</body>
+</html>
+"#
+    )
+}
+
 fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -484,7 +546,7 @@ pub fn history_log_state_for_launch(
 ) -> HistoryLogState {
     HistoryLogState {
         cli_start_url: cli_url.map(|u| u.to_string()),
-        restore_start_url: if cli_url.is_none() && !session.entries.is_empty() {
+        restore_start_url: if cli_url.is_none() && !session.tabs.is_empty() {
             Some(start_url.to_string())
         } else {
             None
@@ -531,14 +593,67 @@ mod tests {
     #[test]
     fn session_round_trip_and_index_clamped() {
         let p = temp_profile();
-        let session = Session {
-            entries: vec!["https://a/".into(), "https://b/".into()],
-            index: 99,
-        };
+        let mut session = Session::from_legacy(vec!["https://a/".into(), "https://b/".into()], 99);
+        session.tabs[0].index = 99;
         p.save_session(&session).expect("save");
         let loaded = p.load_session();
-        assert_eq!(loaded.entries, session.entries);
-        assert_eq!(loaded.index, 1);
+        assert_eq!(loaded.tabs[0].entries, session.tabs[0].entries);
+        assert_eq!(loaded.tabs[0].index, 1);
+    }
+
+    #[test]
+    fn session_v2_round_trip() {
+        let p = temp_profile();
+        let mut session = Session::default();
+        session.tabs.push(TabSession {
+            url: "https://a/".into(),
+            entries: vec!["https://a/".into()],
+            index: 0,
+            title: "A".into(),
+            find_query: "needle".into(),
+            find_open: true,
+            zoom_percent: 150,
+        });
+        session.tabs.push(TabSession {
+            url: "https://b/".into(),
+            entries: vec!["https://b/".into()],
+            index: 0,
+            title: "B".into(),
+            find_query: String::new(),
+            find_open: false,
+            zoom_percent: 100,
+        });
+        session.active_index = 1;
+        p.save_session(&session).expect("save");
+        let loaded = p.load_session();
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.active_index, 1);
+        assert_eq!(loaded.tabs, session.tabs);
+    }
+
+    #[test]
+    fn legacy_session_migrates_to_one_tab() {
+        let p = temp_profile();
+        fs::create_dir_all(p.dir()).expect("mkdir");
+        fs::write(
+            p.dir().join(SESSION_FILE),
+            br#"{"entries":["https://a/","https://b/"],"index":1}"#,
+        )
+        .expect("write legacy session");
+        let session = p.load_session();
+        assert_eq!(session.version, 2);
+        assert_eq!(session.tabs.len(), 1);
+        assert_eq!(session.tabs[0].entries, vec!["https://a/", "https://b/"]);
+        assert_eq!(session.tabs[0].index, 1);
+        assert_eq!(session.tabs[0].url, "https://b/");
+    }
+
+    #[test]
+    fn corrupt_session_falls_back() {
+        let p = temp_profile();
+        fs::create_dir_all(p.dir()).expect("mkdir");
+        fs::write(p.dir().join(SESSION_FILE), b"{not json").expect("write");
+        assert_eq!(p.load_session(), Session::default());
     }
 
     #[test]
@@ -577,16 +692,18 @@ mod tests {
 
     #[test]
     fn session_save_skips_internal_and_error_entries() {
-        let entries = vec![
-            "https://a/".into(),
-            "glide://bookmarks".into(),
-            "https://b/".into(),
-        ];
+        use crate::tabs::TabManager;
+
+        let mut tabs = TabManager::new();
+        tabs.add("https://a/");
+        let tab = tabs.active_mut().expect("active tab");
+        tab.nav.history_mut().push("glide://bookmarks".into());
+        tab.nav.history_mut().push("https://b/".into());
         let mut failed = HashSet::new();
         failed.insert("https://b/".into());
-        let session = session_for_disk(&entries, 2, &failed);
-        assert_eq!(session.entries, vec!["https://a/"]);
-        assert_eq!(session.index, 0);
+        let session = Session::from_tabs(&tabs, &failed);
+        assert_eq!(session.tabs[0].entries, vec!["https://a/"]);
+        assert_eq!(session.tabs[0].index, 0);
     }
 
     #[test]
@@ -665,10 +782,7 @@ mod tests {
 
     #[test]
     fn cli_url_overrides_session() {
-        let session = Session {
-            entries: vec!["https://old/".into()],
-            index: 0,
-        };
+        let session = Session::from_legacy(vec!["https://old/".into()], 0);
         let (url, entries, index) = window_start_state(Some("https://new/"), &session);
         assert_eq!(url, "https://new/");
         assert_eq!(entries, vec!["https://new/"]);
@@ -677,13 +791,10 @@ mod tests {
 
     #[test]
     fn no_url_restores_session() {
-        let session = Session {
-            entries: vec!["https://a/".into(), "https://b/".into()],
-            index: 1,
-        };
+        let session = Session::from_legacy(vec!["https://a/".into(), "https://b/".into()], 1);
         let (url, entries, index) = window_start_state(None, &session);
         assert_eq!(url, "https://b/");
-        assert_eq!(entries, session.entries);
+        assert_eq!(entries, vec!["https://a/", "https://b/"]);
         assert_eq!(index, 1);
     }
 

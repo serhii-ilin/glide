@@ -1,8 +1,8 @@
 //! HTML parsing with configurable `scripting_enabled` for html5ever.
 
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
-use blitz_dom::{BaseDocument, DocumentConfig, DocumentMutator};
+use blitz_dom::{BaseDocument, DocumentConfig, DocumentMutator, UserAgentStylesheet};
 use html5ever::ParseOpts;
 use html5ever::tendril::TendrilSink;
 use html5ever::tokenizer::TokenizerOpts;
@@ -18,12 +18,20 @@ pub fn document_from_html(
 
 /// Build a document and run `before_parse` after [`BaseDocument::new`] but before HTML is parsed,
 /// so embedder hooks (e.g. chrome doc id for [`GlideNet`]) run before iframe loads fire.
+/// Stylo does not evaluate Blitz's `@media (scripting)` UA rule here, so make the
+/// standard "noscript is not rendered when scripting is enabled" rule explicit.
+static NOSCRIPT_HIDDEN: LazyLock<UserAgentStylesheet> =
+    LazyLock::new(|| UserAgentStylesheet::parse("noscript { display: none !important; }"));
+
 pub fn document_from_html_with(
     html: &str,
-    config: DocumentConfig,
+    mut config: DocumentConfig,
     scripting_enabled: bool,
     before_parse: impl FnOnce(&BaseDocument),
 ) -> BaseDocument {
+    if scripting_enabled {
+        config.ua_stylesheets.push(NOSCRIPT_HIDDEN.clone());
+    }
     let mut doc = BaseDocument::new(config);
     note_doctype(doc.id(), html);
     before_parse(&doc);
@@ -210,7 +218,33 @@ fn root_element_has_xhtml_namespace(html: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::sniff_doctype;
+    use super::{document_from_html, sniff_doctype};
+    use blitz_dom::DocumentConfig;
+
+    const NOSCRIPT_HTML: &str = concat!(
+        "<!DOCTYPE html><html><body>",
+        "<noscript id=\"n\"><meta http-equiv=\"refresh\" content=\"0; URL=/?_fb_noscript=1\"></noscript>",
+        "<p id=\"p\">page</p>",
+        "</body></html>"
+    );
+
+    #[test]
+    fn noscript_is_hidden_when_scripting_is_enabled() {
+        let mut doc = document_from_html(NOSCRIPT_HTML, DocumentConfig::default(), true);
+        doc.resolve(0.0);
+        let noscript = doc.get_element_by_id("n").expect("noscript");
+        assert_eq!(doc.resolved_style_value(noscript, "display"), "none");
+        let paragraph = doc.get_element_by_id("p").expect("paragraph");
+        assert_ne!(doc.resolved_style_value(paragraph, "display"), "none");
+    }
+
+    #[test]
+    fn noscript_is_visible_when_scripting_is_disabled() {
+        let mut doc = document_from_html(NOSCRIPT_HTML, DocumentConfig::default(), false);
+        doc.resolve(0.0);
+        let noscript = doc.get_element_by_id("n").expect("noscript");
+        assert_ne!(doc.resolved_style_value(noscript, "display"), "none");
+    }
 
     #[test]
     fn html401_public_doctype_stops_at_the_closing_bracket() {

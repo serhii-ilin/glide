@@ -1,5 +1,7 @@
 //! V8 isolate on a dedicated thread.
 
+use std::fmt::Write as _;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -9,7 +11,9 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use once_cell::sync::OnceCell;
 
 use super::bridge::{DomRequest, DomValue};
+use super::diagnostics;
 use super::host::DomRpc;
+use crate::logging::{self, Level};
 use url::Url;
 
 static V8_INIT: OnceCell<()> = OnceCell::new();
@@ -114,6 +118,8 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
     DOM_TX.with(|slot| *slot.borrow_mut() = Some(dom_tx));
 
     let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
+    isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 16);
+    isolate.add_message_listener(v8_message_listener);
     let global_context = {
         v8::scope!(let hs, isolate);
         let context = v8::Context::new(hs, Default::default());
@@ -136,6 +142,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 snapshot_json,
                 page_url,
             } => {
+                diagnostics::set_page_url(page_url.clone());
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
@@ -151,14 +158,17 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let kind_s = v8::String::new(scope, &kind).unwrap();
                 call_global_fn(scope, "__glide_set_script_kind", &[kind_s.into()]);
                 for (i, (src, script_id)) in sources.into_iter().enumerate() {
+                    let script_name = format!("script-{i}");
+                    diagnostics::set_script(Some(&script_name), script_id, Some(&kind));
                     if let Some(id) = script_id {
                         let sid = v8::String::new(scope, &id.to_string()).unwrap();
                         call_global_fn(scope, "__glide_set_current_script", &[sid.into()]);
                     } else {
                         call_global_fn(scope, "__glide_set_current_script", &[]);
                     }
-                    run_script_with_timeout(scope, &src, &format!("script-{i}"));
+                    run_script_with_timeout(scope, &src, &script_name);
                     call_global_fn(scope, "__glide_set_current_script", &[]);
+                    diagnostics::clear_script();
                     settle_task(scope);
                 }
                 let cleared = v8::String::new(scope, "").unwrap();
@@ -294,7 +304,50 @@ fn console_callback(
 ) {
     let level = args.get(0).to_rust_string_lossy(scope);
     let msg = args.get(1).to_rust_string_lossy(scope);
-    eprintln!("[console.{level}] {msg}");
+    let level = match level.as_str() {
+        "error" => Level::Error,
+        "warn" | "warning" => Level::Warn,
+        "debug" | "trace" => Level::Debug,
+        _ => Level::Info,
+    };
+    diagnostics::record_console(level, &msg);
+}
+
+/// Capture uncaught V8 exceptions instead of letting V8 write raw `<unknown>:N:` lines.
+extern "C" fn v8_message_listener(
+    message: v8::Local<v8::Message>,
+    _exception: v8::Local<v8::Value>,
+) {
+    let scope = pin!(unsafe { v8::CallbackScope::new(message) });
+    let scope = &mut scope.init();
+    v8::scope!(let scope, scope);
+
+    let text = message.get(scope).to_rust_string_lossy(scope);
+    let line = message.get_line_number(scope);
+    let resource = message
+        .get_script_resource_name(scope)
+        .map(|name| name.to_rust_string_lossy(scope));
+    let stack = message
+        .get_stack_trace(scope)
+        .map(|trace| stack_trace_text(scope, &trace))
+        .unwrap_or_default();
+
+    diagnostics::record_uncaught(&text, line, resource.as_deref(), &stack);
+}
+
+fn stack_trace_text(scope: &v8::PinScope<'_, '_>, trace: &v8::Local<v8::StackTrace>) -> String {
+    let mut out = String::new();
+    for index in 0..trace.get_frame_count().min(8) {
+        let Some(frame) = trace.get_frame(scope, index) else {
+            continue;
+        };
+        let name = frame
+            .get_script_name_or_source_url(scope)
+            .map(|name| name.to_rust_string_lossy(scope))
+            .unwrap_or_else(|| "<unknown>".into());
+        let _ = write!(out, "{name}:{};", frame.get_line_number());
+    }
+    out
 }
 
 fn map_dom_op(
@@ -516,7 +569,11 @@ fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
         }
     });
     let Some(code) = v8::String::new(scope, source) else {
-        eprintln!("script string alloc failed in {name}");
+        logging::error(
+            "js.script",
+            "script source allocation failed",
+            &script_fields(name),
+        );
         done.store(true, Ordering::SeqCst);
         return;
     };
@@ -524,22 +581,55 @@ fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
     done.store(true, Ordering::SeqCst);
     scope.cancel_terminate_execution();
     if let Some(t0) = started {
-        eprintln!(
-            "GLIDE script timing: {name} {} bytes in {:.3}s",
-            source.len(),
-            t0.elapsed().as_secs_f64()
-        );
+        let mut fields = script_fields(name);
+        fields.push(("bytes", source.len().to_string()));
+        fields.push(("seconds", format!("{:.3}", t0.elapsed().as_secs_f64())));
+        logging::info("js.script", "script execution finished", &fields);
     }
 }
 
 fn run_script(scope: &mut v8::PinScope<'_, '_>, source: v8::Local<v8::String>, name: &str) {
-    let Some(script) = v8::Script::compile(scope, source, None) else {
-        eprintln!("script compile failed in {name}");
+    let Some(script) = v8::Script::compile(scope, source, script_origin(scope, name).as_ref())
+    else {
+        logging::error("js.script", "script compile failed", &script_fields(name));
         return;
     };
     if script.run(scope).is_none() {
-        eprintln!("script run failed in {name}");
+        logging::debug(
+            "js.script",
+            "script execution aborted",
+            &script_fields(name),
+        );
     }
+}
+
+fn script_origin<'s>(scope: &v8::PinScope<'s, '_>, name: &str) -> Option<v8::ScriptOrigin<'s>> {
+    let resource_name: v8::Local<v8::Value> = v8::String::new(scope, name)?.into();
+    Some(v8::ScriptOrigin::new(
+        scope,
+        resource_name,
+        0,
+        0,
+        false,
+        0,
+        None,
+        false,
+        false,
+        false,
+        None,
+    ))
+}
+
+fn script_fields(name: &str) -> Vec<(&'static str, String)> {
+    let ctx = diagnostics::current();
+    let mut fields = vec![
+        ("page_url", ctx.page_url.unwrap_or_else(|| "unknown".into())),
+        ("script", name.to_string()),
+    ];
+    if let Some(kind) = ctx.script_kind {
+        fields.push(("script_kind", kind));
+    }
+    fields
 }
 
 /// Run V8 microtasks and the Glide queue until both are idle, then flush DOM ops.

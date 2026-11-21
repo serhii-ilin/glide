@@ -19,23 +19,23 @@ use std::sync::atomic::Ordering;
 
 use crate::bookmarks::BookmarksState;
 use crate::chrome::{
-    NavCommand, chrome_document, command_from_url, set_address, set_loading_ui,
+    ChromeViewState, MenuId, NavCommand, TabView, chrome_document_from_state, command_closes_menu,
+    command_from_url, render_menu_bar, render_tab_strip, set_address, set_loading_ui,
     sync_committed_address,
 };
-use crate::find::FindSession;
-use crate::history::History;
 use crate::html::{GlideHtmlProvider, HtmlPageDocument, set_js_runtime_mode};
 use crate::js::{JsHost, JsTap};
 use crate::keyboard;
 use crate::location::resolve_location;
-use crate::nav::{NavKind, NavTracker, ObserveEffect};
+use crate::nav::{NavKind, ObserveEffect};
 use crate::net::{GlideNet, LoadState};
 use crate::parse;
 use crate::profile::{
-    HistoryCommitKind, HistoryEntry, HistoryLogState, PendingHistoryCommand, ProfileStore,
-    Settings, effective_js_enabled, history_log_state_for_launch, session_for_disk,
-    settings_from_saved, should_append_history_log, should_persist_url, window_start_state,
+    HistoryCommitKind, HistoryEntry, HistoryLogState, PendingHistoryCommand, ProfileStore, Session,
+    Settings, effective_js_enabled, history_log_state_for_launch, settings_from_saved,
+    should_append_history_log, should_persist_url,
 };
+use crate::tabs::{Tab, TabManager};
 use crate::zoom::PageZoom;
 
 const CHROME_BASE: &str = "https://glide.invalid/chrome";
@@ -44,12 +44,11 @@ type Renderer = anyrender_vello_cpu::VelloCpuWindowRenderer;
 
 /// Startup state for the windowed browser.
 pub struct WindowLaunch {
-    pub start_url: String,
-    pub history: History,
+    pub tabs: TabManager,
     pub defer_session_save: bool,
     pub js_enabled: bool,
     pub persist_js_setting: bool,
-    pub zoom: PageZoom,
+    pub default_zoom: PageZoom,
     pub profile: ProfileStore,
     pub saved_settings: Settings,
     pub history_log: HistoryLogState,
@@ -61,20 +60,23 @@ pub fn prepare_window_launch(
     profile: ProfileStore,
 ) -> WindowLaunch {
     let saved = profile.load_settings();
-    let (saved_settings, zoom) = settings_from_saved(&saved);
+    let (saved_settings, default_zoom) = settings_from_saved(&saved);
     let js_enabled = effective_js_enabled(cli_no_js, &saved_settings);
     let session = profile.load_session();
     let defer_session_save = cli_url.is_some();
-    let (start_url, entries, index) = window_start_state(cli_url, &session);
-    let history = History::from_parts(entries, index);
+    let tabs = TabManager::from_session(&session, cli_url);
+    let start_url = tabs
+        .active()
+        .map(Tab::url)
+        .unwrap_or(crate::profile::DEFAULT_START_URL)
+        .to_string();
     let history_log = history_log_state_for_launch(cli_url, &start_url, &session);
     WindowLaunch {
-        start_url,
-        history,
+        tabs,
         defer_session_save,
         js_enabled,
         persist_js_setting: !cli_no_js,
-        zoom,
+        default_zoom,
         profile,
         saved_settings,
         history_log,
@@ -87,12 +89,11 @@ pub(crate) fn chrome_accepts_navigation(source_document: usize, chrome_doc_id: u
 
 pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
     let WindowLaunch {
-        start_url: start,
-        history,
+        mut tabs,
         defer_session_save,
         js_enabled,
         persist_js_setting,
-        zoom,
+        default_zoom,
         profile,
         saved_settings,
         history_log,
@@ -132,12 +133,16 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         ..Default::default()
     };
 
-    let bookmarked = bookmarks_state.is_bookmarked(&start);
-    let mut doc =
-        build_chrome_page_document(&start, js_enabled, bookmarked, &load_state, chrome_config);
+    let view = chrome_view_state(&tabs, js_enabled, &bookmarks_state, None);
+    let mut doc = build_chrome_page_document(&view, js_enabled, &load_state, chrome_config);
     {
         let mut chrome = doc.0.inner_mut();
-        zoom.apply_to_chrome(&mut chrome);
+        if let Some(tab) = tabs.active_mut() {
+            let find_open = tab.find.open;
+            let find_query = tab.find.query().to_string();
+            tab.find.restore(&mut chrome, find_open, &find_query);
+            tab.zoom.apply_to_chrome(&mut chrome);
+        }
     }
 
     let attrs = WindowAttributes::default()
@@ -149,17 +154,16 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         proxy,
         receiver,
         bus,
-        start_url: start,
+        tabs,
         js: js_host,
         html_provider,
         load_state,
-        history,
-        zoom,
         session: GlideSessionState {
             profile,
             saved_settings,
             persist_js_setting,
             defer_session_save,
+            default_zoom,
         },
         bookmarks: bookmarks_state,
         bookmark_list: bookmark_list.clone(),
@@ -210,18 +214,17 @@ struct GlideSessionState {
     saved_settings: Settings,
     persist_js_setting: bool,
     defer_session_save: bool,
+    default_zoom: PageZoom,
 }
 
 struct GlideBootstrap {
     proxy: BlitzShellProxy,
     receiver: std::sync::mpsc::Receiver<BlitzShellEvent>,
     bus: NavBus,
-    start_url: String,
+    tabs: TabManager,
     js: JsHost,
     html_provider: GlideHtmlProvider,
     load_state: Arc<LoadState>,
-    history: History,
-    zoom: PageZoom,
     session: GlideSessionState,
     bookmarks: BookmarksState,
     bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
@@ -233,28 +236,64 @@ struct Glide {
     bus: NavBus,
     js: JsHost,
     html_provider: GlideHtmlProvider,
-    nav: NavTracker,
+    tabs: TabManager,
     last_title: String,
     load_state: Arc<LoadState>,
     chrome_loading: bool,
-    address_written: String,
-    zoom: PageZoom,
-    find: FindSession,
+    open_menu: Option<MenuId>,
     session: GlideSessionState,
     bookmarks: BookmarksState,
     bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
     history_log: HistoryLogState,
 }
 
-fn build_chrome_page_document(
-    start: &str,
+fn chrome_view_state(
+    tabs: &TabManager,
     js_enabled: bool,
-    bookmarked: bool,
+    bookmarks: &BookmarksState,
+    open_menu: Option<MenuId>,
+) -> ChromeViewState {
+    let active = tabs.active();
+    let url = active.map(Tab::url).unwrap_or("about:blank").to_string();
+    let (can_go_back, can_go_forward, page_loading) = active
+        .map(|tab| {
+            let history = tab.nav.history();
+            (
+                history.index() > 0,
+                history.index() + 1 < history.entries().len(),
+                tab.loading,
+            )
+        })
+        .unwrap_or((false, false, false));
+    ChromeViewState {
+        bookmarked: bookmarks.is_bookmarked(&url),
+        url,
+        js_enabled,
+        can_go_back,
+        can_go_forward,
+        page_loading,
+        tabs: tabs
+            .tabs()
+            .iter()
+            .map(|tab| TabView {
+                id: tab.id,
+                title: tab.title.clone(),
+                loading: tab.loading,
+            })
+            .collect(),
+        active_index: tabs.active_index(),
+        open_menu,
+    }
+}
+
+fn build_chrome_page_document(
+    view: &ChromeViewState,
+    js_enabled: bool,
     load_state: &LoadState,
     chrome_config: DocumentConfig,
 ) -> HtmlPageDocument {
     HtmlPageDocument(parse::document_from_html_with(
-        &chrome_document(start, js_enabled, bookmarked),
+        &chrome_document_from_state(view),
         chrome_config,
         js_enabled,
         |doc| load_state.set_chrome_doc_id(doc.id()),
@@ -268,6 +307,77 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether a tab title changed enough to warrant redrawing the tab strip.
+fn titles_changed(tabs: &TabManager, before: &[String]) -> bool {
+    tabs.tabs().len() != before.len()
+        || tabs
+            .tabs()
+            .iter()
+            .zip(before.iter())
+            .any(|(tab, title)| tab.title != *title)
+}
+
+fn capture_active_tab(
+    tabs: &mut TabManager,
+    doc: &mut BaseDocument,
+    bookmarks: &mut BookmarksState,
+    load_state: &LoadState,
+    committed: &mut Option<(ObserveEffect, String, String)>,
+) {
+    let Some(actual) = page_url(doc) else {
+        return;
+    };
+    let title = page_title(doc).unwrap_or_default();
+    let effect = {
+        let Some(tab) = tabs.active_mut() else {
+            return;
+        };
+        tab.find.sync_from_input(doc);
+        let effect = tab.nav.observe(&actual);
+        tab.title = title.clone();
+        tab.loading = load_state.page_loading();
+        let shown = tab.nav.shown().to_string();
+        sync_committed_address(doc, &shown, &mut tab.address_written);
+        if matches!(
+            effect,
+            ObserveEffect::LinkNavigation | ObserveEffect::Redirect
+        ) && tab.find.open
+        {
+            tab.find.close_bar(doc);
+        }
+        effect
+    };
+    bookmarks.sync_star(doc, &actual);
+    if matches!(
+        effect,
+        ObserveEffect::Completed | ObserveEffect::LinkNavigation | ObserveEffect::Redirect
+    ) {
+        *committed = Some((effect, actual, title));
+    }
+}
+
+fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &mut JsHost) {
+    let url = tabs
+        .active()
+        .map(Tab::url)
+        .unwrap_or("about:blank")
+        .to_string();
+    let observed = page_url(doc);
+    if let Some(tab) = tabs.active_mut() {
+        tab.nav.switch_to(&url, observed.as_deref());
+        tab.address_written = url.clone();
+        set_address(doc, &url);
+        let find_open = tab.find.open;
+        let find_query = tab.find.query().to_string();
+        tab.find.restore(doc, find_open, &find_query);
+        tab.zoom.apply_to_chrome(doc);
+    }
+    if observed.as_deref() != Some(url.as_str()) {
+        js.on_navigation(doc, &url);
+        load_iframe(doc, &url);
+    }
+}
+
 impl Glide {
     fn new(init: GlideBootstrap) -> Self {
         Self {
@@ -275,13 +385,11 @@ impl Glide {
             bus: init.bus,
             js: init.js,
             html_provider: init.html_provider,
-            nav: crate::nav::NavTracker::from_history(init.history, init.start_url.clone()),
+            tabs: init.tabs,
             last_title: "Glide".to_string(),
             load_state: init.load_state,
             chrome_loading: false,
-            address_written: init.start_url,
-            zoom: init.zoom,
-            find: FindSession::default(),
+            open_menu: None,
             session: init.session,
             bookmarks: init.bookmarks,
             bookmark_list: init.bookmark_list,
@@ -297,7 +405,11 @@ impl Glide {
         };
         let settings = Settings {
             js_enabled,
-            zoom_percent: self.zoom.percent(),
+            zoom_percent: self
+                .tabs
+                .active()
+                .map(|tab| tab.zoom.percent())
+                .unwrap_or_else(|| self.session.default_zoom.percent()),
         };
         self.session.profile.save_settings(&settings)
     }
@@ -307,11 +419,7 @@ impl Glide {
             return;
         }
         let failed = self.load_state.failed_page_urls();
-        let session = session_for_disk(
-            self.nav.history().entries(),
-            self.nav.history().index(),
-            &failed,
-        );
+        let session = Session::from_tabs(&self.tabs, &failed);
         let _ = self.session.profile.save_session(&session);
     }
 
@@ -359,70 +467,92 @@ impl Glide {
             return;
         };
         let mut changed = false;
+        let mut structure_changed = false;
         let mut save_settings_after = false;
         let mut committed: Option<(ObserveEffect, String, String)> = None;
         let mut pending_history: Option<PendingHistoryCommand> = None;
+        let js_enabled = self.html_provider.scripting_enabled.load(Ordering::Relaxed);
+        let titles_before = self
+            .tabs
+            .tabs()
+            .iter()
+            .map(|tab| tab.title.clone())
+            .collect::<Vec<_>>();
         if let Some(view) = self.inner.windows.get_mut(&window_id) {
             let mut doc = view.doc.inner_mut();
             for command in self.bus.take() {
                 changed = true;
-                match command {
-                    NavCommand::Back => {
+                if command_closes_menu(&command) && self.open_menu.is_some() {
+                    self.open_menu = None;
+                    structure_changed = true;
+                }
+                match &command {
+                    NavCommand::Back | NavCommand::Forward | NavCommand::Reload => {
+                        let kind = match &command {
+                            NavCommand::Back => NavKind::Back,
+                            NavCommand::Forward => NavKind::Forward,
+                            _ => NavKind::Reload,
+                        };
+                        let history = match &command {
+                            NavCommand::Back => PendingHistoryCommand::Back,
+                            NavCommand::Forward => PendingHistoryCommand::Forward,
+                            _ => PendingHistoryCommand::Reload,
+                        };
                         self.session.defer_session_save = false;
-                        pending_history = Some(PendingHistoryCommand::Back);
-                        if self.find.open {
-                            self.find.close_bar(&mut doc);
-                        }
-                        if let Some(url) = self.nav.navigate(NavKind::Back, None) {
+                        pending_history = Some(history);
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                        );
+                        let target = {
+                            let Some(tab) = self.tabs.active_mut() else {
+                                continue;
+                            };
+                            if tab.find.open {
+                                tab.find.close_bar(&mut doc);
+                            }
+                            tab.nav.navigate(kind, None)
+                        };
+                        if let Some(url) = target {
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             set_address(&mut doc, &url);
-                            self.address_written = self.nav.shown().to_string();
-                        }
-                    }
-                    NavCommand::Forward => {
-                        self.session.defer_session_save = false;
-                        pending_history = Some(PendingHistoryCommand::Forward);
-                        if self.find.open {
-                            self.find.close_bar(&mut doc);
-                        }
-                        if let Some(url) = self.nav.navigate(NavKind::Forward, None) {
-                            self.js.on_navigation(&doc, &url);
-                            load_iframe(&mut doc, &url);
-                            set_address(&mut doc, &url);
-                            self.address_written = self.nav.shown().to_string();
-                        }
-                    }
-                    NavCommand::Reload => {
-                        self.session.defer_session_save = false;
-                        pending_history = Some(PendingHistoryCommand::Reload);
-                        if self.find.open {
-                            self.find.close_bar(&mut doc);
-                        }
-                        if let Some(url) = self.nav.navigate(NavKind::Reload, None) {
-                            self.js.on_navigation(&doc, &url);
-                            load_iframe(&mut doc, &url);
-                            set_address(&mut doc, &url);
-                            self.address_written = self.nav.shown().to_string();
+                            if let Some(tab) = self.tabs.active_mut() {
+                                tab.address_written = tab.nav.shown().to_string();
+                            }
                         }
                     }
                     NavCommand::Stop => {
                         self.load_state.stop_page_load();
-                        if let Some(url) = page_url(&doc) {
-                            self.nav.stop(&url);
+                        if let Some(url) = page_url(&doc)
+                            && let Some(tab) = self.tabs.active_mut()
+                        {
+                            tab.nav.stop(&url);
                             set_address(&mut doc, &url);
-                            self.address_written = self.nav.shown().to_string();
+                            tab.address_written = tab.nav.shown().to_string();
                         }
                     }
                     NavCommand::ToggleJs => {
                         self.session.defer_session_save = false;
                         pending_history = Some(PendingHistoryCommand::Reload);
-                        if self.find.open {
-                            self.find.close_bar(&mut doc);
-                        }
-                        let new = !self.html_provider.scripting_enabled.load(Ordering::Relaxed);
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                        );
+                        let new = !js_enabled;
                         set_js_runtime_mode(&self.html_provider, &mut self.js, &doc, new);
-                        if let Some(url) = self.nav.navigate(NavKind::Reload, None) {
+                        let target = self
+                            .tabs
+                            .active_mut()
+                            .and_then(|tab| tab.nav.navigate(NavKind::Reload, None));
+                        if let Some(url) = target {
+                            self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             set_js_indicator(&mut doc, new);
                         }
@@ -430,79 +560,212 @@ impl Glide {
                         save_settings_after = true;
                     }
                     NavCommand::ToggleBookmark => {
-                        if let Some(url) = page_url(&doc)
-                            && should_persist_url(&url)
-                        {
+                        let url = self.tabs.active().map(Tab::url).unwrap_or("").to_string();
+                        if should_persist_url(&url) {
                             let title = page_title(&doc).unwrap_or_default();
                             self.bookmarks.toggle(&mut doc, &url, &title, unix_now());
                             if let Ok(mut shared) = self.bookmark_list.write() {
                                 *shared = self.bookmarks.entries().to_vec();
                             }
                         }
-                        changed = true;
                     }
                     NavCommand::Go(raw) => {
                         self.session.defer_session_save = false;
                         pending_history = Some(PendingHistoryCommand::Go);
-                        if self.find.open {
-                            self.find.close_bar(&mut doc);
-                        }
-                        let url = resolve_location(&raw);
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                        );
+                        let url = resolve_location(raw);
                         self.js.on_navigation(&doc, &url);
                         load_iframe(&mut doc, &url);
-                        if self.nav.navigate(NavKind::Go, Some(url.clone())).is_some() {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.nav.navigate(NavKind::Go, Some(url.clone()));
                             set_address(&mut doc, &url);
-                            self.address_written = self.nav.shown().to_string();
+                            tab.address_written = tab.nav.shown().to_string();
+                        }
+                    }
+                    NavCommand::Find => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.find.open_bar(&mut doc);
                         }
                     }
                     NavCommand::FindClose => {
-                        self.find.close_bar(&mut doc);
-                        changed = true;
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.find.close_bar(&mut doc);
+                        }
                     }
                     NavCommand::FindNext => {
-                        self.find.step(&mut doc, true);
-                        changed = true;
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.find.step(&mut doc, true);
+                        }
                     }
                     NavCommand::FindPrev => {
-                        self.find.step(&mut doc, false);
-                        changed = true;
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.find.step(&mut doc, false);
+                        }
+                    }
+                    NavCommand::ZoomIn | NavCommand::ZoomOut | NavCommand::ZoomReset => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            match &command {
+                                NavCommand::ZoomIn => tab.zoom.zoom_in(),
+                                NavCommand::ZoomOut => tab.zoom.zoom_out(),
+                                _ => tab.zoom.reset(),
+                            }
+                            tab.zoom.apply_to_chrome(&mut doc);
+                        }
+                        save_settings_after = true;
+                    }
+                    NavCommand::NewTab => {
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                        );
+                        self.tabs.add("about:blank");
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.zoom = self.session.default_zoom;
+                        }
+                        apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                        structure_changed = true;
+                    }
+                    NavCommand::DuplicateTab => {
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                        );
+                        if let Some(tab) = self.tabs.active().cloned() {
+                            self.tabs.insert(tab);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            structure_changed = true;
+                        }
+                    }
+                    NavCommand::CloseTab(_) | NavCommand::CloseActiveTab => {
+                        let id = match &command {
+                            NavCommand::CloseTab(id) => *id,
+                            _ => self.tabs.active_id().unwrap_or(0),
+                        };
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                        );
+                        if self.tabs.active_id() == Some(id) {
+                            self.tabs.close_active();
+                            if self.tabs.is_empty() {
+                                let failed = self.load_state.failed_page_urls();
+                                let session = Session::from_tabs(&self.tabs, &failed);
+                                let _ = self.session.profile.save_session(&session);
+                                self.inner
+                                    .proxy
+                                    .send_event(BlitzShellEvent::CloseWindow { window_id });
+                                break;
+                            }
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                        } else {
+                            self.tabs.close(id);
+                        }
+                        structure_changed = true;
+                    }
+                    NavCommand::SelectTab(_) | NavCommand::SelectTabIndex(_) => {
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                        );
+                        let selected = match &command {
+                            NavCommand::SelectTab(id) => self.tabs.select(*id),
+                            NavCommand::SelectTabIndex(index) => self.tabs.select_index(*index),
+                            _ => false,
+                        };
+                        if selected {
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            structure_changed = true;
+                        }
+                    }
+                    NavCommand::NextTab | NavCommand::PrevTab => {
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                        );
+                        let moved = if matches!(&command, NavCommand::NextTab) {
+                            self.tabs.select_next()
+                        } else {
+                            self.tabs.select_previous()
+                        };
+                        if moved {
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            structure_changed = true;
+                        }
+                    }
+                    NavCommand::MenuOpen(menu) => {
+                        self.open_menu = Some(*menu);
+                        structure_changed = true;
+                    }
+                    NavCommand::MenuClose => {
+                        self.open_menu = None;
+                        structure_changed = true;
+                    }
+                    NavCommand::CloseWindow => {
+                        let failed = self.load_state.failed_page_urls();
+                        let session = Session::from_tabs(&self.tabs, &failed);
+                        let _ = self.session.profile.save_session(&session);
+                        self.inner
+                            .proxy
+                            .send_event(BlitzShellEvent::CloseWindow { window_id });
+                        break;
                     }
                 }
             }
 
-            self.find.sync_from_input(&mut doc);
+            capture_active_tab(
+                &mut self.tabs,
+                &mut doc,
+                &mut self.bookmarks,
+                &self.load_state,
+                &mut committed,
+            );
 
-            if let Some(actual) = page_url(&doc) {
-                let effect = self.nav.observe(&actual);
-                if matches!(
-                    effect,
-                    ObserveEffect::LinkNavigation | ObserveEffect::Redirect
-                ) && self.find.open
-                {
-                    self.find.close_bar(&mut doc);
-                }
-                self.bookmarks.sync_star(&mut doc, &actual);
-                if matches!(
-                    effect,
-                    ObserveEffect::Completed
-                        | ObserveEffect::LinkNavigation
-                        | ObserveEffect::Redirect
-                ) {
-                    let title = page_title(&doc).unwrap_or_default();
-                    committed = Some((effect, actual, title));
-                }
+            if titles_changed(&self.tabs, &titles_before) {
+                structure_changed = true;
             }
-            sync_committed_address(&mut doc, self.nav.shown(), &mut self.address_written);
             let loading = self.load_state.page_loading();
             if loading != self.chrome_loading {
                 let was_loading = self.chrome_loading;
                 self.chrome_loading = loading;
                 set_loading_ui(&mut doc, loading);
-                if was_loading && !loading {
-                    self.find.rerun_search_after_load(&mut doc);
+                if was_loading
+                    && !loading
+                    && let Some(tab) = self.tabs.active_mut()
+                {
+                    tab.find.rerun_search_after_load(&mut doc);
                 }
                 changed = true;
+                structure_changed = true;
             }
+
+            if structure_changed {
+                let view =
+                    chrome_view_state(&self.tabs, js_enabled, &self.bookmarks, self.open_menu);
+                render_tab_strip(&mut doc, &view);
+                render_menu_bar(&mut doc, &view);
+            }
+
             if let Some(title) = page_title(&doc) {
                 let window_title = if title.is_empty() {
                     "Glide".to_string()
@@ -521,6 +784,9 @@ impl Glide {
         }
         if save_settings_after {
             let _ = self.save_settings();
+        }
+        if structure_changed {
+            self.save_session_if_allowed();
         }
         if let Some((effect, url, title)) = committed {
             self.on_committed_navigation(effect, &url, &title);
@@ -604,20 +870,45 @@ impl Glide {
                 view.request_redraw();
                 true
             }
-            keyboard::BrowserShortcut::CloseWindow => {
-                self.save_session_if_allowed();
-                if let Some(win) = self.inner.windows.remove(&window_id) {
-                    drop(win);
-                }
-                if self.inner.windows.is_empty() {
-                    event_loop.exit();
+            keyboard::BrowserShortcut::CloseTab => {
+                let failed = self.load_state.failed_page_urls();
+                let session = Session::from_tabs(&self.tabs, &failed);
+                let _ = self.session.profile.save_session(&session);
+                if self.tabs.len() <= 1 {
+                    self.inner
+                        .proxy
+                        .send_event(BlitzShellEvent::CloseWindow { window_id });
+                } else {
+                    self.bus.push(NavCommand::CloseActiveTab);
                 }
                 true
             }
             keyboard::BrowserShortcut::Quit => {
-                self.save_session_if_allowed();
-                self.inner.windows.clear();
+                let failed = self.load_state.failed_page_urls();
+                let session = Session::from_tabs(&self.tabs, &failed);
+                let _ = self.session.profile.save_session(&session);
+                for id in self.inner.windows.keys().copied().collect::<Vec<_>>() {
+                    self.inner
+                        .proxy
+                        .send_event(BlitzShellEvent::CloseWindow { window_id: id });
+                }
                 event_loop.exit();
+                true
+            }
+            keyboard::BrowserShortcut::NewTab => {
+                self.bus.push(NavCommand::NewTab);
+                true
+            }
+            keyboard::BrowserShortcut::NextTab => {
+                self.bus.push(NavCommand::NextTab);
+                true
+            }
+            keyboard::BrowserShortcut::PreviousTab => {
+                self.bus.push(NavCommand::PrevTab);
+                true
+            }
+            keyboard::BrowserShortcut::SelectTab(index) => {
+                self.bus.push(NavCommand::SelectTabIndex(index));
                 true
             }
             keyboard::BrowserShortcut::Scroll(action) => {
@@ -625,64 +916,38 @@ impl Glide {
                 view.request_redraw();
                 true
             }
-            keyboard::BrowserShortcut::ZoomIn => {
-                self.zoom.zoom_in();
-                {
-                    let mut chrome = view.doc.inner_mut();
-                    self.zoom.apply_to_chrome(&mut chrome);
+            keyboard::BrowserShortcut::ZoomIn
+            | keyboard::BrowserShortcut::ZoomOut
+            | keyboard::BrowserShortcut::ZoomReset => {
+                if let Some(tab) = self.tabs.active_mut() {
+                    match shortcut {
+                        keyboard::BrowserShortcut::ZoomIn => tab.zoom.zoom_in(),
+                        keyboard::BrowserShortcut::ZoomOut => tab.zoom.zoom_out(),
+                        _ => tab.zoom.reset(),
+                    }
+                    {
+                        let mut chrome = view.doc.inner_mut();
+                        tab.zoom.apply_to_chrome(&mut chrome);
+                    }
                 }
                 save_zoom_settings = true;
                 view.request_redraw();
                 true
             }
-            keyboard::BrowserShortcut::ZoomOut => {
-                self.zoom.zoom_out();
+            keyboard::BrowserShortcut::Find
+            | keyboard::BrowserShortcut::FindClose
+            | keyboard::BrowserShortcut::FindNext
+            | keyboard::BrowserShortcut::FindPrev => {
                 {
                     let mut chrome = view.doc.inner_mut();
-                    self.zoom.apply_to_chrome(&mut chrome);
-                }
-                save_zoom_settings = true;
-                view.request_redraw();
-                true
-            }
-            keyboard::BrowserShortcut::ZoomReset => {
-                self.zoom.reset();
-                {
-                    let mut chrome = view.doc.inner_mut();
-                    self.zoom.apply_to_chrome(&mut chrome);
-                }
-                save_zoom_settings = true;
-                view.request_redraw();
-                true
-            }
-            keyboard::BrowserShortcut::Find => {
-                {
-                    let mut chrome = view.doc.inner_mut();
-                    self.find.open_bar(&mut chrome);
-                }
-                view.request_redraw();
-                true
-            }
-            keyboard::BrowserShortcut::FindClose => {
-                {
-                    let mut chrome = view.doc.inner_mut();
-                    self.find.close_bar(&mut chrome);
-                }
-                view.request_redraw();
-                true
-            }
-            keyboard::BrowserShortcut::FindNext => {
-                {
-                    let mut chrome = view.doc.inner_mut();
-                    self.find.step(&mut chrome, true);
-                }
-                view.request_redraw();
-                true
-            }
-            keyboard::BrowserShortcut::FindPrev => {
-                {
-                    let mut chrome = view.doc.inner_mut();
-                    self.find.step(&mut chrome, false);
+                    if let Some(tab) = self.tabs.active_mut() {
+                        match shortcut {
+                            keyboard::BrowserShortcut::Find => tab.find.open_bar(&mut chrome),
+                            keyboard::BrowserShortcut::FindClose => tab.find.close_bar(&mut chrome),
+                            keyboard::BrowserShortcut::FindNext => tab.find.step(&mut chrome, true),
+                            _ => tab.find.step(&mut chrome, false),
+                        }
+                    }
                 }
                 view.request_redraw();
                 true
@@ -836,6 +1101,16 @@ mod tests {
     use url::Url;
 
     #[test]
+    fn titles_changed_detects_a_page_title_update() {
+        let mut tabs = TabManager::new();
+        tabs.add("https://a/");
+        let before = vec![String::new()];
+        assert!(!titles_changed(&tabs, &before));
+        tabs.active_mut().expect("active tab").title = "Example".to_string();
+        assert!(titles_changed(&tabs, &before));
+    }
+
+    #[test]
     fn chrome_commands_ignored_from_other_documents() {
         assert!(!chrome_accepts_navigation(1, 5));
         assert!(chrome_accepts_navigation(5, 5));
@@ -880,7 +1155,20 @@ mod tests {
             ..Default::default()
         };
 
-        let mut doc = build_chrome_page_document(&start, false, false, &load_state, chrome_config);
+        let view = ChromeViewState {
+            url: start.clone(),
+            js_enabled: false,
+            bookmarked: false,
+            tabs: vec![TabView {
+                id: 0,
+                title: String::new(),
+                loading: false,
+            }],
+            active_index: Some(0),
+            open_menu: None,
+            ..ChromeViewState::default()
+        };
+        let mut doc = build_chrome_page_document(&view, false, &load_state, chrome_config);
         assert_ne!(load_state.chrome_doc_id(), 0);
 
         // The error page reaches the iframe as a document event that a later

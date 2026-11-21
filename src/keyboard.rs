@@ -31,7 +31,11 @@ pub enum BrowserShortcut {
     ToggleJs,
     ToggleBookmark,
     FocusAddressBar,
-    CloseWindow,
+    CloseTab,
+    NewTab,
+    NextTab,
+    PreviousTab,
+    SelectTab(usize),
     Quit,
     Find,
     FindClose,
@@ -82,10 +86,24 @@ pub fn browser_shortcut(
         }
         KeyCode::KeyL if primary && !shift => return Some(BrowserShortcut::FocusAddressBar),
         KeyCode::KeyR if primary && !shift => return Some(BrowserShortcut::Reload),
-        KeyCode::KeyW if primary && !shift => return Some(BrowserShortcut::CloseWindow),
+        KeyCode::KeyT if primary && !shift => return Some(BrowserShortcut::NewTab),
+        KeyCode::KeyW if primary && !shift => return Some(BrowserShortcut::CloseTab),
         KeyCode::KeyQ if primary && !shift => return Some(BrowserShortcut::Quit),
+        KeyCode::Tab if primary && !shift => return Some(BrowserShortcut::NextTab),
+        KeyCode::Tab if primary && shift => return Some(BrowserShortcut::PreviousTab),
+        KeyCode::BracketRight if primary && shift => return Some(BrowserShortcut::NextTab),
+        KeyCode::BracketLeft if primary && shift => return Some(BrowserShortcut::PreviousTab),
         KeyCode::BracketLeft if primary && !shift => return Some(BrowserShortcut::Back),
         KeyCode::BracketRight if primary && !shift => return Some(BrowserShortcut::Forward),
+        KeyCode::Digit1 if primary && !shift => return Some(BrowserShortcut::SelectTab(0)),
+        KeyCode::Digit2 if primary && !shift => return Some(BrowserShortcut::SelectTab(1)),
+        KeyCode::Digit3 if primary && !shift => return Some(BrowserShortcut::SelectTab(2)),
+        KeyCode::Digit4 if primary && !shift => return Some(BrowserShortcut::SelectTab(3)),
+        KeyCode::Digit5 if primary && !shift => return Some(BrowserShortcut::SelectTab(4)),
+        KeyCode::Digit6 if primary && !shift => return Some(BrowserShortcut::SelectTab(5)),
+        KeyCode::Digit7 if primary && !shift => return Some(BrowserShortcut::SelectTab(6)),
+        KeyCode::Digit8 if primary && !shift => return Some(BrowserShortcut::SelectTab(7)),
+        KeyCode::Digit9 if primary && !shift => return Some(BrowserShortcut::SelectTab(8)),
         KeyCode::KeyJ if primary && shift => return Some(BrowserShortcut::ToggleJs),
         KeyCode::KeyD if primary && !shift => return Some(BrowserShortcut::ToggleBookmark),
         KeyCode::F5 if !primary && !alt => return Some(BrowserShortcut::Reload),
@@ -551,7 +569,11 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         BrowserShortcut::ToggleJs => Some(NavCommand::ToggleJs),
         BrowserShortcut::ToggleBookmark => Some(NavCommand::ToggleBookmark),
         BrowserShortcut::FocusAddressBar
-        | BrowserShortcut::CloseWindow
+        | BrowserShortcut::CloseTab
+        | BrowserShortcut::NewTab
+        | BrowserShortcut::NextTab
+        | BrowserShortcut::PreviousTab
+        | BrowserShortcut::SelectTab(_)
         | BrowserShortcut::Quit
         | BrowserShortcut::Find
         | BrowserShortcut::FindClose
@@ -882,11 +904,11 @@ mod tests {
                 Some(BrowserShortcut::FocusAddressBar),
             ));
             cases.extend(both(
-                &format!("{tag}+W close"),
+                &format!("{tag}+W close tab"),
                 KeyCode::KeyW,
                 prim,
-                Some(BrowserShortcut::CloseWindow),
-                Some(BrowserShortcut::CloseWindow),
+                Some(BrowserShortcut::CloseTab),
+                Some(BrowserShortcut::CloseTab),
             ));
             cases.extend(both(
                 &format!("{tag}+Q quit"),
@@ -1021,6 +1043,58 @@ mod tests {
                 got, case.expected,
                 "README shortcut row failed: {}",
                 case.row
+            );
+        }
+    }
+
+    #[test]
+    fn tab_shortcut_table() {
+        for (code, modifiers, expected) in [
+            (
+                KeyCode::KeyT,
+                mods(false, false, false, true),
+                BrowserShortcut::NewTab,
+            ),
+            (
+                KeyCode::KeyW,
+                mods(false, false, false, true),
+                BrowserShortcut::CloseTab,
+            ),
+            (
+                KeyCode::Tab,
+                mods(false, false, false, true),
+                BrowserShortcut::NextTab,
+            ),
+            (
+                KeyCode::Tab,
+                mods(false, false, true, true),
+                BrowserShortcut::PreviousTab,
+            ),
+            (
+                KeyCode::BracketRight,
+                mods(false, false, true, true),
+                BrowserShortcut::NextTab,
+            ),
+            (
+                KeyCode::BracketLeft,
+                mods(false, false, true, true),
+                BrowserShortcut::PreviousTab,
+            ),
+            (
+                KeyCode::Digit1,
+                mods(false, false, false, true),
+                BrowserShortcut::SelectTab(0),
+            ),
+            (
+                KeyCode::Digit9,
+                mods(false, false, false, true),
+                BrowserShortcut::SelectTab(8),
+            ),
+        ] {
+            assert_eq!(
+                browser_shortcut(code, modifiers, false, false),
+                Some(expected),
+                "unexpected classification for {code:?} {modifiers:?}"
             );
         }
     }

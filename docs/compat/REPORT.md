@@ -1,7 +1,7 @@
 # Glide compatibility report
 
 Date: 2026-11-20
-Git: `da97a2b`
+Git: `aae2048`
 OS: macos
 
 ## Summary
@@ -9,8 +9,19 @@ OS: macos
 | Suite | Pass | Fail | Other | Total |
 | --- | ---: | ---: | ---: | ---: |
 | acid | 1 | 1 | 2 | 4 |
-| wpt | 77 | 51 | 0 | 128 |
+| wpt | 79 | 49 | 0 | 128 |
 | probe | 36 | 22 | 0 | 58 |
+
+## Testharness (`dom/nodes`)
+
+Files with no subtest results count as failures (one failed subtest each). The pass rate includes those files; it is not computed only over files that produced a harness report.
+
+| | Pass | Total | Rate |
+| --- | ---: | ---: | ---: |
+| Files fully passing | 12 | 28 | 42.9% |
+| Subtests | 636 | 969 | 65.6% |
+
+Files with no results: 8.
 
 ## Super-critical
 
@@ -21,19 +32,18 @@ None recorded.
 - wpt:reftest — rendering differs (pixel diff): 32
 - probe:api — Web API missing (undefined typeof): 22
 - wpt:testharness — missing __glide_results JSON in dump-text: 3
-- wpt:testharness — 1 failed, 0 timeout: 3
-- wpt:testharness — 2 failed, 0 timeout: 2
+- wpt:testharness — 1 failed, 0 timeout: 2
 - wpt:testharness — harness did not load (ReferenceError: async_test is not defined): 2
+- wpt:testharness — 2 failed, 0 timeout: 2
 - wpt:testharness — harness did not load (Error: assert_throws_dom: function "() => document.createCDATASection("foo")" threw object "TypeError: document.createCDATASection is not a function" that is not a DOMException NotSupportedError: property "code" is equal to undefined, expected 9): 1
-- wpt:testharness — 1 failed, 1 timeout: 1
-- wpt:testharness — 3 failed, 0 timeout: 1
-- wpt:testharness — harness did not load (INVALID_CHARACTER_ERR: INVALID_CHARACTER_ERR (5): the string contains invalid characters): 1
-- wpt:testharness — 6 failed, 1 timeout: 1
-- wpt:testharness — 5 failed, 0 timeout: 1
-- acid:reftest — Acid2 test page vs reference (expected differences): 1
-- wpt:testharness — 13 failed, 1 timeout: 1
 - wpt:testharness — harness did not load (ReferenceError: setup is not defined): 1
-- wpt:testharness — 0 failed, 0 timeout: 1
+- wpt:testharness — 148 failed, 0 timeout: 1
+- wpt:testharness — 3 failed, 0 timeout: 1
+- wpt:testharness — 47 failed, 0 timeout: 1
+- acid:reftest — Acid2 test page vs reference (expected differences): 1
+- wpt:testharness — 117 failed, 0 timeout: 1
+- wpt:testharness — 5 failed, 0 timeout: 1
+- wpt:testharness — harness did not load (INVALID_CHARACTER_ERR: INVALID_CHARACTER_ERR (5): the string contains invalid characters): 1
 
 ## API probe
 
@@ -103,7 +113,7 @@ Rows marked **available** for language built-ins (e.g. `Map`, `Set`, `Proxy`, `I
 
 - `acid1/test5526c.htm` — **unreachable** 
 - `acid2/compare` — **fail** {"diff_pct":3.7385167464114835}
-- `acid3/with-js` — **pass** {"acid3_score":20}
+- `acid3/with-js` — **pass** {"acid3_score":33}
 - `acid3/no-js` — **info** 
 
 ## ECMAScript

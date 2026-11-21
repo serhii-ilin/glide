@@ -42,10 +42,11 @@ Node.prototype = Object.create(EventTarget.prototype, {
 
   // Node that are not inserted into the tree inherit a null parent
 
-  // XXX: the baseURI attribute is defined by dom core, but
-  // a correct implementation of it requires HTML features, so
-  // we'll come back to this later.
-  baseURI: { get: utils.nyi },
+  baseURI: { get: function() {
+    var doc = this.nodeType === DOCUMENT_NODE ? this : this.ownerDocument;
+    if (!doc) return null;
+    return doc.URL || doc._address || null;
+  }},
 
   parentElement: { get: function() {
     return (this.parentNode && this.parentNode.nodeType===ELEMENT_NODE) ? this.parentNode : null;

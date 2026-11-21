@@ -41,8 +41,7 @@ DocumentFragment.prototype = Object.create(ContainerNode.prototype, {
       Object.getOwnPropertyDescriptor(Element.prototype, 'firstElementChild').
       get;
     // invoke zest
-    var nodes = select(selector, context);
-    return nodes.item ? nodes : new NodeList(nodes);
+    return NodeList.snapshot(select(selector, context));
   }},
 
   // Utility methods

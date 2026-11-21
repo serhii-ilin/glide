@@ -86,14 +86,47 @@
     });
   };
 
+  global.Promise = Promise;
+  global.performance = { now: () => nowMs };
+  global.console = console;
+
+  function Image(width, height) {
+    const img = document.createElement('img');
+    if (arguments.length >= 1 && width != null) img.width = width;
+    if (arguments.length >= 2 && height != null) img.height = height;
+    return img;
+  }
+  global.Image = Image;
+  try {
+    const ctor = document.createElement('img').constructor;
+    if (ctor) global.HTMLImageElement = ctor;
+  } catch (_) { /* document may not be an HTML document yet */ }
+
   global.fetch = function (url) {
     return new Promise((resolve, reject) => {
       queueMicrotask(() => {
         try {
-          const body = __glide_dom_sync('fetch', 0, String(url));
-          if (body && body.__error) throw new Error(body.__error);
+          const raw = __glide_dom_sync('fetch', 0, String(url));
+          if (raw && raw.__error) throw new Error(raw.__error);
+          let status = 200;
+          let ok = true;
+          let finalUrl = String(url);
+          let redirected = false;
+          let body;
+          if (raw && typeof raw === 'object' && raw.status != null && raw.body != null) {
+            status = Number(raw.status) || 0;
+            ok = raw.ok !== false && status >= 200 && status < 300;
+            finalUrl = raw.url ? String(raw.url) : finalUrl;
+            redirected = !!raw.redirected;
+            body = String(raw.body);
+          } else {
+            body = raw == null ? '' : String(raw);
+          }
           resolve({
-            ok: true,
+            ok,
+            status,
+            url: finalUrl,
+            redirected,
             text() { return Promise.resolve(body); },
             json() { return Promise.resolve(JSON.parse(body)); },
           });
@@ -103,10 +136,6 @@
       });
     });
   };
-
-  global.Promise = Promise;
-  global.performance = { now: () => nowMs };
-  global.console = console;
 
   function fireLoaded() {
     if (global.__glide_mark_document_loaded) global.__glide_mark_document_loaded();

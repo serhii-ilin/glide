@@ -111,6 +111,13 @@ fn apply_inner(
             let Ok(handle) = tokio::runtime::Handle::try_current() else {
                 return DomResponse::err(reply, "no async runtime");
             };
+            if parsed.scheme() == "http" || parsed.scheme() == "https" {
+                let fetched = handle.block_on(crate::http::fetch_followed(Request::get(parsed)));
+                return match fetched {
+                    Ok(resp) => DomResponse::ok(reply, fetch_json(&resp)),
+                    Err(err) => DomResponse::err(reply, format!("fetch failed: {err}")),
+                };
+            }
             let net = Arc::clone(net);
             let (tx, rx) = mpsc::sync_channel(1);
             std::thread::Builder::new()
@@ -139,6 +146,17 @@ fn apply_inner(
             }
         }
     }
+}
+
+fn fetch_json(resp: &crate::http::Followed) -> DomValue {
+    let ok = (200..300).contains(&resp.status);
+    DomValue::Json(serde_json::json!({
+        "status": resp.status,
+        "ok": ok,
+        "url": resp.url,
+        "redirected": resp.redirected,
+        "body": String::from_utf8_lossy(&resp.body),
+    }))
 }
 
 fn data_url_body(url: &str) -> Option<String> {

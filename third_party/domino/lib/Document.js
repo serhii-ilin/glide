@@ -366,10 +366,15 @@ Document.prototype = Object.create(ContainerNode.prototype, {
   characterSet: { get: function characterSet() { return "UTF-8"; } },
   contentType: { get: function contentType() { return this._contentType; } },
   URL: { get: function URL() { return this._address; } },
-  domain: { get: utils.nyi, set: utils.nyi },
-  referrer: { get: utils.nyi },
-  cookie: { get: utils.nyi, set: utils.nyi },
-  lastModified: { get: utils.nyi },
+  domain: { get: function() { return ''; }, set: function() {} },
+  referrer: { get: function() { return ''; } },
+  cookie: {
+    get: function() { return this._cookie || ''; },
+    set: function(v) {
+      this._cookie = String(v == null ? '' : v).split(';')[0];
+    }
+  },
+  lastModified: { get: function() { return ''; } },
   location: {
 	get: function() {
 	  return this.defaultView ? this.defaultView.location : null; // gh #75
@@ -434,12 +439,34 @@ Document.prototype = Object.create(ContainerNode.prototype, {
   head: { get: function() {
     return namedHTMLChild(this.documentElement, 'head');
   }},
-  images: { get: utils.nyi },
-  embeds: { get: utils.nyi },
-  plugins: { get: utils.nyi },
-  links: { get: utils.nyi },
-  forms: { get: utils.nyi },
-  scripts: { get: utils.nyi },
+  images: { get: function() { return this.getElementsByTagName('img'); } },
+  embeds: { get: function() { return this.getElementsByTagName('embed'); } },
+  plugins: { get: function() { return this.getElementsByTagName('embed'); } },
+  links: { get: function() { return this.querySelectorAll('a[href], area[href]'); } },
+  forms: { get: function() {
+    var list = this.getElementsByTagName('form');
+    if (!list || typeof Proxy !== 'function') return list;
+    function find(name) {
+      for (var i = 0; i < list.length; i++) {
+        var el = list[i];
+        if (el && (el.getAttribute('name') === name || el.id === name)) return el;
+      }
+      return null;
+    }
+    return new Proxy(list, {
+      get: function(target, prop, receiver) {
+        if (prop === 'namedItem') {
+          return function(name) { return find(String(name)); };
+        }
+        if (typeof prop === 'string' && !(prop in target)) {
+          var hit = find(prop);
+          if (hit) return hit;
+        }
+        return Reflect.get(target, prop, receiver);
+      }
+    });
+  } },
+  scripts: { get: function() { return this.getElementsByTagName('script'); } },
   applets: { get: function() { return []; } },
   activeElement: { get: function() { return null; } },
   innerHTML: {
@@ -722,8 +749,7 @@ Document.prototype = Object.create(ContainerNode.prototype, {
   }},
 
   querySelectorAll: { value: function(selector) {
-    var nodes = select(selector, this);
-    return nodes.item ? nodes : new NodeList(nodes);
+    return NodeList.snapshot(select(selector, this));
   }}
 
 });
@@ -882,3 +908,36 @@ MultiId.prototype.downgrade = function() {
   }
   return this;
 };
+
+// document.formName and document.forms[0].controlName (HTML named properties).
+// Google's search page reads document.f.q / form.q for the query field.
+(function installDocumentNamedGetter(proto) {
+  if (typeof Proxy !== 'function') return;
+  var busy = typeof WeakSet === 'function' ? new WeakSet() : null;
+  Document.prototype = new Proxy(proto, {
+    get: function(target, prop, receiver) {
+      if (typeof prop !== 'string' || (busy && busy.has(receiver))) {
+        return Reflect.get(target, prop, receiver);
+      }
+      if (prop in target) return Reflect.get(target, prop, receiver);
+      if (!receiver || receiver.nodeType !== Node.DOCUMENT_NODE) {
+        return Reflect.get(target, prop, receiver);
+      }
+      if (busy) busy.add(receiver);
+      try {
+        var byId = typeof receiver.getElementById === 'function'
+          ? receiver.getElementById(prop) : null;
+        if (byId) return byId;
+        if (typeof receiver.getElementsByName === 'function') {
+          var named = receiver.getElementsByName(prop);
+          if (named && named.length) return named[0];
+        }
+      } catch (e) {
+        /* named lookup must not hide the missing property */
+      } finally {
+        if (busy) busy.delete(receiver);
+      }
+      return Reflect.get(target, prop, receiver);
+    }
+  });
+}(Document.prototype));

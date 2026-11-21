@@ -56,6 +56,8 @@ function addEventHandlers(c, eventHandlerTypes) {
   eventHandlerTypes.forEach(function(type) {
     // Define the event handler registration IDL attribute for this type
     Object.defineProperty(p, "on" + type, {
+      configurable: true,
+      enumerable: true,
       get: function() {
         return this._getEventHandler(type);
       },

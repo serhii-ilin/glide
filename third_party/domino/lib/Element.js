@@ -934,8 +934,7 @@ Element.prototype = Object.create(ContainerNode.prototype, {
   }},
 
   querySelectorAll: { value: function(selector) {
-    var nodes = select(selector, this);
-    return nodes.item ? nodes : new NodeList(nodes);
+    return NodeList.snapshot(select(selector, this));
   }}
 
 });

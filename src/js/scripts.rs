@@ -142,6 +142,21 @@ pub fn resolve_sources(
                         return ScriptSource::Failed;
                     }
                 };
+            if parsed.scheme() == "http" || parsed.scheme() == "https" {
+                return match rt.block_on(crate::http::fetch_followed(Request::get(parsed))) {
+                    Ok(resp) if (200..300).contains(&resp.status) => {
+                        ScriptSource::External(String::from_utf8_lossy(&resp.body).into_owned())
+                    }
+                    Ok(resp) => {
+                        eprintln!("[js] script fetch failed ({src}): HTTP {}", resp.status);
+                        ScriptSource::Failed
+                    }
+                    Err(err) => {
+                        eprintln!("[js] script fetch failed ({src}): {err}");
+                        ScriptSource::Failed
+                    }
+                };
+            }
             match rt.block_on(net.fetch_async(Request::get(parsed))) {
                 Ok((_final_url, bytes)) => {
                     ScriptSource::External(String::from_utf8_lossy(&bytes).into_owned())

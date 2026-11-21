@@ -13,6 +13,7 @@ pub mod find;
 pub mod headless;
 pub mod history;
 pub mod html;
+mod http;
 pub mod js;
 pub mod keyboard;
 pub mod location;

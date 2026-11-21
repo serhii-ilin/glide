@@ -44,6 +44,66 @@ fn fetch_promise_resolves() {
 }
 
 #[test]
+fn query_selector_all_and_live_collections_are_iterable() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div class="a"></div><div class="a"></div>
+      <form name="f"><input name="q" value="hi"></form>
+      <p id="t">x</p>
+      <script>
+        var n = 0;
+        for (const el of document.querySelectorAll('div')) n++;
+        var live = 0;
+        for (const el of document.getElementsByTagName('div')) live++;
+        var forms = document.forms.length;
+        var named = document.forms[0].q && document.f.q;
+        var img = new Image(8, 4);
+        document.getElementById('t').textContent =
+          [n, live, forms, named ? named.name : 'missing', img.localName, img.width, img.height].join(',');
+      </script>
+    </body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "2,2,1,q,img,8,4");
+}
+
+#[test]
+fn form_owner_resolves_named_query_control() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form id="ext"></form>
+      <form name="f">
+        <input name="q" id="qq" value="hi">
+        <input id="box" type="checkbox">
+      </form>
+      <input id="outside" name="x">
+      <input id="linked" form="ext" name="q" value="z">
+      <p id="t">x</p>
+      <script>
+        document.body.onload = function () {
+          var input = document.getElementById('qq');
+          var box = document.getElementById('box');
+          var outside = document.getElementById('outside');
+          var linked = document.getElementById('linked');
+          var clicked = false;
+          try {
+            box.onclick = function () { clicked = !!this.form.q; };
+            box.click();
+          } catch (e) { clicked = false; }
+          var ok = input.form && input.form.getAttribute('name') === 'f'
+            && input.form.q.value === 'hi'
+            && box.form === input.form
+            && outside.form === null
+            && linked.form && linked.form.id === 'ext'
+            && document.forms.namedItem('f').elements.q.value === 'hi'
+            && document.f.q.value === 'hi'
+            && clicked;
+          document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+        };
+      </script>
+    </body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
 fn create_append_after_text_clear() {
     let html = r#"<!DOCTYPE html><html><body><p id="t">seed</p>
     <script>

@@ -29,10 +29,19 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
         (url.to_string(), bytes)
     } else {
         let parsed = url::Url::parse(url).map_err(|err| err.to_string())?;
-        let (final_url, bytes) = handle
-            .block_on(net_impl.fetch_async(Request::get(parsed)))
-            .map_err(|err| format!("fetch {url}: {err}"))?;
-        (final_url, bytes.into())
+        if parsed.scheme() == "http" || parsed.scheme() == "https" {
+            match handle.block_on(crate::http::fetch_document(Request::get(parsed))) {
+                crate::http::DocumentFetch::Page { url, body } => (url, body.to_vec()),
+                crate::http::DocumentFetch::Failed { url, reason } => {
+                    return Err(format!("fetch {url}: {reason}"));
+                }
+            }
+        } else {
+            let (final_url, bytes) = handle
+                .block_on(net_impl.fetch_async(Request::get(parsed)))
+                .map_err(|err| format!("fetch {url}: {err}"))?;
+            (final_url, bytes.into())
+        }
     };
     let html = String::from_utf8_lossy(&bytes);
 

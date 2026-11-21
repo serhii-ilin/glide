@@ -328,6 +328,42 @@ define({
   }
 });
 
+// <body onload> and the onload property are window event handlers.
+(function forwardBodyWindowHandlers(Body) {
+  if (!Body || !Body.prototype) return;
+  var events = [
+    "afterprint", "beforeprint", "beforeunload", "blur", "error",
+    "focus", "hashchange", "load", "message", "offline", "online",
+    "pagehide", "pageshow", "popstate", "resize", "scroll", "storage", "unload"
+  ];
+  events.forEach(function(type) {
+    var key = "on" + type;
+    var desc = Object.getOwnPropertyDescriptor(Body.prototype, key);
+    if (!desc || typeof desc.set !== 'function') return;
+    var origGet = desc.get;
+    var origSet = desc.set;
+    Object.defineProperty(Body.prototype, key, {
+      configurable: true,
+      enumerable: desc.enumerable,
+      get: function() {
+        var win = this.ownerDocument && this.ownerDocument.defaultView;
+        if (win && typeof win._getEventHandler === 'function') {
+          return win._getEventHandler(type);
+        }
+        return origGet ? origGet.call(this) : null;
+      },
+      set: function(v) {
+        var win = this.ownerDocument && this.ownerDocument.defaultView;
+        if (win && typeof win._setEventHandler === 'function') {
+          win._setEventHandler(type, v);
+        } else {
+          origSet.call(this, v);
+        }
+      }
+    });
+  });
+}(htmlNameToImpl.body));
+
 define({
   tag: 'button',
   ctor: function HTMLButtonElement(doc, localName, prefix) {
@@ -424,10 +460,53 @@ define({
   }
 });
 
+// HTMLFormControlsCollection named properties: elements.q is the control named q.
+function namedControlList(list) {
+  if (!list || typeof Proxy !== 'function') return list;
+  function matches(el, prop) {
+    if (!el || typeof el.getAttribute !== 'function') return false;
+    return el.getAttribute('name') === prop || el.id === prop;
+  }
+  function collect(prop) {
+    var found = [];
+    for (var i = 0; i < list.length; i++) {
+      if (matches(list[i], prop)) found.push(list[i]);
+    }
+    if (!found.length) return undefined;
+    if (found.length === 1) return found[0];
+    return found;
+  }
+  return new Proxy(list, {
+    get: function(target, prop, receiver) {
+      if (prop === 'namedItem') {
+        return function(name) {
+          var hit = collect(String(name));
+          return hit === undefined ? null : hit;
+        };
+      }
+      if (typeof prop !== 'string' || prop in target) {
+        return Reflect.get(target, prop, receiver);
+      }
+      var hit = collect(prop);
+      if (hit !== undefined) return hit;
+      return Reflect.get(target, prop, receiver);
+    }
+  });
+}
+
 define({
   tag: 'form',
   ctor: function HTMLFormElement(doc, localName, prefix) {
     HTMLElement.call(this, doc, localName, prefix);
+  },
+  props: {
+    elements: { get: function() {
+      // Listed controls, with legacy named access (form.elements.q).
+      return namedControlList(this.querySelectorAll(
+        'button, fieldset, input, object, output, select, textarea'));
+    }},
+    // HTMLElement.submit throws NotYetImplemented. A no-op keeps page scripts alive.
+    submit: { value: function() {} },
   },
   attributes: {
     action: String,
@@ -442,6 +521,33 @@ define({
     encoding: {name: 'enctype', type: ["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"], invalid: "application/x-www-form-urlencoded", missing: "application/x-www-form-urlencoded" },
   }
 });
+
+// form.q → the control named "q" (legacy named property on HTMLFormElement).
+(function installFormNamedGetter(Form) {
+  if (!Form || typeof Proxy !== 'function') return;
+  var busy = typeof WeakSet === 'function' ? new WeakSet() : null;
+  Form.prototype = new Proxy(Form.prototype, {
+    get: function(target, prop, receiver) {
+      if (typeof prop !== 'string' || (busy && busy.has(receiver))) {
+        return Reflect.get(target, prop, receiver);
+      }
+      if (prop in target) return Reflect.get(target, prop, receiver);
+      if (!receiver || typeof receiver.getElementsByName !== 'function') {
+        return Reflect.get(target, prop, receiver);
+      }
+      if (busy) busy.add(receiver);
+      try {
+        var named = receiver.getElementsByName(prop);
+        if (named && named.length) return named[0];
+      } catch (e) {
+        /* fall through */
+      } finally {
+        if (busy) busy.delete(receiver);
+      }
+      return Reflect.get(target, prop, receiver);
+    }
+  });
+}(htmlNameToImpl.form));
 
 define({
   tag: 'hr',

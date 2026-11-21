@@ -90,3 +90,17 @@ FilteredElementList.prototype = Object.create(Object.prototype, {
     return null;
   } },
 });
+
+// HTMLCollection is iterable in browsers. Live lists from getElementsBy* are too.
+if (typeof Symbol === 'function' && Symbol.iterator) {
+  FilteredElementList.prototype[Symbol.iterator] = function() {
+    var list = this;
+    var i = 0;
+    return {
+      next: function() {
+        if (i >= list.length) return { done: true, value: undefined };
+        return { done: false, value: list.item(i++) };
+      }
+    };
+  };
+}

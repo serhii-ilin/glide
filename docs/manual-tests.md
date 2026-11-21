@@ -13,13 +13,15 @@ Each row names the feature it covers.
 | M-005 | F-005 | Open a long page. Click the page (not the address bar). Press Space several times | Viewport scrolls down |
 | M-006 | F-005 | Same page, press Shift+Space, PgUp, PgDn, Home, End, and arrow keys with no text field focused | Page scrolls in the matching direction |
 | M-007 | F-005 | With the address bar focused, press Space | A space is typed; the page does not scroll |
-| M-008 | F-005 | Press Cmd/Ctrl+L | Address bar receives focus |
+| M-008 | F-005, F-006 | Press Cmd/Ctrl+L | Address bar receives focus and its text is selected; the next typed character replaces the URL |
 | M-009 | F-005 | Visit two URLs, press Alt+Left and Alt+Right (Option+arrows on macOS) | Back and forward navigate history |
 | M-010 | F-005 | Press Cmd/Ctrl+[ then Cmd/Ctrl+] | Back then forward |
 | M-011 | F-005 | Press Ctrl+R, F5, and on macOS Cmd+R | Page reloads each time |
 | M-012 | F-005 | Press Cmd/Ctrl+W | Window closes |
 | M-013 | F-005 | Press Cmd/Ctrl+Q | The process exits |
 | M-014 | F-006 | Focus the address bar, type `hello`, Cmd/Ctrl+A, Cmd/Ctrl+C, move caret to end, Cmd/Ctrl+V | Field shows `hellohello` |
+| M-031 | F-006 | Open a page with a paragraph, drag to select a word, press Cmd/Ctrl+C, focus the address bar, Cmd/Ctrl+V | The selected word is pasted into the address bar |
+| M-030 | F-006 | Focus the address bar on a URL, press Cmd+A then Backspace. Separately, click at the end of the URL and press Cmd+Backspace | Both clear the address bar |
 | M-015 | F-006 | On macOS: type `one two`, Option+Left/Right moves by word; Option+Backspace deletes the word before the caret | Caret and text follow macOS editing conventions |
 | M-016 | F-007 | Open `tests/fixtures/input.html`, click the input (a first click on the page may only focus the iframe), type `x` | Characters appear in the page input, not the address bar |
 | M-017 | F-022 | Open `tests/fixtures/js-toggle.html`. Press Cmd/Ctrl+Shift+J twice | After first toggle: toolbar **JS off**, page shows `static` and `no-js-fallback`. After second: **JS on**, page shows `scripted` |

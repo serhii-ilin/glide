@@ -211,18 +211,55 @@
     }
   }
 
+  // Form controls built from the Blitz snapshot never go through domino's parser,
+  // which is the only place that used to set `_form`. `input.form` stayed null,
+  // so `form.q` threw.
+  const FORM_ASSOCIATED = new Set([
+    'button', 'fieldset', 'input', 'object', 'output', 'select', 'textarea',
+  ]);
+
+  function formOwner(el, detached) {
+    if (!el || el.nodeType !== 1) return null;
+    if (typeof el.hasAttribute === 'function' && el.hasAttribute('form')) {
+      const id = el.getAttribute('form');
+      const doc = el.ownerDocument;
+      const byId = doc && id && typeof doc.getElementById === 'function'
+        ? doc.getElementById(id) : null;
+      return byId && byId.localName === 'form' ? byId : null;
+    }
+    if (detached) return null;
+    for (let n = el.parentNode; n; n = n.parentNode) {
+      if (n.nodeType === 1 && n.localName === 'form') return n;
+    }
+    return null;
+  }
+
+  function assignFormOwners(root, detached) {
+    if (!root) return;
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === 1 && FORM_ASSOCIATED.has(node.localName)) {
+        node._form = formOwner(node, detached);
+      }
+      for (let c = node.firstChild; c; c = c.nextSibling) walk(c);
+    };
+    walk(root);
+  }
+
   function onMutation(rec) {
     if (!mirroringEnabled || !rec) return;
     remirrorSkipped();
     switch (rec.type) {
       case MUTATE.INSERT: {
         if (!rec.node || nodeToBlitz.get(rec.node) != null) return;
+        assignFormOwners(rec.node, false);
         subtreeOps(rec.target, followingRef(rec.node), rec.node, pendingBatch);
         break;
       }
       case MUTATE.REMOVE: {
         const node = rec.node;
         if (!node) return;
+        assignFormOwners(node, true);
         const ref = refOf(node);
         forgetSubtree(node);
         if (ref != null) pendingBatch.push({ t: 'remove', id: ref });
@@ -230,6 +267,7 @@
       }
       case MUTATE.MOVE: {
         const node = rec.target;
+        assignFormOwners(node, false);
         const id = refOf(node);
         const parent = refOf(node && node.parentNode);
         if (id == null || parent == null) return;
@@ -240,10 +278,12 @@
         break;
       }
       case MUTATE.ATTR: {
-        const ref = refOf(rec.target);
-        if (ref == null) return;
         const a = rec.attr;
         const name = a.localName || a.name;
+        const aname = String(name || '').toLowerCase();
+        if (aname === 'form') assignFormOwners(rec.target, false);
+        const ref = refOf(rec.target);
+        if (ref == null) return;
         pendingBatch.push({
           t: 'attr',
           id: ref,
@@ -251,16 +291,16 @@
           value: a.value,
           ns: a.namespaceURI || null,
         });
-        const aname = String(name || '').toLowerCase();
         if (aname.startsWith('on')) applyOnAttribute(rec.target, aname, a.value);
         break;
       }
       case MUTATE.REMOVE_ATTR: {
+        const name = rec.attr.localName || rec.attr.name;
+        const aname = String(name || '').toLowerCase();
+        if (aname === 'form') assignFormOwners(rec.target, false);
         const ref = refOf(rec.target);
         if (ref == null) return;
-        const name = rec.attr.localName || rec.attr.name;
         pendingBatch.push({ t: 'attr', id: ref, name, value: null, ns: rec.attr.namespaceURI || null });
-        const aname = String(name || '').toLowerCase();
         if (aname.startsWith('on')) {
           const type = aname.slice(2);
           const win = rec.target.ownerDocument && rec.target.ownerDocument.defaultView;
@@ -807,6 +847,7 @@
       const built = buildFromSnapshot(child, pageDocument);
       if (built && built !== pageDocument) pageDocument.appendChild(built);
     }
+    assignFormOwners(pageDocument, false);
     mergeDominoWindowOntoGlobal(domWin);
     pageDocument._setMutationHandler(onMutation);
     Object.defineProperty(pageDocument, 'defaultView', {

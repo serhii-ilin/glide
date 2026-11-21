@@ -2,15 +2,15 @@
 //! and forwarding keys into the page `<iframe>` when it has focus.
 //!
 //! Blitz deliberately handles `Backspace` only through Apple's standard keybinding
-//! callbacks on macOS (see `blitz-dom` `TextInputData::apply_keypress_event`). Some
-//! embedder setups never receive those callbacks reliably, and keyboard events are not
-//! forwarded into iframe sub-documents. Glide closes both gaps here.
+//! callbacks on macOS (see `blitz-dom` `TextInputData::apply_keypress_event`). Copy,
+//! cut, and paste need a character key (`c` / `x` / `v`) plus the platform action
+//! modifier, which macOS does not always put on the key event when Command is held.
+//! Glide synthesizes those editing keys and forwards them into iframe sub-documents.
 
 use blitz_dom::BaseDocument;
 #[cfg(target_os = "macos")]
 use blitz_dom::Document;
 use blitz_shell::View;
-#[cfg(target_os = "macos")]
 use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, KeyState, UiEvent};
 use keyboard_types::{Code, Key, Modifiers, NamedKey};
@@ -123,10 +123,27 @@ pub fn macos_standard_keybinding(code: KeyCode, modifiers: ModifiersState) -> Op
     if modifiers.control_key() || modifiers.meta_key() {
         match code {
             KeyCode::KeyZ if !modifiers.shift_key() => return None, // undo not implemented in Blitz
-            KeyCode::KeyA | KeyCode::KeyC | KeyCode::KeyV | KeyCode::KeyX
-                if !modifiers.shift_key() =>
+            KeyCode::KeyA if !modifiers.shift_key() && !modifiers.alt_key() => {
+                return Some("selectAll:");
+            }
+            KeyCode::Backspace
+                if modifiers.meta_key()
+                    && !modifiers.control_key()
+                    && !modifiers.shift_key()
+                    && !modifiers.alt_key() =>
             {
-                return None; // clipboard / select-all via KeyDown in Blitz
+                return Some("deleteToBeginningOfLine:");
+            }
+            KeyCode::Delete
+                if modifiers.meta_key()
+                    && !modifiers.control_key()
+                    && !modifiers.shift_key()
+                    && !modifiers.alt_key() =>
+            {
+                return Some("deleteToEndOfLine:");
+            }
+            KeyCode::KeyC | KeyCode::KeyV | KeyCode::KeyX if !modifiers.shift_key() => {
+                return None; // copy, cut, and paste are sent as character keys below
             }
             KeyCode::ArrowLeft if modifiers.shift_key() => {
                 return Some("moveToBeginningOfLineAndModifySelection:");
@@ -190,6 +207,72 @@ pub fn macos_standard_keybinding(code: KeyCode, modifiers: ModifiersState) -> Op
     }
 
     None
+}
+
+/// `c`, `x`, or `v` when the key is the platform copy / cut / paste shortcut.
+fn clipboard_character(code: KeyCode, modifiers: ModifiersState) -> Option<char> {
+    if modifiers.alt_key() || modifiers.shift_key() {
+        return None;
+    }
+    let primary = if cfg!(target_os = "macos") {
+        modifiers.meta_key() ^ modifiers.control_key()
+    } else {
+        modifiers.control_key() && !modifiers.meta_key()
+    };
+    if !primary {
+        return None;
+    }
+    match code {
+        KeyCode::KeyC => Some('c'),
+        KeyCode::KeyX => Some('x'),
+        KeyCode::KeyV => Some('v'),
+        _ => None,
+    }
+}
+
+fn action_mod() -> Modifiers {
+    #[cfg(target_os = "macos")]
+    {
+        Modifiers::META
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Modifiers::CONTROL
+    }
+}
+
+fn clipboard_key_event(ch: char) -> BlitzKeyEvent {
+    let mut modifiers = Modifiers::default();
+    modifiers.insert(action_mod());
+    let code = match ch {
+        'c' => Code::KeyC,
+        'x' => Code::KeyX,
+        'v' => Code::KeyV,
+        _ => Code::Unidentified,
+    };
+    BlitzKeyEvent {
+        key: Key::Character(ch.to_string()),
+        code,
+        modifiers,
+        location: keyboard_types::Location::Standard,
+        is_auto_repeating: false,
+        is_composing: false,
+        state: KeyState::Pressed,
+        text: None,
+    }
+}
+
+/// Copy, cut, or paste in `doc` from the physical key, ignoring the logical key.
+pub(crate) fn apply_clipboard_shortcut(
+    doc: &mut BaseDocument,
+    code: KeyCode,
+    modifiers: ModifiersState,
+) -> bool {
+    let Some(ch) = clipboard_character(code, modifiers) else {
+        return false;
+    };
+    doc.handle_ui_event(UiEvent::KeyDown(clipboard_key_event(ch)));
+    true
 }
 
 fn winit_modifiers_to_kbt(modifiers: ModifiersState) -> Modifiers {
@@ -296,6 +379,18 @@ pub(crate) fn forward_page_iframe_key(
     if pressed && browser_shortcut(code, modifiers, false, false).is_some() {
         return Some(false);
     }
+    if pressed && clipboard_character(code, modifiers).is_some() {
+        let page_id = page_iframe_id(chrome).expect("page iframe is focused");
+        let Some(sub) = chrome
+            .get_node_mut(page_id)
+            .and_then(|node| node.subdoc_mut())
+        else {
+            return Some(false);
+        };
+        let mut inner = sub.inner_mut();
+        apply_clipboard_shortcut(&mut inner, code, modifiers);
+        return Some(true);
+    }
     let page_id = page_iframe_id(chrome).expect("page iframe is focused");
     let Some(sub) = chrome
         .get_node_mut(page_id)
@@ -363,6 +458,16 @@ pub fn dispatch_text_keys<Rend: WindowRenderer>(view: &mut View<Rend>, event: &K
     let PhysicalKey::Code(code) = event.physical_key else {
         return false;
     };
+    {
+        let mut guard = view.doc.inner_mut();
+        let chrome = &mut *guard;
+        let text_focused = chrome
+            .get_focussed_node_id()
+            .is_some_and(|id| node_is_text_input(chrome, id));
+        if text_focused && apply_clipboard_shortcut(chrome, code, modifiers) {
+            return true;
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         let mut guard = view.doc.inner_mut();
@@ -513,11 +618,17 @@ pub fn dispatch_find_field_keys(
     }
 }
 
-/// Focus the chrome address field (`#url`).
+/// Focus the chrome address field (`#url`) and select its text.
 pub fn focus_address_bar<Rend: WindowRenderer>(view: &mut View<Rend>) {
     let mut doc = view.doc.inner_mut();
+    focus_address_field(&mut doc);
+}
+
+/// Focus `#url` and select the whole value so the next key replaces it.
+pub fn focus_address_field(doc: &mut BaseDocument) {
     if let Some(id) = doc.get_element_by_id("url") {
         doc.set_focus_to(id);
+        doc.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new("selectAll:")));
     }
 }
 
@@ -1087,6 +1198,25 @@ mod tests {
                 Some("moveToEndOfLineAndModifySelection:"),
             ),
             ("Cmd+C passthrough", KeyCode::KeyC, cmd, None),
+            ("Cmd+A select all", KeyCode::KeyA, cmd, Some("selectAll:")),
+            (
+                "Ctrl+A select all",
+                KeyCode::KeyA,
+                mods(true, false, false, false),
+                Some("selectAll:"),
+            ),
+            (
+                "Cmd+Backspace delete to start",
+                KeyCode::Backspace,
+                cmd,
+                Some("deleteToBeginningOfLine:"),
+            ),
+            (
+                "Cmd+Delete delete to end",
+                KeyCode::Delete,
+                cmd,
+                Some("deleteToEndOfLine:"),
+            ),
         ];
 
         for &(row, code, modifiers, expected) in rows {
@@ -1248,6 +1378,197 @@ mod tests {
             Some("hello "),
             "address bar value after word Backspace"
         );
+    }
+
+    #[test]
+    fn headless_address_bar_select_all_then_backspace_clears() {
+        let mut doc = chrome_test_document();
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.with_text_input(url_id, |mut driver| {
+            driver.editor.set_text("https://example.com/path");
+            driver.refresh_layout();
+        });
+        let primary = if cfg!(target_os = "macos") {
+            mods(false, false, false, true)
+        } else {
+            mods(true, false, false, false)
+        };
+        press_editing_key(&mut doc, KeyCode::KeyA, primary);
+        press_editing_key(&mut doc, KeyCode::Backspace, ModifiersState::empty());
+        assert_eq!(
+            text_value_in_doc(&doc, "url").as_deref(),
+            Some(""),
+            "select all then Backspace clears the address bar"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn headless_address_bar_cmd_backspace_clears_the_line() {
+        let mut doc = chrome_test_document();
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.with_text_input(url_id, |mut driver| {
+            driver.editor.set_text("https://example.com/path");
+            driver.refresh_layout();
+        });
+        press_editing_key(
+            &mut doc,
+            KeyCode::ArrowRight,
+            mods(false, false, false, true),
+        );
+        press_editing_key(
+            &mut doc,
+            KeyCode::Backspace,
+            mods(false, false, false, true),
+        );
+        assert_eq!(
+            text_value_in_doc(&doc, "url").as_deref(),
+            Some(""),
+            "Cmd+Backspace removes the address bar line"
+        );
+    }
+
+    fn primary_mods() -> ModifiersState {
+        if cfg!(target_os = "macos") {
+            mods(false, false, false, true)
+        } else {
+            mods(true, false, false, false)
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryClipboard {
+        text: std::sync::Mutex<String>,
+    }
+
+    impl MemoryClipboard {
+        fn text(&self) -> String {
+            self.text.lock().expect("clipboard lock").clone()
+        }
+
+        fn set(&self, text: &str) {
+            *self.text.lock().expect("clipboard lock") = text.to_string();
+        }
+    }
+
+    impl blitz_traits::shell::ShellProvider for MemoryClipboard {
+        fn set_clipboard_text(
+            &self,
+            text: String,
+        ) -> Result<(), blitz_traits::shell::ClipboardError> {
+            *self.text.lock().expect("clipboard lock") = text;
+            Ok(())
+        }
+
+        fn get_clipboard_text(&self) -> Result<String, blitz_traits::shell::ClipboardError> {
+            Ok(self.text.lock().expect("clipboard lock").clone())
+        }
+    }
+
+    #[test]
+    fn headless_address_bar_copy_and_paste() {
+        let clip = std::sync::Arc::new(MemoryClipboard::default());
+        let mut doc = chrome_test_document();
+        doc.set_shell_provider(clip.clone());
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.with_text_input(url_id, |mut driver| {
+            driver.editor.set_text("https://example.com/path");
+            driver.refresh_layout();
+        });
+        focus_address_field(&mut doc);
+        assert!(apply_clipboard_shortcut(
+            &mut doc,
+            KeyCode::KeyC,
+            primary_mods()
+        ));
+        assert_eq!(clip.text(), "https://example.com/path");
+        clip.set("pasted");
+        assert!(apply_clipboard_shortcut(
+            &mut doc,
+            KeyCode::KeyV,
+            primary_mods()
+        ));
+        assert_eq!(text_value_in_doc(&doc, "url").as_deref(), Some("pasted"));
+    }
+
+    #[test]
+    fn headless_page_input_copy_ignores_unidentified_logical_key() {
+        let clip = std::sync::Arc::new(MemoryClipboard::default());
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        doc.set_shell_provider(clip.clone());
+        layout_doc(&mut doc);
+        let page_id = doc.get_element_by_id("page").expect("page iframe");
+        {
+            let mut m = doc.mutate();
+            m.set_attribute(page_id, qual_name!("srcdoc"), PAGE_INPUT_FIXTURE);
+        }
+        layout_doc(&mut doc);
+        let field_id = doc
+            .get_element_by_id("page")
+            .and_then(|id| doc.get_node(id))
+            .and_then(|n| n.subdoc())
+            .and_then(|sub| sub.inner().get_element_by_id("field"))
+            .expect("field input in iframe srcdoc");
+        doc.set_focus_to(page_id);
+        if let Some(sub) = doc.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
+            let mut inner = sub.inner_mut();
+            inner.set_focus_to(field_id);
+            inner.with_text_input(field_id, |mut driver| {
+                driver.editor.set_text("from the page");
+                driver.refresh_layout();
+            });
+            inner.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new("selectAll:")));
+        }
+        let event = test_key_event(
+            KeyCode::KeyC,
+            ElementState::Pressed,
+            WinitKey::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        );
+        assert_eq!(
+            forward_page_iframe_key(&mut doc, &event, primary_mods()),
+            Some(true)
+        );
+        assert_eq!(clip.text(), "from the page");
+    }
+
+    #[test]
+    fn headless_page_selection_copy() {
+        let clip = std::sync::Arc::new(MemoryClipboard::default());
+        let mut doc = parse::document_from_html(
+            "<!DOCTYPE html><p id=\"t\">Hello page</p>",
+            test_document_config(),
+            true,
+        );
+        doc.set_shell_provider(clip.clone());
+        layout_doc(&mut doc);
+        let id = doc.get_element_by_id("t").expect("paragraph");
+        let selected = doc
+            .get_node(id)
+            .and_then(|node| node.element_data())
+            .and_then(|el| el.inline_layout_data.as_ref())
+            .map(|layout| layout.text.len())
+            .unwrap_or(0);
+        doc.set_text_selection(id, 0, id, selected);
+        assert!(apply_clipboard_shortcut(
+            &mut doc,
+            KeyCode::KeyC,
+            primary_mods()
+        ));
+        assert_eq!(clip.text(), "Hello page");
+    }
+
+    #[test]
+    fn focus_address_field_selects_text_so_backspace_clears_it() {
+        let mut doc = chrome_test_document();
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.with_text_input(url_id, |mut driver| {
+            driver.editor.set_text("https://example.com/path");
+            driver.refresh_layout();
+        });
+        focus_address_field(&mut doc);
+        press_editing_key(&mut doc, KeyCode::Backspace, ModifiersState::empty());
+        assert_eq!(text_value_in_doc(&doc, "url").as_deref(), Some(""));
     }
 
     const PAGE_INPUT_FIXTURE: &str = include_str!("../tests/fixtures/input.html");

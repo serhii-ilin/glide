@@ -18,9 +18,10 @@ Window.prototype = Object.create(EventTarget.prototype, {
   _run: { value: sloppy.Window_run },
   console: { value: console },
   history: { value: {
-    back: utils.nyi,
-    forward: utils.nyi,
-    go: utils.nyi
+    length: 1,
+    back: function() {},
+    forward: function() {},
+    go: function() {}
   }},
   navigator: { value: require("./NavigatorID") },
 

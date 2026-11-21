@@ -40,10 +40,13 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Space / Shift+Space / PgUp / PgDn / Home / End / arrows | Scroll the page when no text field is focused |
 
 Text fields (address bar and in-page inputs) use normal editing shortcuts: Backspace and
-Delete, arrows, Home/End, Shift+selection, Cmd/Ctrl+C/X/V, and Cmd/Ctrl+A. On macOS,
-Option+Left/Right moves by word; Glide synthesizes Apple's standard keybindings for
-Backspace because Blitz's text editor expects them on that platform. Keys are forwarded
-into the page `<iframe>` when it has focus.
+Delete, arrows, Home/End, Shift+selection, Cmd/Ctrl+C/X/V, and Cmd/Ctrl+A (select all).
+Selecting text on the page and pressing Cmd/Ctrl+C copies that selection.
+Cmd+L focuses the address bar and selects its text, so the next key replaces the URL.
+On macOS, Cmd+Backspace deletes back to the start of the line and Cmd+Delete (forward
+delete) deletes to the end; Option+Left/Right moves by word. Glide synthesizes Apple's
+standard keybindings because Blitz's text editor expects them on that platform. Keys are
+forwarded into the page `<iframe>` when it has focus.
 
 The first release build compiles Stylo and Vello, so it takes a while. Later builds are incremental.
 
@@ -121,7 +124,7 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 - http, https, and file pages, plus stylesheets, images, and web fonts.
 - Link clicks, in-page fragment jumps, scrolling, text selection, and form controls that Blitz implements (the address bar is one of those).
 - Back, forward, and reload. Redirects replace the current history entry. A link click pushes a new one.
-- Loading indicator, stop (Esc or the toolbar **Stop** button while a page is loading), and a readable error page when a page fails to load. **Retry** on the error page reloads the same URL.
+- Loading indicator, stop (Esc or the toolbar **Stop** button while a page is loading), and a readable error page when a page fails to load. **Retry** on the error page reloads the same URL. HTTP redirects (301, 302, 303, 307, 308, a `Refresh` header, and a zero-delay `<meta http-equiv="refresh">`) are followed and the address bar shows the final URL. A refresh that sits only inside `<noscript>` is followed when that is the page's only content. A 4xx or 5xx response with a body is shown as that page; an empty error status or a host that cannot be reached still uses Glide's error page.
 - Page zoom (30%–300%) and find-in-page with match highlight and scroll-into-view. Zoom level persists across restarts.
 - Settings (JS on/off, zoom), session restore, bookmark star, `glide://bookmarks`, and an append-only history log on disk. Cookie jar for the current run only.
 - System fonts through Parley.

@@ -258,13 +258,37 @@ impl GlideNet {
                     state.mark_page_load_succeeded(&original_url);
                     handler.bytes(url, bytes)
                 }
-                Err(ProviderError::Abort) => drop(handler),
-                Err(err) => {
+                Err(LoadFail::Abort) => drop(handler),
+                Err(LoadFail::Failed(reason)) => {
                     state.mark_page_load_failed(&original_url);
-                    let reason = provider_error_reason(&err);
                     let html = error_page_html(&original_url, &reason);
                     handler.bytes(original_url, Bytes::from(html));
                 }
+            }
+        });
+    }
+
+    fn fetch_http_subresource(
+        &self,
+        doc_id: usize,
+        request: Request,
+        handler: Box<dyn NetHandler>,
+    ) {
+        self.state.subresource_started();
+        let state = self.state.clone();
+        let waker = self.waker.clone();
+        let wrapped = Box::new(SubresourceHandler {
+            state,
+            inner: Some(handler),
+            waker,
+            doc_id,
+        });
+        tokio::spawn(async move {
+            match crate::http::fetch_followed(request).await {
+                Ok(resp) if (200..300).contains(&resp.status) => {
+                    wrapped.bytes(resp.url, resp.body);
+                }
+                _ => drop(wrapped),
             }
         });
     }
@@ -294,6 +318,11 @@ impl NetProvider for GlideNet {
 
         if request.url.scheme() == "glide" {
             drop(handler);
+            return;
+        }
+
+        if crate::http::is_navigable_http(&request) {
+            self.fetch_http_subresource(doc_id, request, handler);
             return;
         }
 
@@ -345,6 +374,11 @@ impl Drop for SubresourceHandler {
     }
 }
 
+enum LoadFail {
+    Abort,
+    Failed(String),
+}
+
 async fn fetch_racing_aborts(
     provider: &Provider,
     request: Request,
@@ -352,12 +386,12 @@ async fn fetch_racing_aborts(
     glide_signal: &AbortSignal,
     cancel_notify: &Notify,
     test_delay_ms: usize,
-) -> Result<(String, Bytes), ProviderError> {
+) -> Result<(String, Bytes), LoadFail> {
     let fetch_fut = page_fetch(provider, request, test_delay_ms);
     tokio::pin!(fetch_fut);
     tokio::select! {
         res = &mut fetch_fut => res,
-        () = wait_for_cancel(blitz, glide_signal, cancel_notify) => Err(ProviderError::Abort),
+        () = wait_for_cancel(blitz, glide_signal, cancel_notify) => Err(LoadFail::Abort),
     }
 }
 
@@ -365,11 +399,21 @@ async fn page_fetch(
     provider: &Provider,
     request: Request,
     test_delay_ms: usize,
-) -> Result<(String, Bytes), ProviderError> {
+) -> Result<(String, Bytes), LoadFail> {
     if test_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
     }
-    provider.fetch_async(request).await
+    if crate::http::is_navigable_http(&request) {
+        return match crate::http::fetch_document(request).await {
+            crate::http::DocumentFetch::Page { url, body } => Ok((url, body)),
+            crate::http::DocumentFetch::Failed { reason, .. } => Err(LoadFail::Failed(reason)),
+        };
+    }
+    match provider.fetch_async(request).await {
+        Ok(pair) => Ok(pair),
+        Err(ProviderError::Abort) => Err(LoadFail::Abort),
+        Err(err) => Err(LoadFail::Failed(provider_error_reason(&err))),
+    }
 }
 
 async fn wait_for_cancel(

@@ -2,6 +2,7 @@
 name = "glide"
 version = "0.1.0"
 edition = "2024"
+default-run = "glide"
 license = "Apache-2.0"
 description = "A small desktop web browser"
 readme = "README.md"

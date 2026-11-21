@@ -3,7 +3,7 @@
 This file is the single record of what Glide must do (requirements, `R-xxx`) and what it
 does or will do (features, `F-xxx`). Rules for keeping it current are in `AGENTS.md`.
 
-Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `removed`
+Status: `planned` · `in-progress` · `done` · `partial` · `deferred` (with reason) · `removed`
 
 ## Milestones
 
@@ -59,7 +59,7 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | F-030 | WPT CSS reftest pixel diffs | deferred | R-012 | `docs/compat/REPORT.md` | 31/99 reftests exceed 0.1% / channel 16 tolerance |
 | F-031 | WPT testharness `dom/nodes` measurable | done | R-014 | `docs/compat/REPORT.md`, `docs/DECISIONS.md`, `tests/compat_dom_nodes.rs`, `tests/compat_runner.rs`, `js::integration::*` | Release 2026-11-20: 12/28 files fully pass; 636/969 subtests (65.6%). The 8 files with no subtest results each count as one failed subtest. `tests/compat_dom_nodes.rs` gates the same set at ≥10 files and ≥50% |
 | F-036 | Domino page DOM + Blitz mirroring | done | R-014 | `src/js/snapshot.rs`, `src/js/batch.rs`, `src/js/dom-glue.js`, `src/js/vendor/domino.js`, `js::integration::*`, `tests/headless_js.rs`, `tests/compat_dom_nodes.rs` | One mutation batch per task (client ids for nodes created in the batch); SVG/MathML namespaces round-trip; `globalThis` is the window |
-| F-034 | `document.write` | done | R-014 | `src/js/dom-glue.js`, `tests/headless_js.rs::document_write_inserts_after_current_script`, `docs/compat/REPORT.md` | Inserts after `document.currentScript` during the initial scripts; replaces the document after load. Inline scripts in the written markup run; external `src` scripts do not |
+| F-034 | `document.write` | done | R-014 | `src/js/dom-glue.js`, `tests/headless_js.rs::{document_write_inserts_after_current_script,async_document_write_does_not_wipe_the_page}`, `docs/compat/REPORT.md` | Inserts after `document.currentScript` during a classic parser script. Async and defer writes are ignored. After load, writes from timers and event handlers replace the document. Inline scripts in the written markup run; external `src` scripts do not |
 | F-032 | Missing Web APIs and DOM bindings | deferred | R-012 | `tests/compat/probe.html`, `docs/compat/REPORT.md` | Probe 36/58 available, including `DOMParser`, `URL`, `URLSearchParams`, and `getComputedStyle`. 22 still missing, including `localStorage`, `MutationObserver`, observers, and storage/network host APIs. `Range` is also absent (F-037) |
 | F-033 | Acid2/Acid3 layout and JS test gaps | partial | R-014 | `docs/compat/REPORT.md`, `tests/compat_dom_nodes.rs` | Acid3 with JS is 33/100 (R-014 floor is 15). Acid2 reftest still differs (~3.7% pixel diff). Acid1 stays unreachable (HTTP 403) |
 | F-035 | T9a DOM library selection (domino / linkedom / happy-dom spike) | done | R-012 | `docs/dom-library-spike.md`, `scripts/dom-spike/run.mjs`, `scripts/dom-spike/tests/fork-timeout.test.mjs`, `tests/dom_spike.rs` | Recommends **domino** (multi-file vendoring); T9b in F-036 |

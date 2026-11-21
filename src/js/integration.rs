@@ -234,6 +234,8 @@ fn tree_walker_walks_elements() {
 
 #[test]
 fn inline_handler_does_not_leak_parameter_names() {
+    // `element` is not a parameter. `defaultView` resolves through `with (document)`.
+    // `form` is the button's form property, which is null (`typeof null` is "object").
     let html = r#"<!DOCTYPE html><html><body>
       <button id="b" onclick="document.getElementById('t').textContent =
         (typeof element)+':'+(typeof defaultView)+':'+(typeof form)+':'+(this.id)"></button>
@@ -241,7 +243,7 @@ fn inline_handler_does_not_leak_parameter_names() {
       <script>document.getElementById('b').click();</script>
     </body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(200));
-    assert_eq!(result.final_text, "undefined:undefined:undefined:b");
+    assert_eq!(result.final_text, "undefined:object:object:b");
 }
 
 #[test]

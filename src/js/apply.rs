@@ -37,7 +37,8 @@ fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::PageUrl { reply }
         | DomRequest::Navigate { reply, .. }
         | DomRequest::ListenTarget { reply, .. }
-        | DomRequest::NodeCount { reply } => *reply,
+        | DomRequest::NodeCount { reply }
+        | DomRequest::TestResize { reply, .. } => *reply,
     }
 }
 
@@ -81,6 +82,17 @@ fn apply_inner(
             reply,
             DomValue::Number(super::batch::live_node_count(doc) as f64),
         ),
+        DomRequest::TestResize {
+            width,
+            height,
+            reply,
+        } => {
+            {
+                let mut viewport = doc.viewport_mut();
+                viewport.window_size = (width, height);
+            }
+            DomResponse::ok(reply, DomValue::Null)
+        }
         DomRequest::Fetch { url, reply } => {
             if let Some(body) = data_url_body(&url) {
                 return DomResponse::ok(reply, DomValue::String(body));

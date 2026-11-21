@@ -16,14 +16,20 @@
   let microtaskQueue = [];
 
   function runMicrotasks() {
+    let ran = false;
     while (microtaskQueue.length) {
+      ran = true;
       const jobs = microtaskQueue.slice();
       microtaskQueue = [];
       jobs.forEach((j) => {
         try { j(); } catch (e) { console.error(e); }
       });
     }
-    if (global.__glide_flush_dom) global.__glide_flush_dom();
+    return ran;
+  }
+
+  function beginTask() {
+    if (typeof global.__glide_begin_task === 'function') global.__glide_begin_task();
   }
 
   global.queueMicrotask = function (fn) {
@@ -57,6 +63,7 @@
     nowMs = now;
     timers.forEach((t, id) => {
       if (!t || t.at > now) return;
+      beginTask();
       try { t.fn(); } catch (e) { console.error(e); }
       if (t.kind === 'interval') {
         t.at = now + t.interval;
@@ -71,6 +78,7 @@
     const jobs = rafQueue.slice();
     rafQueue = [];
     jobs.forEach((fn) => {
+      beginTask();
       try { fn(nowMs); } catch (e) { console.error(e); }
     });
     runMicrotasks();
@@ -110,5 +118,7 @@
   }
 
   global.__glide_fire_dom_content_loaded = fireLoaded;
-  global.__glide_drain_microtasks = runMicrotasks;
+  global.__glide_drain_microtasks = function () {
+    return runMicrotasks();
+  };
 })(globalThis);

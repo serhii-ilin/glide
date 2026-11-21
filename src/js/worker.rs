@@ -31,6 +31,8 @@ enum WorkerMessage {
     },
     RunScripts {
         sources: Vec<(String, Option<u64>)>,
+        /// `classic`, `defer`, or `async`. Empty means not a parser script.
+        kind: String,
     },
     FireDomContentLoaded,
     Pump {
@@ -65,8 +67,11 @@ impl JsWorker {
         });
     }
 
-    pub fn run_scripts(&self, sources: Vec<(String, Option<u64>)>) {
-        let _ = self.tx.send(WorkerMessage::RunScripts { sources });
+    pub fn run_scripts(&self, sources: Vec<(String, Option<u64>)>, kind: &str) {
+        let _ = self.tx.send(WorkerMessage::RunScripts {
+            sources,
+            kind: kind.to_string(),
+        });
     }
 
     pub fn fire_dom_content_loaded(&self) {
@@ -137,12 +142,14 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let snap = v8::String::new(scope, &snapshot_json).unwrap();
                 let url = v8::String::new(scope, &page_url).unwrap();
                 call_global_fn(scope, "__glide_init_page", &[snap.into(), url.into()]);
-                drain_glide_microtasks(scope);
+                settle_task(scope);
             }
-            WorkerMessage::RunScripts { sources } => {
+            WorkerMessage::RunScripts { sources, kind } => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
+                let kind_s = v8::String::new(scope, &kind).unwrap();
+                call_global_fn(scope, "__glide_set_script_kind", &[kind_s.into()]);
                 for (i, (src, script_id)) in sources.into_iter().enumerate() {
                     if let Some(id) = script_id {
                         let sid = v8::String::new(scope, &id.to_string()).unwrap();
@@ -152,17 +159,17 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                     }
                     run_script_with_timeout(scope, &src, &format!("script-{i}"));
                     call_global_fn(scope, "__glide_set_current_script", &[]);
-                    scope.perform_microtask_checkpoint();
-                    drain_glide_microtasks(scope);
+                    settle_task(scope);
                 }
+                let cleared = v8::String::new(scope, "").unwrap();
+                call_global_fn(scope, "__glide_set_script_kind", &[cleared.into()]);
             }
             WorkerMessage::FireDomContentLoaded => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_fire_dom_content_loaded", &[]);
-                scope.perform_microtask_checkpoint();
-                drain_glide_microtasks(scope);
+                settle_task(scope);
             }
             WorkerMessage::Pump { now_ms } => {
                 v8::scope!(let hs, isolate);
@@ -170,16 +177,14 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 let n = v8::Number::new(scope, now_ms as f64);
                 call_global_fn(scope, "__glide_pump_timers", &[n.into()]);
-                scope.perform_microtask_checkpoint();
-                drain_glide_microtasks(scope);
+                settle_task(scope);
             }
             WorkerMessage::FlushRaf => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_flush_raf", &[]);
-                scope.perform_microtask_checkpoint();
-                drain_glide_microtasks(scope);
+                settle_task(scope);
             }
             WorkerMessage::DispatchBubble { path, event_type } => {
                 v8::scope!(let hs, isolate);
@@ -192,8 +197,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let array = v8::Array::new_with_elements(scope, &ids);
                 let ty = v8::String::new(scope, &event_type).unwrap();
                 call_global_fn(scope, "__glide_dispatch_bubble", &[array.into(), ty.into()]);
-                scope.perform_microtask_checkpoint();
-                drain_glide_microtasks(scope);
+                settle_task(scope);
             }
             WorkerMessage::Shutdown => break,
         }
@@ -226,6 +230,21 @@ fn install_bindings(scope: &mut v8::PinScope<'_, '_>, context: v8::Local<v8::Con
     let url_fn = v8::Function::new(scope, url_parse_callback).expect("url fn");
     let url_key = v8::String::new(scope, "__glide_url_parse").unwrap();
     global.set(scope, url_key.into(), url_fn.into());
+
+    // Debug/test builds only. Release pages have no node-count or resize hook.
+    #[cfg(debug_assertions)]
+    {
+        let hooks = v8::String::new(
+            scope,
+            "globalThis.__glide_node_count=function(){\
+               if(typeof globalThis.__glide_flush_dom==='function')globalThis.__glide_flush_dom();\
+               return __glide_dom_sync('nodeCount',0);};\
+             globalThis.__glide_test_resize=function(w,h){\
+               __glide_dom_sync('testResize',0,String(w),String(h));};",
+        )
+        .expect("test hooks");
+        run_script(scope, hooks, "<test-hooks>");
+    }
 }
 
 fn dom_sync_callback(
@@ -321,9 +340,27 @@ fn map_dom_op(
             url: arg_string(scope, args, 2)?,
             reply,
         },
+        #[cfg(debug_assertions)]
         "nodeCount" => DomRequest::NodeCount { reply },
+        #[cfg(debug_assertions)]
+        "testResize" => DomRequest::TestResize {
+            width: arg_u32(scope, args, 2)?,
+            height: arg_u32(scope, args, 3)?,
+            reply,
+        },
         other => return Err(format!("unknown dom op {other}")),
     })
+}
+
+#[cfg(debug_assertions)]
+fn arg_u32(
+    scope: &v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    idx: i32,
+) -> Result<u32, String> {
+    let text = arg_string(scope, args, idx)?;
+    text.parse::<u32>()
+        .map_err(|_| format!("arg {idx} not a viewport size"))
 }
 
 fn arg_string(
@@ -504,22 +541,33 @@ fn run_script(scope: &mut v8::PinScope<'_, '_>, source: v8::Local<v8::String>, n
     }
 }
 
-fn drain_glide_microtasks(scope: &mut v8::PinScope<'_, '_>) {
-    call_global_fn(scope, "__glide_drain_microtasks", &[]);
+/// Run V8 microtasks and the Glide queue until both are idle, then flush DOM ops.
+fn settle_task(scope: &mut v8::PinScope<'_, '_>) {
+    for _ in 0..32 {
+        scope.perform_microtask_checkpoint();
+        let ran = call_global_fn(scope, "__glide_drain_microtasks", &[])
+            .is_some_and(|value| value.is_true());
+        if !ran {
+            break;
+        }
+    }
+    call_global_fn(scope, "__glide_flush_dom", &[]);
 }
 
-fn call_global_fn(scope: &mut v8::PinScope<'_, '_>, name: &str, argv: &[v8::Local<v8::Value>]) {
+fn call_global_fn<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    name: &str,
+    argv: &[v8::Local<v8::Value>],
+) -> Option<v8::Local<'s, v8::Value>> {
     let context = scope.get_current_context();
     let global = context.global(scope);
     let key = v8::String::new(scope, name).unwrap();
-    let Some(func_val) = global.get(scope, key.into()) else {
-        return;
-    };
+    let func_val = global.get(scope, key.into())?;
     if !func_val.is_function() {
-        return;
+        return None;
     }
     let func = unsafe { v8::Local::<v8::Function>::cast_unchecked(func_val) };
-    let _ = func.call(scope, global.into(), argv);
+    func.call(scope, global.into(), argv)
 }
 
 #[cfg(test)]

@@ -47,8 +47,16 @@ pub enum DomRequest {
         event_type: String,
         reply: u64,
     },
-    /// Test hook: number of live Blitz nodes (version-1 slotmap slots).
+    /// Test hook: number of live Blitz nodes. Dispatched only from debug builds.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     NodeCount {
+        reply: u64,
+    },
+    /// Test hook: resize the viewport without a DOM mutation.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    TestResize {
+        width: u32,
+        height: u32,
         reply: u64,
     },
 }

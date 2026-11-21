@@ -4,7 +4,7 @@
 //! (`cN`) name nodes created earlier in the same batch. Nodes that are removed and
 //! not moved again in the batch are dropped from the slab.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use blitz_dom::node::NodeData;
 use blitz_dom::{BaseDocument, LocalName, QualName, ns};
@@ -92,12 +92,12 @@ pub fn apply_batch(doc: &mut BaseDocument, payload: &str, reply: u64) -> DomResp
             return DomResponse::ok(reply, DomValue::Json(json!({ "ids": {} })));
         }
     };
-    let (keep_ids, keep_cids) = moved_refs(&ops);
+    let later = later_moves(&ops);
     let mut cid_map: HashMap<String, NodeId> = HashMap::new();
     let mut new_ids = serde_json::Map::new();
     let mut logged = false;
-    for op in ops {
-        if let Err(err) = apply_op(doc, op, &mut cid_map, &keep_ids, &keep_cids)
+    for (index, op) in ops.into_iter().enumerate() {
+        if let Err(err) = apply_op(doc, op, index, &later, &mut cid_map)
             && !logged
         {
             logged = true;
@@ -112,30 +112,44 @@ pub fn apply_batch(doc: &mut BaseDocument, payload: &str, reply: u64) -> DomResp
     DomResponse::ok(reply, DomValue::Json(json!({ "ids": new_ids })))
 }
 
-fn moved_refs(ops: &[BatchOp]) -> (HashSet<u64>, HashSet<String>) {
-    let mut ids = HashSet::new();
-    let mut cids = HashSet::new();
-    for op in ops {
+/// Last batch index of a `move` for each node. A later `remove` drops the node;
+/// a `move` after a `remove` only detaches so the move can reinsert it.
+struct LaterMove {
+    ids: HashMap<u64, usize>,
+    cids: HashMap<String, usize>,
+}
+
+fn later_moves(ops: &[BatchOp]) -> LaterMove {
+    let mut ids = HashMap::new();
+    let mut cids = HashMap::new();
+    for (index, op) in ops.iter().enumerate() {
         if let BatchOp::Move { id, .. } = op {
             match id {
                 NodeRef::Id(n) => {
-                    ids.insert(*n);
+                    ids.insert(*n, index);
                 }
                 NodeRef::Cid(c) => {
-                    cids.insert(c.clone());
+                    cids.insert(c.clone(), index);
                 }
             }
         }
     }
-    (ids, cids)
+    LaterMove { ids, cids }
+}
+
+fn moved_again(later: &LaterMove, id: &NodeRef, index: usize) -> bool {
+    match id {
+        NodeRef::Id(n) => later.ids.get(n).is_some_and(|at| *at > index),
+        NodeRef::Cid(c) => later.cids.get(c).is_some_and(|at| *at > index),
+    }
 }
 
 fn apply_op(
     doc: &mut BaseDocument,
     op: BatchOp,
+    index: usize,
+    later: &LaterMove,
     cid_map: &mut HashMap<String, NodeId>,
-    keep_ids: &HashSet<u64>,
-    keep_cids: &HashSet<String>,
 ) -> Result<(), String> {
     match op {
         BatchOp::Insert {
@@ -176,10 +190,7 @@ fn apply_op(
             Ok(())
         }
         BatchOp::Remove { id } => {
-            let keep = match &id {
-                NodeRef::Id(n) => keep_ids.contains(n),
-                NodeRef::Cid(c) => keep_cids.contains(c),
-            };
+            let keep = moved_again(later, &id, index);
             let Some(node) = resolve_ref(doc, cid_map, &id) else {
                 return Ok(());
             };
@@ -232,7 +243,8 @@ fn apply_op(
                     let mut m = doc.mutate();
                     for child in children {
                         let raw = node_to_handle(child);
-                        if keep_ids.contains(&raw) {
+                        let keep = later.ids.get(&raw).is_some_and(|at| *at > index);
+                        if keep {
                             m.remove_node(child);
                         } else {
                             m.remove_and_drop_node(child);
@@ -315,21 +327,10 @@ fn attr_qual(local: &str, ns_url: Option<&str>) -> QualName {
     }
 }
 
-/// Count live nodes whose slotmap version is still 1.
-///
-/// Fresh nodes and nodes that were detached with `remove_node` (never dropped)
-/// keep version 1 and a new index. `remove_and_drop_node` frees the slot, so a
-/// later occupant has a higher version and is not counted. The difference after
-/// a text-replacement loop is the leak.
+/// Number of nodes still stored in the document slab, including detached nodes
+/// that were not dropped.
 pub fn live_node_count(doc: &BaseDocument) -> usize {
-    let mut count = 0usize;
-    for index in 0..16_384u32 {
-        let raw = (1u64 << 32) | u64::from(index);
-        if doc.get_node(NodeId::from_u64(raw)).is_some() {
-            count += 1;
-        }
-    }
-    count
+    doc.tree().len()
 }
 
 pub fn reply_bounding_rect(doc: &mut BaseDocument, raw: u64, reply: u64) -> DomResponse {
@@ -582,6 +583,45 @@ mod tests {
             Some(doc.get_element_by_id("q").unwrap())
         );
         assert_eq!(live_node_count(&doc), before);
+    }
+
+    #[test]
+    fn move_then_remove_drops_the_node() {
+        let mut doc = sample(
+            "<!DOCTYPE html><html><body><div id=\"p\"></div><div id=\"q\"></div></body></html>",
+        );
+        let p = node_to_handle(doc.get_element_by_id("p").unwrap());
+        let q = node_to_handle(doc.get_element_by_id("q").unwrap());
+        let created = apply_batch(
+            &mut doc,
+            &json!([{
+                "t": "insert",
+                "parent": p,
+                "cid": "c1",
+                "kind": "element",
+                "name": "span",
+                "attrs": [["id", "k"]]
+            }])
+            .to_string(),
+            1,
+        );
+        let child_h = ids_of(&created)["c1"].as_u64().unwrap();
+        let before = live_node_count(&doc);
+        apply_batch(
+            &mut doc,
+            &json!([
+                { "t": "move", "id": child_h, "parent": q },
+                { "t": "remove", "id": child_h }
+            ])
+            .to_string(),
+            2,
+        );
+        let child = super::super::bridge::handle_to_node(child_h);
+        assert!(
+            doc.get_node(child).is_none(),
+            "move-then-remove left the node in the slab"
+        );
+        assert!(live_node_count(&doc) < before);
     }
 
     #[test]

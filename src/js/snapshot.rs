@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 
 use super::bridge::node_to_handle;
 
-/// Nested array: `[blitzId, nodeType, nameOrText, attrs|null, children]`.
+/// Nested array: `[blitzId, nodeType, nameOrText, attrs|null, children, ns]`.
+/// The document node adds a doctype record `[name, publicId, systemId]` or null.
 pub fn snapshot_tree(doc: &BaseDocument) -> Value {
     let root = doc.root_node().id;
     snapshot_node(doc, root)
@@ -25,7 +26,10 @@ fn snapshot_node(doc: &BaseDocument, id: NodeId) -> Value {
                 .iter()
                 .map(|c| snapshot_node(doc, *c))
                 .collect();
-            json!([handle, 9, "#document", null, children, null])
+            let doctype = crate::parse::noted_doctype(doc.id())
+                .map(|dt| json!([dt.name, dt.public_id, dt.system_id]))
+                .unwrap_or(Value::Null);
+            json!([handle, 9, "#document", null, children, null, doctype])
         }
         NodeData::Element(el) | NodeData::AnonymousBlock(el) => {
             let tag = el.name.local.to_string();
@@ -74,6 +78,19 @@ mod tests {
         let html = &children[0];
         assert_eq!(html.as_array().unwrap()[1], 1);
         assert_eq!(html.as_array().unwrap()[2], "html");
+        let doctype = arr[6].as_array().expect("doctype");
+        assert_eq!(doctype[0], "html");
+    }
+
+    #[test]
+    fn snapshot_omits_doctype_when_source_has_none() {
+        let doc = parse::document_from_html(
+            "<html><body></body></html>",
+            DocumentConfig::default(),
+            true,
+        );
+        let tree = snapshot_tree(&doc);
+        assert!(tree.as_array().unwrap()[6].is_null());
     }
 
     #[test]

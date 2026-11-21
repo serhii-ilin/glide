@@ -23,6 +23,8 @@
   let writeCursor = null;
   let batchErrorLogged = false;
   let eventPathPatched = false;
+  let scriptKind = '';
+  const skippedInserts = new Set();
   const pendingOnHandlers = [];
   const ranScripts = new WeakSet();
   const handlerCache = new Map();
@@ -94,33 +96,70 @@
     for (let c = node.firstChild; c; c = c.nextSibling) forgetSubtree(c);
   }
 
+  function rooted(node) {
+    let n = node;
+    while (n) {
+      if (n === pageDocument) return true;
+      n = n.parentNode;
+    }
+    return false;
+  }
+
+  function remirrorSkipped() {
+    if (!skippedInserts.size) return;
+    const nodes = Array.from(skippedInserts);
+    skippedInserts.clear();
+    for (const node of nodes) {
+      if (nodeToBlitz.get(node) != null) continue;
+      if (!rooted(node)) continue;
+      const before = pendingBatch.length;
+      subtreeOps(node.parentNode, followingRef(node), node, pendingBatch);
+      if (pendingBatch.length === before && nodeToBlitz.get(node) == null) {
+        skippedInserts.add(node);
+      }
+    }
+  }
+
   function flushMutations() {
+    remirrorSkipped();
     if (!pendingBatch.length) return;
     const ops = pendingBatch;
     pendingBatch = [];
     layoutCache.clear();
-    let resp;
+    const batchCids = [];
+    for (const op of ops) {
+      if (op && typeof op.cid === 'string') batchCids.push(op.cid);
+    }
+    let ids = {};
     try {
-      resp = rpc('batchMutate', JSON.stringify(ops));
+      const resp = rpc('batchMutate', JSON.stringify(ops));
+      ids = (resp && resp.ids) || {};
     } catch (err) {
       if (!batchErrorLogged) {
         batchErrorLogged = true;
         consoleError(err);
       }
-      return;
+      ids = {};
     }
-    const ids = resp && resp.ids;
-    if (!ids) return;
-    for (const cid of Object.keys(ids)) {
+    for (const cid of batchCids) {
       const node = cidMap.get(cid);
-      if (!node) continue;
-      tagBlitz(node, ids[cid]);
       cidMap.delete(cid);
-      nodeToCid.delete(node);
+      if (node) nodeToCid.delete(node);
+      if (ids[cid] != null && node) {
+        tagBlitz(node, ids[cid]);
+        skippedInserts.delete(node);
+      } else if (node && nodeToBlitz.get(node) == null && rooted(node)) {
+        skippedInserts.add(node);
+      }
     }
   }
 
+  function beginTask() {
+    layoutCache.clear();
+  }
+
   function endTask() {
+    layoutCache.clear();
     flushMutations();
     openedThisTask = false;
     writeCursor = null;
@@ -137,9 +176,9 @@
   function subtreeOps(parentNode, before, root, out) {
     if (!root || root.nodeType === 11 || root.nodeType === 9 || root.nodeType === 10) return;
     if (nodeToBlitz.get(root) != null) return;
-    const cid = ensureCid(root);
     const parent = refOf(parentNode);
     if (parent == null) return;
+    const cid = ensureCid(root);
     let kind = 'element';
     let name;
     let text;
@@ -172,6 +211,7 @@
 
   function onMutation(rec) {
     if (!mirroringEnabled || !rec) return;
+    remirrorSkipped();
     switch (rec.type) {
       case MUTATE.INSERT: {
         if (!rec.node || nodeToBlitz.get(rec.node) != null) return;
@@ -330,8 +370,13 @@
     const src = String(code);
     let fn = handlerCache.get(src);
     if (fn) return fn;
+    // arguments[1..3] are document, form, and element. They are not named
+    // parameters, so `element` / `form` / `defaultView` stay unresolved.
     try {
-      fn = new Function('event', src);
+      fn = new Function(
+        'event',
+        'with (arguments[1]) with (arguments[2]) with (arguments[3]) {\n' + src + '\n}',
+      );
     } catch (err) {
       fn = function () { throw err; };
     }
@@ -339,15 +384,54 @@
     return fn;
   }
 
+  function bindInlineHandler(el, inner) {
+    return function (event) {
+      const doc = (this && this.ownerDocument) || pageDocument || global.document;
+      const form = (this && this.form) || {};
+      const element = this && this.nodeType === 1 ? this : {};
+      return inner.call(this, event, doc || {}, form, element);
+    };
+  }
+
   function applyOnAttribute(el, attrName, value) {
     if (!el || !value) return;
     const type = attrName.slice(2).toLowerCase();
-    const handler = compileInlineHandler(value);
+    const handler = bindInlineHandler(el, compileInlineHandler(value));
     if (el.localName === 'body' && BODY_WINDOW_EVENTS.has(type)) {
       const win = (el.ownerDocument && el.ownerDocument.defaultView) || global;
       win._setEventHandler(type, handler);
     } else if (el._setEventHandler) {
       el._setEventHandler(type, handler);
+    }
+  }
+
+  function invokeWindowPhase(event, phase) {
+    const Event = domino.impl.Event;
+    event.eventPhase = phase;
+    event.currentTarget = global;
+    const type = event.type;
+    if (phase !== Event.CAPTURING_PHASE && global._handlers && global._handlers[type]) {
+      const handler = global._handlers[type];
+      let rv;
+      if (typeof handler === 'function') rv = handler.call(global, event);
+      else if (handler && typeof handler.handleEvent === 'function') {
+        rv = handler.handleEvent.call(handler, event);
+      }
+      if (rv === false) event.preventDefault();
+    }
+    const list = global._listeners && global._listeners[type];
+    if (!list) return;
+    const copy = list.slice();
+    for (let i = 0; i < copy.length; i++) {
+      if (event._immediatePropagationStopped) return;
+      const l = copy[i];
+      if ((phase === Event.CAPTURING_PHASE && !l.capture) ||
+          (phase === Event.BUBBLING_PHASE && l.capture)) continue;
+      if (l.once) global.removeEventListener(type, l.listener, !!l.capture);
+      if (l.f) l.f.call(global, event);
+      else if (l.listener && typeof l.listener.handleEvent === 'function') {
+        l.listener.handleEvent.call(l.listener, event);
+      }
     }
   }
 
@@ -357,22 +441,50 @@
     if (!nodeProto) return;
     const etProto = Object.getPrototypeOf(nodeProto);
     const orig = etProto && etProto._dispatchEvent;
-    if (typeof orig !== 'function') return;
+    const origAdd = etProto && etProto.addEventListener;
+    const origRemove = etProto && etProto.removeEventListener;
+    if (typeof orig !== 'function' || typeof origAdd !== 'function') return;
     eventPathPatched = true;
-    etProto._dispatchEvent = function (event, trusted) {
-      const doc = this && this.nodeType === 9 ? this : this && this.ownerDocument;
-      if (!doc || doc !== pageDocument) return orig.call(this, event, trusted);
-      const prev = Object.getOwnPropertyDescriptor(doc, 'parentNode');
-      Object.defineProperty(doc, 'parentNode', {
-        configurable: true,
-        get() { return global; },
-      });
-      try {
-        return orig.call(this, event, trusted);
-      } finally {
-        if (prev) Object.defineProperty(doc, 'parentNode', prev);
-        else delete doc.parentNode;
+    etProto.addEventListener = function (type, listener, options) {
+      let capture = false;
+      let once = false;
+      if (options && typeof options === 'object') {
+        capture = !!options.capture;
+        once = !!options.once;
+      } else {
+        capture = !!options;
       }
+      if (once && typeof listener === 'function' && typeof origRemove === 'function') {
+        const wrapped = function (event) {
+          origRemove.call(this, type, wrapped, capture);
+          return listener.call(this, event);
+        };
+        origAdd.call(this, type, wrapped, capture);
+        return;
+      }
+      origAdd.call(this, type, listener, capture);
+    };
+    etProto._dispatchEvent = function (event, trusted) {
+      const Event = domino.impl.Event;
+      const targetIsWindow = this === global;
+      const doc = this && this.nodeType === 9 ? this : this && this.ownerDocument;
+      const inPage = targetIsWindow || (doc && doc === pageDocument);
+      if (!inPage || !event) return orig.call(this, event, trusted);
+      if (!targetIsWindow) {
+        invokeWindowPhase(event, Event.CAPTURING_PHASE);
+        if (event._propagationStopped) {
+          event.eventPhase = Event.AT_TARGET;
+          event.currentTarget = null;
+          return !event.defaultPrevented;
+        }
+      }
+      const result = orig.call(this, event, trusted);
+      if (!targetIsWindow && event.bubbles && !event._propagationStopped) {
+        invokeWindowPhase(event, Event.BUBBLING_PHASE);
+        event.eventPhase = Event.AT_TARGET;
+        event.currentTarget = null;
+      }
+      return result;
     };
   }
 
@@ -459,16 +571,26 @@
     for (let i = 0; i < scripts.length; i++) runScriptElement(scripts[i]);
   }
 
+  function warnIgnoredWrite() {
+    try {
+      __glide_console('warn', 'document.write ignored: insertion point is undefined');
+    } catch (_) { /* console may be unavailable */ }
+  }
+
   function doWrite(args, newline) {
     let html = Array.prototype.join.call(args, '');
     if (newline) html += '\n';
-    const script = global.__glideCurrentScript;
-    if (!documentLoaded && script && script.parentNode) {
-      insertAfterScript(html);
+    if (scriptKind === 'async' || scriptKind === 'defer') {
+      warnIgnoredWrite();
       return;
     }
+    const script = global.__glideCurrentScript;
     if (!documentLoaded) {
-      insertAfterScript(html);
+      if (scriptKind === 'classic' && script && script.parentNode) {
+        insertAfterScript(html);
+        return;
+      }
+      warnIgnoredWrite();
       return;
     }
     writeAfterLoad(html);
@@ -601,12 +723,26 @@
     openedThisTask = false;
     writeCursor = null;
     mirroringEnabled = false;
+    scriptKind = '';
+    skippedInserts.clear();
     layoutCache.clear();
     const tree = typeof snapshotJson === 'string' ? JSON.parse(snapshotJson) : snapshotJson;
     const domWin = domino.createWindow('');
     pageDocument = domWin.document;
     while (pageDocument.lastChild) pageDocument.removeChild(pageDocument.lastChild);
     if (tree && tree.length) tagBlitz(pageDocument, tree[0]);
+    if (tree && tree[6] && tree[6][0]) {
+      try {
+        const dt = pageDocument.implementation.createDocumentType(
+          String(tree[6][0]),
+          String(tree[6][1] || ''),
+          String(tree[6][2] || ''),
+        );
+        pageDocument.insertBefore(dt, pageDocument.firstChild);
+      } catch (err) {
+        consoleError(err);
+      }
+    }
     const kids = (tree && tree[4]) || [];
     for (const child of kids) {
       const built = buildFromSnapshot(child, pageDocument);
@@ -650,11 +786,18 @@
     writeCursor = null;
   };
 
+  global.__glide_set_script_kind = function (kind) {
+    scriptKind = kind ? String(kind) : '';
+  };
+
+  global.__glide_begin_task = beginTask;
+
   global.__glide_mark_document_loaded = function () {
     documentLoaded = true;
   };
 
   global.__glide_fire_page_load = function () {
+    beginTask();
     flushMutations();
     if (pageDocument) {
       pageDocument.readyState = 'interactive';
@@ -666,6 +809,7 @@
   };
 
   global.__glide_dispatch_bubble = function (path, type) {
+    beginTask();
     flushMutations();
     if (!path || !path.length) return;
     const target = blitzToNode.get(String(path[0]));
@@ -676,10 +820,6 @@
   };
 
   global.__glide_flush_dom = endTask;
-  global.__glide_node_count = function () {
-    flushMutations();
-    return rpc('nodeCount');
-  };
   global.__glide_wrap_node = function (id) {
     return blitzToNode.get(String(id)) || null;
   };

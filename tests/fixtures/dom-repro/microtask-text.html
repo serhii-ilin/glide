@@ -1,0 +1,6 @@
+<!DOCTYPE html><html><body><p id=o>BEFORE</p><script>
+(async function () {
+  await Promise.resolve();
+  document.getElementById('o').textContent = 'AFTER-MICRO';
+})();
+</script></body></html>

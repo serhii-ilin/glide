@@ -1,0 +1,12 @@
+<!DOCTYPE html><html><body>
+<div id=b style="width:50vw">x</div>
+<p id=o>-</p>
+<script>
+var w1 = document.getElementById('b').offsetWidth;
+__glide_test_resize(400, 300);
+setTimeout(function () {
+  var w2 = document.getElementById('b').offsetWidth;
+  document.getElementById('o').textContent = 'w1=' + w1 + ' w2=' + w2;
+}, 0);
+</script>
+</body></html>

@@ -158,17 +158,17 @@ impl JsHost {
         };
         let classic_bodies = pick(&classic);
         if !classic_bodies.is_empty() {
-            worker.run_scripts(classic_bodies);
+            worker.run_scripts(classic_bodies, "classic");
         }
         let defer_bodies = pick(&defer);
         if !defer_bodies.is_empty() {
-            worker.run_scripts(defer_bodies);
+            worker.run_scripts(defer_bodies, "defer");
         }
         worker.fire_dom_content_loaded();
         for idx in async_scripts {
             if let Some(body) = source_body(&sources[idx]) {
                 let script_id = specs.get(idx).and_then(|s| s.element);
-                worker.run_scripts(vec![(body, script_id)]);
+                worker.run_scripts(vec![(body, script_id)], "async");
             }
         }
     }

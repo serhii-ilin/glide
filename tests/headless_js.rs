@@ -126,6 +126,7 @@ fn window_load_and_ready_state() {
     let rs = dump_text(&fixture_url("dom-repro/rs.html"), true).expect("rs");
     assert!(rs.contains("rs0=loading"), "{rs}");
     assert!(rs.contains("rsL=complete"), "{rs}");
+    assert!(rs.contains("dt=html"), "{rs}");
     assert!(rs.contains("ns=http://www.w3.org/2000/svg"), "{rs}");
     let w = dump_text(&fixture_url("dom-repro/w.html"), true).expect("w");
     assert!(w.contains("wDCL") && w.contains("dDCL"), "{w}");
@@ -145,6 +146,61 @@ fn repeated_text_content_does_not_grow_node_count() {
     assert!(n0 > 3.0, "node scan failed: {text}");
     assert!(delta <= 30.0, "node count grew: {text}");
     assert!(text.contains("last=v199"), "{text}");
+}
+
+#[test]
+fn document_parent_is_null_inside_listener() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(
+        &fixture_url("dom-repro/document-parent-in-listener.html"),
+        true,
+    )
+    .expect("load");
+    assert!(text.contains("pn=null"), "{text}");
+    assert!(text.contains("cdp=ok"), "{text}");
+    assert!(!text.contains("cdpE"), "{text}");
+}
+
+#[test]
+fn async_document_write_does_not_wipe_the_page() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("dom-repro/async-write.html"), true).expect("load");
+    assert!(text.contains("KEEP-ME"), "{text}");
+    assert!(!text.contains("ASYNCWRITE"), "{text}");
+    let defer = dump_text(&fixture_url("dom-repro/defer-write.html"), true).expect("defer");
+    assert!(defer.contains("KEEP-DEFER"), "{defer}");
+    assert!(!defer.contains("DEFERWRITE"), "{defer}");
+}
+
+#[test]
+fn layout_cache_refreshes_on_the_next_task() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("dom-repro/layout-cache.html"), true).expect("load");
+    let w1 = width_after("w1=", &text);
+    let w2 = width_after("w2=", &text);
+    assert!(w1 > 400.0, "first width {text}");
+    assert!(w2 < w1 && w2 < 300.0, "stale layout cache: {text}");
+}
+
+#[test]
+fn promise_continuation_mutates_before_settle() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("dom-repro/microtask-text.html"), true).expect("load");
+    assert!(text.contains("AFTER-MICRO"), "{text}");
+    assert!(!text.contains("BEFORE"), "{text}");
+}
+
+#[test]
+fn onclick_attribute_calls_get_element_by_id() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("onclick-get.html"), true).expect("load");
+    assert!(text.contains("got"), "{text}");
+    assert!(!text.contains("old"), "{text}");
 }
 
 #[test]

@@ -19,7 +19,10 @@ src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
 src/find.rs       find-in-page text search and chrome find UI state
 src/zoom.rs       page zoom level and chrome toolbar counter-scale
 src/profile.rs  profile dir, settings, session, history log, bookmarks
-src/js/           V8 worker thread, DOM RPC, script loading
+src/js/           V8 worker, domino glue, Blitz mirror RPC, script loading
+third_party/      vendored JS (domino 2.1.9)
+src/js/vendor/    generated domino embed (scripts/vendor-domino.mjs)
+scripts/          vendor-domino.mjs regenerates the embed
 src/parse.rs      html5ever with configurable scripting flag
 src/location.rs   URL vs. search
 src/headless.rs   headless load/settle and --dump-text text extraction
@@ -74,7 +77,7 @@ cargo build --release        # when user-facing behavior changes
 - Any change that adds, changes or removes behavior updates `docs/features.md` in the same
   branch: the feature row (status, requirement IDs, covering tests, notes) and any new
   requirement.
-- Status values: `planned`, `in-progress`, `done`, `deferred` (with a reason), `removed`.
+- Status values: `planned`, `in-progress`, `done`, `partial`, `deferred` (with a reason), `removed`.
 - A feature is `done` only when its tests exist and pass, or its manual check is listed in
   `docs/manual-tests.md`.
 - New ideas or out-of-scope findings become `planned` or `deferred` rows instead of

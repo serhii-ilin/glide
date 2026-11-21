@@ -1,16 +1,27 @@
 # Glide compatibility report
 
 Date: 2026-11-20
-Git: `171178a`
+Git: `504b190`
 OS: macos
 
 ## Summary
 
 | Suite | Pass | Fail | Other | Total |
 | --- | ---: | ---: | ---: | ---: |
-| acid | 0 | 2 | 2 | 4 |
-| wpt | 68 | 60 | 0 | 128 |
-| probe | 21 | 37 | 0 | 58 |
+| acid | 1 | 1 | 2 | 4 |
+| wpt | 79 | 49 | 0 | 128 |
+| probe | 36 | 22 | 0 | 58 |
+
+## Testharness (`dom/nodes`)
+
+Files with no subtest results count as failures (one failed subtest each). The pass rate includes those files; it is not computed only over files that produced a harness report.
+
+| | Pass | Total | Rate |
+| --- | ---: | ---: | ---: |
+| Files fully passing | 12 | 28 | 42.9% |
+| Subtests | 636 | 969 | 65.6% |
+
+Files with no results: 8.
 
 ## Super-critical
 
@@ -18,13 +29,21 @@ None recorded.
 
 ## Top failure categories
 
-- probe:api — Web API missing (undefined typeof): 37
-- wpt:reftest — rendering differs (pixel diff): 31
-- wpt:testharness — harness did not load (ReferenceError: self is not defined): 26
-- wpt:testharness — harness did not load (ReferenceError: runCharacterSetTests is not defined): 2
-- acid:score — could not parse NN/100 score; TypeError: document.write is not a function: 1
-- acid:reftest — Acid2 test page vs reference (expected differences): 1
+- wpt:reftest — rendering differs (pixel diff): 32
+- probe:api — Web API missing (undefined typeof): 22
+- wpt:testharness — missing __glide_results JSON in dump-text: 3
+- wpt:testharness — 1 failed, 0 timeout: 2
+- wpt:testharness — 2 failed, 0 timeout: 2
+- wpt:testharness — harness did not load (ReferenceError: async_test is not defined): 2
 - wpt:testharness — harness did not load (ReferenceError: setup is not defined): 1
+- acid:reftest — Acid2 test page vs reference (expected differences): 1
+- wpt:testharness — 117 failed, 0 timeout: 1
+- wpt:testharness — 47 failed, 0 timeout: 1
+- wpt:testharness — harness did not load (INVALID_CHARACTER_ERR: INVALID_CHARACTER_ERR (5): the string contains invalid characters): 1
+- wpt:testharness — 148 failed, 0 timeout: 1
+- wpt:testharness — 5 failed, 0 timeout: 1
+- wpt:testharness — 3 failed, 0 timeout: 1
+- wpt:testharness — harness did not load (Error: assert_throws_dom: function "() => document.createCDATASection("foo")" threw object "TypeError: document.createCDATASection is not a function" that is not a DOMException NotSupportedError: property "code" is equal to undefined, expected 9): 1
 
 ## API probe
 
@@ -34,42 +53,31 @@ Rows marked **available** for language built-ins (e.g. `Map`, `Set`, `Proxy`, `I
 | --- | --- |
 | Blob | missing (undefined) |
 | CSS.supports | missing (undefined) |
-| CustomEvent | missing (undefined) |
-| DOMParser | missing (undefined) |
 | Element.prototype.attachShadow | missing (undefined) |
-| Element.prototype.closest | missing (undefined) |
-| Element.prototype.insertAdjacentHTML | missing (undefined) |
 | FileReader | missing (undefined) |
 | FormData | missing (undefined) |
 | IntersectionObserver | missing (undefined) |
 | MutationObserver | missing (undefined) |
 | ResizeObserver | missing (undefined) |
 | TextEncoder | missing (undefined) |
-| URL | missing (undefined) |
-| URLSearchParams | missing (undefined) |
 | WebSocket | missing (undefined) |
 | Worker | missing (undefined) |
 | XMLHttpRequest | missing (undefined) |
 | crypto.getRandomValues | missing (undefined) |
 | customElements | missing (undefined) |
-| document.documentElement.classList | missing (undefined) |
-| document.documentElement.cloneNode | missing (undefined) |
 | document.documentElement.dataset | missing (undefined) |
-| document.documentElement.focus | missing (undefined) |
-| document.documentElement.getBoundingClientRect | missing (undefined) |
-| document.documentElement.innerHTML | missing (undefined) |
 | document.documentElement.scrollIntoView | missing (undefined) |
-| getComputedStyle | missing (undefined) |
 | history.pushState | missing (undefined) |
 | indexedDB | missing (undefined) |
 | localStorage | missing (undefined) |
-| location | missing (undefined) |
 | matchMedia | missing (undefined) |
-| navigator | missing (undefined) |
-| navigator.userAgent | missing (undefined) |
 | sessionStorage | missing (undefined) |
 | structuredClone | missing (undefined) |
 | Array.prototype.at | available (function) |
+| CustomEvent | available (function) |
+| DOMParser | available (function) |
+| Element.prototype.closest | available (function) |
+| Element.prototype.insertAdjacentHTML | available (function) |
 | Intl | available (object) |
 | Map | available (function) |
 | Object.hasOwn | available (function) |
@@ -78,13 +86,24 @@ Rows marked **available** for language built-ins (e.g. `Map`, `Set`, `Proxy`, `I
 | Reflect | available (object) |
 | Set | available (function) |
 | Symbol | available (function) |
+| URL | available (function) |
+| URLSearchParams | available (function) |
 | WeakMap | available (function) |
 | console | available (object) |
 | document | available (object) |
 | document.addEventListener | available (function) |
 | document.dispatchEvent | available (function) |
+| document.documentElement.classList | available (object) |
+| document.documentElement.cloneNode | available (function) |
+| document.documentElement.focus | available (function) |
+| document.documentElement.getBoundingClientRect | available (function) |
+| document.documentElement.innerHTML | available (string) |
 | document.querySelector | available (function) |
 | fetch | available (function) |
+| getComputedStyle | available (function) |
+| location | available (object) |
+| navigator | available (object) |
+| navigator.userAgent | available (string) |
 | performance | available (object) |
 | queueMicrotask | available (function) |
 | requestAnimationFrame | available (function) |
@@ -94,7 +113,7 @@ Rows marked **available** for language built-ins (e.g. `Map`, `Set`, `Proxy`, `I
 
 - `acid1/test5526c.htm` — **unreachable** 
 - `acid2/compare` — **fail** {"diff_pct":3.7385167464114835}
-- `acid3/with-js` — **fail** 
+- `acid3/with-js` — **pass** {"acid3_score":34}
 - `acid3/no-js` — **info** 
 
 ## ECMAScript

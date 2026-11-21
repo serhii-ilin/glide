@@ -1,0 +1,7 @@
+<!DOCTYPE html><html><body><p id=out>-</p><script>
+var t0=Date.now(); for (var i=0;i<100;i++){var e=document.createElement('span'); document.body.appendChild(e); e.setAttribute('data-i', i); e.textContent='x';}
+var t1=Date.now(); var u=document.createElement('div'); for (var i=0;i<100;i++){var e=document.createElement('span'); u.appendChild(e); e.setAttribute('data-i', i); e.textContent='x';} document.body.appendChild(u);
+var t2=Date.now(); var s=0; for (var i=0;i<200;i++){ s+=document.getElementById('out').offsetWidth; }
+var t3=Date.now();
+document.getElementById('out').textContent='attached='+(t1-t0)+'ms detached='+(t2-t1)+'ms layout200='+(t3-t2)+'ms';
+</script></body></html>

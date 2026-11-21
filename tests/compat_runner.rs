@@ -1,19 +1,17 @@
 //! Integration test: run compat runner offline on vendored integration fixtures.
 
-use glide::compat::runner::{RunnerConfig, Suite, repo_root, resolve_glide_binary, run_compat};
+use std::path::PathBuf;
+
+use glide::compat::runner::{RunnerConfig, Suite, repo_root, run_compat};
 
 #[test]
 fn compat_runner_filter_integration_offline() {
     let root = repo_root();
-    let _ = std::process::Command::new("cargo")
-        .args(["build", "--quiet", "--bin", "glide"])
-        .current_dir(&root)
-        .status()
-        .expect("cargo build glide");
-    let glide_bin = resolve_glide_binary().expect("build glide binary first");
+    let glide_bin = PathBuf::from(env!("CARGO_BIN_EXE_glide"));
     let cfg = RunnerConfig {
         suite: Suite::Wpt,
         filter: Some("integration".into()),
+        only_paths: None,
         jobs: 1,
         glide_bin,
         repo_root: root.clone(),
@@ -35,8 +33,8 @@ fn compat_runner_filter_integration_offline() {
         .iter()
         .find(|r| r.path == "integration/harness-minimal.html")
         .expect("harness-minimal result");
-    assert_eq!(harness.status, "fail");
-    let reason = harness.reason.as_deref().expect("harness failure reason");
-    assert!(reason.contains("harness did not load:"));
-    assert!(reason.contains("ReferenceError"));
+    assert_eq!(harness.status, "fail", "one subtest is meant to fail");
+    let metrics = harness.metrics.as_ref().expect("harness metrics json");
+    assert_eq!(metrics["passed"], 1);
+    assert_eq!(metrics["failed"], 1);
 }

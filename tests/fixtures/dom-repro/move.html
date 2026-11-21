@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><body><div id=a><span id=k>KID</span></div><div id=b>B</div><p id=out>-</p><script>
+var a=document.getElementById('a'), k=document.getElementById('k');
+a.remove();
+document.getElementById('b').appendChild(k);
+var t = document.createElement('i'); document.body.appendChild(t); t.remove(); document.body.appendChild(t); t.textContent='REINS';
+document.getElementById('out').setAttribute('onclick','x');
+var x = document.createElement('button'); x.setAttribute('onclick','document.getElementById("out").textContent="CLICKED"'); document.body.appendChild(x); x.click();
+var y = document.createElement('a'); y.setAttribute('onclick','return false'); y.href='#'; document.body.appendChild(y);
+var ev = new Event('click',{cancelable:true}); y.dispatchEvent(ev); document.body.appendChild(document.createTextNode(' DP='+ev.defaultPrevented));
+document.body.appendChild(document.createTextNode(' keys='+Object.keys(t).join(',')));
+</script></body></html>

@@ -3,7 +3,7 @@
 This file is the single record of what Glide must do (requirements, `R-xxx`) and what it
 does or will do (features, `F-xxx`). Rules for keeping it current are in `AGENTS.md`.
 
-Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `removed`
+Status: `planned` · `in-progress` · `done` · `partial` · `deferred` (with reason) · `removed`
 
 ## Milestones
 
@@ -29,6 +29,7 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | R-011 | Settings, session, history and bookmarks survive a restart | M1 |
 | R-012 | A reproducible HTML/CSS/JS compatibility report against public benchmarks | M1 |
 | R-013 | No crash, hang or panic on common pages; super-critical compatibility issues are fixed | M1 |
+| R-014 | WPT `dom/nodes` ≥15% subtests and ≥3 full files; Acid3 with JS ≥15/100 | M1 |
 
 ## Features
 
@@ -56,7 +57,14 @@ Status: `planned` · `in-progress` · `done` · `deferred` (with reason) · `rem
 | F-027 | T7 Compatibility runner (`compat` bin) and `docs/compat/REPORT.md` | done | R-012 | `compat::*`, `tests/compat_runner.rs`, `docs/compat/results.json` | Acid1-3 live URLs, ~100 WPT reftests + 30 `dom/nodes` harness; `scripts/vendor-wpt.sh` |
 | F-028 | T8 Super-critical compatibility fixes | done | R-013 | `docs/compat/REPORT.md` | T7 run (191 checks) found no crash, panic or hang; nothing to fix. Non-critical gaps are F-030–F-033 |
 | F-030 | WPT CSS reftest pixel diffs | deferred | R-012 | `docs/compat/REPORT.md` | 31/99 reftests exceed 0.1% / channel 16 tolerance |
-| F-031 | WPT testharness cannot load | deferred | R-012 | `docs/compat/REPORT.md`, `compat::subprocess::tests::first_uncaught_from_glide_stderr` | JS global `self` missing (`ReferenceError` at `testharness.js` load); 0/29 files measurable—not DOM API gaps. A small shim (e.g. `self` → `globalThis`) would let the suite measure DOM APIs; deferred per super-critical-only policy |
-| F-032 | Missing Web APIs and DOM bindings | deferred | R-012 | `tests/compat/probe.html`, `docs/compat/REPORT.md` | 37/57 probe keys undefined (e.g. `localStorage`, `MutationObserver`, `getComputedStyle`, many `documentElement` accessors) |
-| F-033 | Acid2/Acid3 layout and JS test gaps | deferred | R-012 | `docs/compat/REPORT.md` | Acid2 vs reference ~3.7% diff; Acid3 with-JS score not parsed (`TypeError: document.write is not a function`); Acid3 no-JS is baseline only (`info`); Acid1 HTTP 403 (UA note in report) |
-| F-035 | T9a DOM library selection (domino / linkedom / happy-dom spike) | done | R-012 | `docs/dom-library-spike.md`, `scripts/dom-spike/run.mjs`, `scripts/dom-spike/tests/fork-timeout.test.mjs`, `tests/dom_spike.rs` | Recommends **domino** (multi-file vendoring); no esbuild IIFE matches npm WPT; T9b integration deferred |
+| F-031 | WPT testharness `dom/nodes` measurable | done | R-014 | `docs/compat/REPORT.md`, `docs/DECISIONS.md`, `tests/compat_dom_nodes.rs`, `tests/compat_runner.rs`, `js::integration::*` | Release at `504b190`: 12/28 files fully pass; 636/969 subtests (65.6%). The 8 files with no subtest results each count as one failed subtest. `tests/compat_dom_nodes.rs` gates the same set at ≥10 files and ≥50% |
+| F-036 | Domino page DOM + Blitz mirroring | done | R-014 | `src/js/snapshot.rs`, `src/js/batch.rs`, `src/js/dom-glue.js`, `src/js/vendor/domino.js`, `js::integration::*`, `tests/headless_js.rs`, `tests/compat_dom_nodes.rs` | One mutation batch per task (client ids for nodes created in the batch); SVG/MathML namespaces round-trip; `globalThis` is the window. Window capture sees `event.target`; `once` is stored on the listener record; a skipped insert is not queued twice |
+| F-034 | `document.write` | done | R-014 | `src/js/dom-glue.js`, `tests/headless_js.rs::{document_write_inserts_after_current_script,async_document_write_does_not_wipe_the_page}`, `docs/compat/REPORT.md` | Inserts after `document.currentScript` during a classic parser script. Async and defer writes are ignored. After load, writes from timers and event handlers replace the document. Inline scripts in the written markup run; external `src` scripts do not |
+| F-032 | Missing Web APIs and DOM bindings | deferred | R-012 | `tests/compat/probe.html`, `docs/compat/REPORT.md` | Probe 36/58 available, including `DOMParser`, `URL`, `URLSearchParams`, and `getComputedStyle`. 22 still missing, including `localStorage`, `MutationObserver`, observers, and storage/network host APIs. `Range` is also absent (F-037) |
+| F-033 | Acid2/Acid3 layout and JS test gaps | partial | R-014 | `docs/compat/REPORT.md`, `tests/compat_dom_nodes.rs` | Acid3 with JS is 34/100 (R-014 floor is 15). Acid2 reftest still differs (~3.7% pixel diff). Acid1 stays unreachable (HTTP 403) |
+| F-035 | T9a DOM library selection (domino / linkedom / happy-dom spike) | done | R-012 | `docs/dom-library-spike.md`, `scripts/dom-spike/run.mjs`, `scripts/dom-spike/tests/fork-timeout.test.mjs`, `tests/dom_spike.rs` | Recommends **domino** (multi-file vendoring); T9b in F-036 |
+| F-037 | `Range` for Acid3 | deferred | R-014 | | Not required for first domino mirror milestone |
+| F-038 | `MutationObserver` | deferred | R-014 | | domino uses `_setMutationHandler` instead |
+| F-039 | Form control value read-back (Blitz → domino) | deferred | R-014 | | `input.value` / `checked` RPC not wired yet |
+| F-040 | Hide the raw `__glide_dom_sync` RPC from page code | deferred | R-014 | | `navigate`, `fetch`, and `batchMutate` are reachable as a plain global. Move the binding into a closure the page cannot call |
+| F-041 | Watchdog for work outside a script run | deferred | R-014 | | The 5 s limit covers `run_script` only. An endless promise chain keeps the `glide-js` thread spinning with no watchdog |

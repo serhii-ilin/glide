@@ -16,6 +16,7 @@ pub struct ScriptSpec {
     pub src: Option<String>,
     pub defer: bool,
     pub r#async: bool,
+    pub element: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +80,7 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
                 src,
                 defer,
                 r#async: async_attr,
+                element: Some(super::bridge::node_to_handle(child)),
             });
         }
         walk(doc, child, out);

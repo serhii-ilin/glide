@@ -1,0 +1,8 @@
+<!DOCTYPE html><html><body><p>SEED</p><script>
+setTimeout(function () { document.write('<p>FIRST</p>'); }, 0);
+setTimeout(function () { document.write('<p>SECOND</p>'); }, 0);
+setTimeout(function () {
+  var body = document.body ? document.body.textContent : '';
+  document.write('<p>' + (body.indexOf('FIRST') >= 0 ? 'kept-first' : 'replaced') + '</p>');
+}, 20);
+</script></body></html>

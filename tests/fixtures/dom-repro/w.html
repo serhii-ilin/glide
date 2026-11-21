@@ -1,0 +1,14 @@
+<!DOCTYPE html><html><body><p id=out>-</p><script>
+var log=[];
+window.addEventListener('DOMContentLoaded', function(){ log.push('wDCL'); });
+document.addEventListener('DOMContentLoaded', function(){ log.push('dDCL'); });
+window.addEventListener('load', function(e){ log.push('wload:'+(this===window)+':'+(e.currentTarget===window)); });
+window.onerror = function(){ log.push('onerror'); };
+document.body.addEventListener('x', function(){});
+window.addEventListener('click', function(){ log.push('wclick'); });
+document.getElementById('out').click();
+log.push('loc='+location.protocol+'|'+location.pathname+'|'+location.search);
+log.push('dv='+(document.defaultView===window));
+log.push('json='+typeof JSON.stringify+' arr='+Array.isArray([]) + ' str='+String(window));
+setTimeout(function(){ document.getElementById('out').textContent = log.join(' '); }, 50);
+</script></body></html>

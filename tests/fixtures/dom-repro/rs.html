@@ -1,0 +1,7 @@
+<!DOCTYPE html><html><body><p id=out>-</p><div id=h></div><script>
+var r=['rs0='+document.readyState, 'dt='+(document.doctype&&document.doctype.name), 'cm='+document.compatMode];
+window.addEventListener('load', function(){ r.push('rsL='+document.readyState); 
+  document.getElementById('h').innerHTML='<svg width=10 height=10><circle r=5></circle></svg>';
+  r.push('ns='+document.querySelector('circle').namespaceURI);
+  document.getElementById('out').textContent=r.join(' ');});
+</script></body></html>

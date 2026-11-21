@@ -104,11 +104,13 @@ Kitesurf patches those crates (box-shadow performance, gradient LUTs, iframe sce
 
 ## Page JavaScript
 
-Glide runs page scripts with the [V8](https://v8.dev/) crate on a dedicated `glide-js` thread. The UI thread owns the DOM; scripts call through a small synchronous RPC (`src/js/`). Each navigation tears down the isolate and starts a new one. `--no-js` disables parsing `<script>` tags, skipping the worker entirely. While the window is open, use the **JS on** / **JS off** toolbar pill or Cmd/Ctrl+Shift+J to flip scripting and reload the current page.
+Glide runs page scripts with [V8](https://v8.dev/) on a dedicated `glide-js` thread. The **Blitz** document on the UI thread is authoritative for layout and paint; page scripts see a **[domino](https://github.com/fgnass/domino) 2.1.9** in-memory DOM (vendored under `third_party/domino/`, embedded as `src/js/vendor/domino.js`). On each navigation the worker snapshots Blitz into domino, mirrors mutations back in batches over RPC, and proxies geometry (`getBoundingClientRect`, `getComputedStyle`, …) by Blitz node id. See `src/js/dom-glue.js` and `docs/dom-library-spike.md`.
 
-Supported in the bootstrap shim today: `document` queries and mutations, inline/defer/async classic scripts, `setTimeout` / `setInterval`, `requestAnimationFrame`, `fetch` (via `blitz-net`), and `console.log`. DOM events are stored in JS; clicks are forwarded from the UI thread when possible.
+Globals: `self` / `window` / `globalThis` (`String(window)` is `[object Window]`), domino constructors (`Node`, `HTMLElement`, `Event`, …), `URL` / `URLSearchParams` (resolution via Rust `url`; `URL.prototype.searchParams` is a `URLSearchParams`), `DOMParser`, `document.createTreeWalker` / `document.createNodeIterator`, and `document.write` / `writeln`. `location.protocol`, `host`, `hostname`, `port`, `pathname`, `search`, `hash`, and `origin` come from the page URL. Timers, `fetch`, and `console` remain in `src/js/bootstrap.js`.
 
-Limits: no `addEventListener` registry on the Rust side beyond bookkeeping, incomplete UI event types, five-second per-script watchdog, no modules/service workers/workers, and many Web APIs are missing. Real sites may still fail; `tests/fixtures/counter.html` is the smoke test.
+`document.write` while a classic parser-inserted script is running inserts the parsed fragment immediately after `document.currentScript` (and runs inline scripts in that fragment, in order). Writes from `async` or `defer` scripts, and writes before load when no parser script is current, are ignored. `document.write` after load, from a timer or event handler, uses `document.open` semantics and replaces the document's children. External scripts referenced from written markup are not fetched. There is no `TreeWalker` or `NodeIterator` constructor on the global object; use `document.createTreeWalker` and `document.createNodeIterator`.
+
+Layout reads go to Blitz by node id. `getBoundingClientRect` and `offsetWidth` / `offsetHeight` / `offsetTop` / `offsetLeft` use Blitz's border box (`offset*` is relative to the offset parent). `clientWidth` / `clientHeight` are that same border-box size, not the CSS padding box. `getComputedStyle` returns Blitz's resolved value for the property (used values for layout-dependent properties such as `width`). No `MutationObserver` or `Range`. No modules, workers, or service workers. Five-second per-script watchdog. `tests/fixtures/counter.html` and `js-toggle.html` are smoke tests; WPT `dom/nodes` and Acid3 scores are in `docs/compat/REPORT.md`.
 
 The first `--release` build downloads and compiles V8 prebuilts in addition to Stylo and Vello, so allow extra time and disk.
 
@@ -146,7 +148,8 @@ src/args.rs       CLI parsing
 src/chrome.rs     chrome markup and navigation commands
 src/net.rs        loading state, stop, and error pages for failed loads
 src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
-src/js/           V8 worker, DOM RPC, script loading
+src/js/           V8 worker, domino glue, Blitz mirror RPC
+third_party/      domino 2.1.9 (page JS DOM)
 src/parse.rs      html5ever with configurable scripting flag
 src/location.rs   URL vs. search
 src/profile.rs    on-disk settings, session, history log, bookmarks

@@ -1,9 +1,11 @@
 //! Page JavaScript via V8 (`v8` / rusty_v8).
 
 mod apply;
+mod batch;
 mod bridge;
 mod host;
 pub mod scripts;
+mod snapshot;
 mod tap;
 mod worker;
 

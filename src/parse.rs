@@ -1,5 +1,7 @@
 //! HTML parsing with configurable `scripting_enabled` for html5ever.
 
+use std::sync::Mutex;
+
 use blitz_dom::{BaseDocument, DocumentConfig, DocumentMutator};
 use html5ever::ParseOpts;
 use html5ever::tendril::TendrilSink;
@@ -23,6 +25,7 @@ pub fn document_from_html_with(
     before_parse: impl FnOnce(&BaseDocument),
 ) -> BaseDocument {
     let mut doc = BaseDocument::new(config);
+    note_doctype(doc.id(), html);
     before_parse(&doc);
     let mut mutr = doc.mutate();
     parse_into_mutator(&mut mutr, html, scripting_enabled);
@@ -89,6 +92,110 @@ pub fn parse_into_mutator(mutr: &mut DocumentMutator<'_>, html: &str, scripting_
         .unwrap();
 }
 
+/// Doctype sniffed from source. Blitz drops doctype tokens, so the snapshot
+/// reads this instead of a document-type node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotedDoctype {
+    pub name: String,
+    pub public_id: String,
+    pub system_id: String,
+}
+
+static DOCTYPES: Mutex<Vec<(usize, NotedDoctype)>> = Mutex::new(Vec::new());
+
+pub fn noted_doctype(doc_id: usize) -> Option<NotedDoctype> {
+    let guard = DOCTYPES.lock().unwrap_or_else(|err| err.into_inner());
+    guard
+        .iter()
+        .find(|(id, _)| *id == doc_id)
+        .map(|(_, dt)| dt.clone())
+}
+
+fn note_doctype(doc_id: usize, html: &str) {
+    let Some(dt) = sniff_doctype(html) else {
+        return;
+    };
+    let mut guard = DOCTYPES.lock().unwrap_or_else(|err| err.into_inner());
+    guard.retain(|(id, _)| *id != doc_id);
+    guard.push((doc_id, dt));
+    if guard.len() > 64 {
+        let drop_n = guard.len() - 64;
+        guard.drain(0..drop_n);
+    }
+}
+
+fn sniff_doctype(html: &str) -> Option<NotedDoctype> {
+    let rest = skip_to_doctype(html)?;
+    let after = rest[9..].trim_start();
+    let end = after.find('>')?;
+    let inside = &after[..end];
+    let name_end = inside.find(char::is_whitespace).unwrap_or(inside.len());
+    let name = inside[..name_end].to_ascii_lowercase();
+    if name.is_empty() {
+        return None;
+    }
+    let tail = inside[name_end..].trim_start();
+    let mut public_id = String::new();
+    let mut system_id = String::new();
+    let tail_l = tail.to_ascii_lowercase();
+    if let Some(rest) = tail_l.strip_prefix("public") {
+        let ids = quoted_ids(&tail[tail.len() - rest.len()..]);
+        public_id = ids.0;
+        system_id = ids.1;
+    } else if let Some(rest) = tail_l.strip_prefix("system") {
+        system_id = quoted_ids(&tail[tail.len() - rest.len()..]).0;
+    }
+    Some(NotedDoctype {
+        name,
+        public_id,
+        system_id,
+    })
+}
+
+/// Leading BOM, whitespace and comments, then a `<!DOCTYPE` at the cursor.
+fn skip_to_doctype(html: &str) -> Option<&str> {
+    let mut rest = html.trim_start_matches('\u{feff}');
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("<!--") {
+            let end = after.find("-->")?;
+            rest = &after[end + 3..];
+            continue;
+        }
+        break;
+    }
+    let bytes = rest.as_bytes();
+    if bytes.len() < 9 || !bytes[..9].eq_ignore_ascii_case(b"<!doctype") {
+        return None;
+    }
+    Some(rest)
+}
+
+fn quoted_ids(s: &str) -> (String, String) {
+    let bytes = s.as_bytes();
+    let mut out = [String::new(), String::new()];
+    let mut n = 0;
+    let mut i = 0;
+    while i < bytes.len() && n < 2 {
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            i += 1;
+            let start = i;
+            while i < bytes.len() && bytes[i] != quote {
+                i += 1;
+            }
+            out[n] = s[start..i].to_string();
+            n += 1;
+            if i < bytes.len() {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    (out[0].clone(), out[1].clone())
+}
+
 fn root_element_has_xhtml_namespace(html: &str) -> bool {
     let rest = html.trim_start_matches('\u{feff}').trim_start();
     let Some(rest) = rest.strip_prefix("<html") else {
@@ -99,4 +206,42 @@ fn root_element_has_xhtml_namespace(html: &str) -> bool {
     };
     rest[..tag_end].contains("xmlns=\"http://www.w3.org/1999/xhtml\"")
         || rest[..tag_end].contains("xmlns='http://www.w3.org/1999/xhtml'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sniff_doctype;
+
+    #[test]
+    fn html401_public_doctype_stops_at_the_closing_bracket() {
+        let html =
+            r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en">"#;
+        let dt = sniff_doctype(html).expect("doctype");
+        assert_eq!(dt.name, "html");
+        assert_eq!(dt.public_id, "-//W3C//DTD HTML 4.01 Transitional//EN");
+        assert_eq!(dt.system_id, "");
+    }
+
+    #[test]
+    fn html401_doctype_keeps_system_id() {
+        let html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">"#;
+        let dt = sniff_doctype(html).expect("doctype");
+        assert_eq!(dt.name, "html");
+        assert_eq!(dt.public_id, "-//W3C//DTD HTML 4.01 Transitional//EN");
+        assert_eq!(dt.system_id, "http://www.w3.org/TR/html4/loose.dtd");
+    }
+
+    #[test]
+    fn doctype_after_comment_and_bom() {
+        let html = "\u{feff}<!-- c --><!doctype html>";
+        let dt = sniff_doctype(html).expect("doctype");
+        assert_eq!(dt.name, "html");
+        assert_eq!(dt.public_id, "");
+        assert_eq!(dt.system_id, "");
+    }
+
+    #[test]
+    fn missing_doctype_is_none() {
+        assert!(sniff_doctype("<html><body></body></html>").is_none());
+    }
 }

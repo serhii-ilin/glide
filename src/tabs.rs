@@ -6,6 +6,7 @@ use keyboard_types::Modifiers;
 use serde::{Deserialize, Serialize};
 
 use crate::devtools::console::ConsoleJournal;
+use crate::devtools::elements::ElementsPanelState;
 use crate::devtools::repl::ConsoleReplHistory;
 use crate::find::FindSession;
 use crate::history::History;
@@ -26,8 +27,11 @@ pub struct Tab {
     pub zoom: PageZoom,
     pub console: ConsoleJournal,
     pub console_repl_history: ConsoleReplHistory,
+    pub elements: ElementsPanelState,
     /// Bumped on each navigation so stale console wire events are ignored.
     pub console_epoch: u64,
+    /// Bumped on navigation so Elements tree state resets for a new document.
+    pub elements_epoch: u64,
     /// Last URL written into the address field, so a focused field is left alone.
     pub address_written: String,
 }
@@ -43,7 +47,9 @@ impl Tab {
             zoom: PageZoom::new(),
             console: ConsoleJournal::default(),
             console_repl_history: ConsoleReplHistory::default(),
+            elements: ElementsPanelState::default(),
             console_epoch: 1,
+            elements_epoch: 1,
             address_written: url,
         }
     }

@@ -47,6 +47,10 @@ pub enum BrowserShortcut {
     DevToolsConsoleSubmit,
     DevToolsConsoleHistoryPrev,
     DevToolsConsoleHistoryNext,
+    DevToolsElementsUp,
+    DevToolsElementsDown,
+    DevToolsElementsExpand,
+    DevToolsElementsCollapse,
     Scroll(ScrollAction),
 }
 
@@ -596,7 +600,11 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         | BrowserShortcut::DevToolsClose
         | BrowserShortcut::DevToolsConsoleSubmit
         | BrowserShortcut::DevToolsConsoleHistoryPrev
-        | BrowserShortcut::DevToolsConsoleHistoryNext => None,
+        | BrowserShortcut::DevToolsConsoleHistoryNext
+        | BrowserShortcut::DevToolsElementsUp
+        | BrowserShortcut::DevToolsElementsDown
+        | BrowserShortcut::DevToolsElementsExpand
+        | BrowserShortcut::DevToolsElementsCollapse => None,
         BrowserShortcut::Scroll(_) => None,
     }
 }
@@ -643,6 +651,30 @@ pub fn dispatch_devtools_field_keys(
     };
     match code {
         KeyCode::Escape => Some(BrowserShortcut::DevToolsClose),
+        _ => None,
+    }
+}
+
+pub fn dispatch_devtools_elements_keys(
+    chrome: &BaseDocument,
+    event: &KeyEvent,
+    devtools_open: bool,
+    elements_tab_active: bool,
+) -> Option<BrowserShortcut> {
+    if !devtools_open || !elements_tab_active || !event.state.is_pressed() {
+        return None;
+    }
+    if !crate::chrome::devtools_elements_tree_focused(chrome) {
+        return None;
+    }
+    let PhysicalKey::Code(code) = event.physical_key else {
+        return None;
+    };
+    match code {
+        KeyCode::ArrowUp => Some(BrowserShortcut::DevToolsElementsUp),
+        KeyCode::ArrowDown => Some(BrowserShortcut::DevToolsElementsDown),
+        KeyCode::ArrowRight => Some(BrowserShortcut::DevToolsElementsExpand),
+        KeyCode::ArrowLeft => Some(BrowserShortcut::DevToolsElementsCollapse),
         _ => None,
     }
 }
@@ -1919,6 +1951,38 @@ mod tests {
         assert_eq!(
             super::dispatch_devtools_console_keys(&doc, &up, true, true, false),
             Some(BrowserShortcut::DevToolsConsoleHistoryPrev)
+        );
+    }
+
+    #[test]
+    fn dispatch_devtools_elements_tree_keys() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            tab: crate::devtools::DevToolsTab::Elements,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &state);
+        crate::chrome::focus_devtools_elements_tree(&mut doc);
+        let up = test_key_event(
+            KeyCode::ArrowUp,
+            ElementState::Pressed,
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowUp),
+        );
+        assert_eq!(
+            super::dispatch_devtools_elements_keys(&doc, &up, true, true),
+            Some(BrowserShortcut::DevToolsElementsUp)
+        );
+        let right = test_key_event(
+            KeyCode::ArrowRight,
+            ElementState::Pressed,
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowRight),
+        );
+        assert_eq!(
+            super::dispatch_devtools_elements_keys(&doc, &right, true, true),
+            Some(BrowserShortcut::DevToolsElementsExpand)
         );
     }
 

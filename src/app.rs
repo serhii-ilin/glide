@@ -479,6 +479,7 @@ fn reset_tab_console_for_navigation(tab: &mut Tab, js: &mut JsHost) {
     tab.console_epoch = tab.console_epoch.saturating_add(1);
     console_feed::discard_pending_for_tab(tab.id);
     js.set_console_route(tab.id, tab.console_epoch);
+    crate::devtools::elements::reset_tab_elements_for_navigation(tab);
 }
 
 fn sync_active_tab_console(
@@ -490,6 +491,45 @@ fn sync_active_tab_console(
         return false;
     };
     devtools.sync_console_pane(doc, &tab.console, tab.id)
+}
+
+fn apply_elements_tree_shortcut(
+    tabs: &mut TabManager,
+    chrome: &mut BaseDocument,
+    shortcut: keyboard::BrowserShortcut,
+) {
+    let Some(tab) = tabs.active_mut() else {
+        return;
+    };
+    let rows = {
+        let state = &tab.elements;
+        crate::devtools::elements::with_page_document(chrome, |page| {
+            crate::devtools::elements::flatten_dom_tree(page, state)
+        })
+    };
+    let Some(rows) = rows else {
+        return;
+    };
+    match shortcut {
+        keyboard::BrowserShortcut::DevToolsElementsUp => tab.elements.move_cursor(-1),
+        keyboard::BrowserShortcut::DevToolsElementsDown => tab.elements.move_cursor(1),
+        keyboard::BrowserShortcut::DevToolsElementsExpand => tab.elements.expand_cursor(&rows),
+        keyboard::BrowserShortcut::DevToolsElementsCollapse => {
+            tab.elements.collapse_or_parent(&rows);
+        }
+        _ => {}
+    }
+}
+
+fn sync_active_tab_elements(
+    devtools: &mut DevToolsSession,
+    tabs: &mut TabManager,
+    doc: &mut BaseDocument,
+) -> bool {
+    let Some(tab) = tabs.active_mut() else {
+        return false;
+    };
+    devtools.sync_elements_pane(doc, tab)
 }
 
 fn apply_active_tab_to_doc(
@@ -787,6 +827,9 @@ impl Glide {
                     NavCommand::DevToolsToggle => {
                         self.devtools.toggle(&mut doc);
                         sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
+                        if self.devtools.state.tab == DevToolsTab::Elements {
+                            sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut doc);
+                        }
                         save_settings_after = true;
                     }
                     NavCommand::DevToolsDockBottom => {
@@ -801,7 +844,16 @@ impl Glide {
                         self.devtools.set_tab(*tab, &mut doc);
                         if *tab == DevToolsTab::Console {
                             sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
+                        } else if *tab == DevToolsTab::Elements {
+                            sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut doc);
+                            crate::chrome::focus_devtools_elements_tree(&mut doc);
                         }
+                    }
+                    NavCommand::DevToolsElementsSelect(node) => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.elements.set_selected_handle(Some(*node));
+                        }
+                        sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut doc);
                     }
                     NavCommand::DevToolsConsoleClear => {
                         if let Some(tab) = self.tabs.active_mut() {
@@ -1062,6 +1114,12 @@ impl Glide {
             js_redraw = js_redraw
                 || (self.devtools.state.open && self.devtools.state.tab == DevToolsTab::Console);
         }
+        if self.devtools.state.open && self.devtools.state.tab == DevToolsTab::Elements {
+            let mut chrome = view.doc.inner_mut();
+            if sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut chrome) {
+                js_redraw = true;
+            }
+        }
         if js_redraw {
             view.request_redraw();
         }
@@ -1244,6 +1302,17 @@ impl Glide {
                     view.request_redraw();
                     true
                 }
+                keyboard::BrowserShortcut::DevToolsElementsUp
+                | keyboard::BrowserShortcut::DevToolsElementsDown
+                | keyboard::BrowserShortcut::DevToolsElementsExpand
+                | keyboard::BrowserShortcut::DevToolsElementsCollapse => {
+                    {
+                        let mut chrome = view.doc.inner_mut();
+                        apply_elements_tree_shortcut(&mut self.tabs, &mut chrome, shortcut);
+                    }
+                    view.request_redraw();
+                    true
+                }
                 keyboard::BrowserShortcut::DevToolsConsoleHistoryPrev
                 | keyboard::BrowserShortcut::DevToolsConsoleHistoryNext => {
                     let older = matches!(
@@ -1369,6 +1438,7 @@ impl ApplicationHandler for Glide {
                     keyboard::dispatch_find_field_keys(&mut chrome, event, mods, find_open)
                 };
                 let console_tab_active = self.devtools.state.tab == DevToolsTab::Console;
+                let elements_tab_active = self.devtools.state.tab == DevToolsTab::Elements;
                 find_shortcut
                     .or_else(|| {
                         keyboard::dispatch_devtools_console_keys(
@@ -1377,6 +1447,14 @@ impl ApplicationHandler for Glide {
                             devtools_open,
                             console_tab_active,
                             ime_composing,
+                        )
+                    })
+                    .or_else(|| {
+                        keyboard::dispatch_devtools_elements_keys(
+                            &view.doc.inner(),
+                            event,
+                            devtools_open,
+                            elements_tab_active,
                         )
                     })
                     .or_else(|| {

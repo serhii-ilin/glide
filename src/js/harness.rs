@@ -140,11 +140,65 @@ pub fn run_inline_page_with_repl_post(
         thread::sleep(Duration::from_millis(5));
     }
     js_host.submit_console_eval(expression)?;
+    pump_repl_settle(&mut document.0, &mut js_host, post_eval);
+    Ok(js_host.drain_console_wire())
+}
+
+fn pump_repl_settle(
+    document: &mut blitz_dom::BaseDocument,
+    js_host: &mut crate::js::JsHost,
+    duration: Duration,
+) {
     let post_start = Instant::now();
-    while post_start.elapsed() < post_eval {
+    while post_start.elapsed() < duration {
+        document.resolve(0.0);
+        js_host.pump(document, Instant::now());
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Load inline HTML, evaluate a sequence of REPL expressions, then drain wire events.
+pub fn run_inline_page_with_repl_sequence(
+    html: &str,
+    expressions: &[&str],
+    pump_for: Duration,
+    post_eval_each: Duration,
+) -> Result<Vec<crate::js::console_feed::ConsoleWireEvent>, String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
+    let _ = crate::js::console_feed::drain_pending();
+    let net = Arc::new(Provider::new(None));
+    let tap = JsTap::new_enabled();
+    let provider = GlideHtmlProvider {
+        scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        js_tap: tap.clone(),
+    };
+    let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.set_console_route(0, 1);
+    let config = DocumentConfig {
+        base_url: Some("https://example.test/".into()),
+        net_provider: Some(net.clone()),
+        html_parser_provider: Some(Arc::new(provider)),
+        ..Default::default()
+    };
+    let mut document = HtmlPageDocument(parse::document_from_html(html, config, true));
+    js_host.maybe_start_page(&document.0, "https://example.test/", rt.handle());
+    js_host.finish_script_resolution_sync(
+        rt.handle(),
+        &crate::js::scripts::collect_scripts(&document.0),
+    );
+    let start = Instant::now();
+    while start.elapsed() < pump_for {
         document.0.resolve(0.0);
         js_host.pump(&mut document.0, Instant::now());
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
+    }
+    for expression in expressions {
+        js_host.submit_console_eval(expression)?;
+        pump_repl_settle(&mut document.0, &mut js_host, post_eval_each);
     }
     Ok(js_host.drain_console_wire())
 }

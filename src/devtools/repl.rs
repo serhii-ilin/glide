@@ -61,6 +61,17 @@ impl ConsoleReplUi {
         self.draft.clear();
     }
 
+    #[cfg(test)]
+    pub fn test_set_cursor(&mut self, index: Option<usize>, draft: impl Into<String>) {
+        self.history_index = index;
+        self.draft = draft.into();
+    }
+
+    #[cfg(test)]
+    pub fn test_cursor_cleared(&self) -> bool {
+        self.history_index.is_none() && self.draft.is_empty()
+    }
+
     pub fn navigate(
         &mut self,
         history: &ConsoleReplHistory,

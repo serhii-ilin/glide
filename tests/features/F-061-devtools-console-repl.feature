@@ -6,9 +6,10 @@ Feature: F-061 DevTools Console REPL
   # Source / basis: Chrome DevTools Console command line; product decision (R-029)
   # Registry: docs/features.md -> F-061
   # Tests: devtools::repl::tests::*, devtools::console::tests::clear_keeps_repl_history,
-  #        js::repl_eval::tests::*, js::integration::{repl_eval_returns_formatted_result,repl_eval_throws_error_row,repl_eval_respects_watchdog},
-  #        keyboard::tests::dispatch_devtools_console_submit_and_history,
-  #        chrome::tests::devtools_console_input_exists_when_console_tab_active, manual M-045
+  #        devtools::tests::sync_console_pane_resets_repl_ui_on_tab_change,
+  #        js::repl_eval::tests::*, js::integration::{repl_eval_returns_formatted_result,repl_eval_throws_error_row,repl_eval_respects_watchdog,repl_eval_preview_symbol_then_followup_addition,repl_eval_preview_accessor_without_calling_then_followup,repl_eval_preview_infinite_accessor_without_hang_then_followup,repl_eval_preview_proxy_without_traps_then_followup,repl_eval_global_var_visible_on_next_eval},
+  #        keyboard::tests::{dispatch_devtools_console_submit_and_history,dispatch_devtools_console_ignores_enter_while_ime_composing},
+  #        chrome::tests::devtools_console_input_exists_when_console_tab_active, manual M-045 (includes per-tab history scenario)
 
   Background:
     Given JavaScript is enabled and a page has loaded in the active tab

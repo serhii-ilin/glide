@@ -1311,16 +1311,84 @@ fn repl_eval_throws_error_row() {
 #[test]
 fn repl_eval_respects_watchdog() {
     let html = r#"<!DOCTYPE html><html><body></body></html>"#;
-    let wire = super::harness::run_inline_page_with_repl_post(
+    super::repl_eval::set_watchdog_duration_ms(300);
+    let wire = super::harness::run_inline_page_with_repl_sequence(
         html,
-        "while (true) {}",
+        &["while (true) {}", "1 + 1"],
         std::time::Duration::from_millis(200),
-        std::time::Duration::from_secs(6),
+        std::time::Duration::from_millis(450),
     )
     .expect("repl eval");
+    super::repl_eval::reset_watchdog_duration_ms();
     assert!(
         wire.iter()
             .any(|e| { e.level == "error" && e.message.to_lowercase().contains("timed out") }),
+        "{wire:?}"
+    );
+    assert!(
+        wire.iter()
+            .any(|e| e.level == "repl-result" && e.message.contains("< 2")),
+        "{wire:?}"
+    );
+}
+
+fn repl_followup_after_hostile_preview(expr: &str, preview_needle: &str) {
+    let html = r#"<!DOCTYPE html><html><body></body></html>"#;
+    let wire = super::harness::run_inline_page_with_repl_sequence(
+        html,
+        &[expr, "1 + 1"],
+        std::time::Duration::from_millis(200),
+        std::time::Duration::from_millis(200),
+    )
+    .expect("repl sequence");
+    assert!(
+        wire.iter()
+            .any(|e| e.level == "repl-result" && e.message.contains(preview_needle)),
+        "{wire:?}"
+    );
+    assert!(
+        wire.iter()
+            .any(|e| e.level == "repl-result" && e.message.contains("< 2")),
+        "{wire:?}"
+    );
+}
+
+#[test]
+fn repl_eval_preview_symbol_then_followup_addition() {
+    repl_followup_after_hostile_preview("Symbol('s')", "Symbol");
+}
+
+#[test]
+fn repl_eval_preview_accessor_without_calling_then_followup() {
+    repl_followup_after_hostile_preview("({ get x() { throw 1 } })", "get x");
+}
+
+#[test]
+fn repl_eval_preview_infinite_accessor_without_hang_then_followup() {
+    repl_followup_after_hostile_preview("({ get x() { while (true) {} } })", "get x");
+}
+
+#[test]
+fn repl_eval_preview_proxy_without_traps_then_followup() {
+    repl_followup_after_hostile_preview(
+        "new Proxy({}, { ownKeys() { while (true) {} } })",
+        "Proxy",
+    );
+}
+
+#[test]
+fn repl_eval_global_var_visible_on_next_eval() {
+    let html = r#"<!DOCTYPE html><html><body></body></html>"#;
+    let wire = super::harness::run_inline_page_with_repl_sequence(
+        html,
+        &["var x = 5", "x"],
+        std::time::Duration::from_millis(200),
+        std::time::Duration::from_millis(200),
+    )
+    .expect("repl sequence");
+    assert!(
+        wire.iter()
+            .any(|e| e.level == "repl-result" && e.message.contains("< 5")),
         "{wire:?}"
     );
 }

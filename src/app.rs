@@ -354,6 +354,7 @@ struct Glide {
     bookmarks: BookmarksState,
     bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
     history_log: HistoryLogState,
+    ime_composing: bool,
 }
 
 fn chrome_view_state(
@@ -553,6 +554,7 @@ impl Glide {
             history_log: init.history_log,
             devtools: init.devtools,
             devtools_drag: None,
+            ime_composing: false,
         }
     }
 
@@ -1346,7 +1348,18 @@ impl ApplicationHandler for Glide {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let WindowEvent::Ime(ime) = &event {
+            self.ime_composing = matches!(ime, winit::event::Ime::Preedit(..));
+            if matches!(
+                ime,
+                winit::event::Ime::Commit(_) | winit::event::Ime::Disabled
+            ) {
+                self.ime_composing = false;
+            }
+        }
+
         let chrome_shortcut = if let WindowEvent::KeyboardInput { event, .. } = &event {
+            let ime_composing = self.ime_composing;
             self.inner.windows.get_mut(&window_id).and_then(|view| {
                 let find_open = crate::chrome::find_bar_open(&view.doc.inner());
                 let devtools_open = crate::chrome::devtools_open(&view.doc.inner());
@@ -1363,6 +1376,7 @@ impl ApplicationHandler for Glide {
                             event,
                             devtools_open,
                             console_tab_active,
+                            ime_composing,
                         )
                     })
                     .or_else(|| {

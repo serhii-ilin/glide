@@ -652,6 +652,7 @@ pub fn dispatch_devtools_console_keys(
     event: &KeyEvent,
     devtools_open: bool,
     console_tab_active: bool,
+    ime_composing: bool,
 ) -> Option<BrowserShortcut> {
     if !devtools_open || !console_tab_active || !event.state.is_pressed() {
         return None;
@@ -663,7 +664,9 @@ pub fn dispatch_devtools_console_keys(
         return None;
     };
     match code {
-        KeyCode::Enter | KeyCode::NumpadEnter => Some(BrowserShortcut::DevToolsConsoleSubmit),
+        KeyCode::Enter | KeyCode::NumpadEnter if !ime_composing => {
+            Some(BrowserShortcut::DevToolsConsoleSubmit)
+        }
         KeyCode::ArrowUp => Some(BrowserShortcut::DevToolsConsoleHistoryPrev),
         KeyCode::ArrowDown => Some(BrowserShortcut::DevToolsConsoleHistoryNext),
         KeyCode::Escape => Some(BrowserShortcut::DevToolsClose),
@@ -1905,7 +1908,7 @@ mod tests {
             winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
         );
         assert_eq!(
-            super::dispatch_devtools_console_keys(&doc, &enter, true, true),
+            super::dispatch_devtools_console_keys(&doc, &enter, true, true, false),
             Some(BrowserShortcut::DevToolsConsoleSubmit)
         );
         let up = test_key_event(
@@ -1914,8 +1917,31 @@ mod tests {
             winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowUp),
         );
         assert_eq!(
-            super::dispatch_devtools_console_keys(&doc, &up, true, true),
+            super::dispatch_devtools_console_keys(&doc, &up, true, true, false),
             Some(BrowserShortcut::DevToolsConsoleHistoryPrev)
+        );
+    }
+
+    #[test]
+    fn dispatch_devtools_console_ignores_enter_while_ime_composing() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            tab: crate::devtools::DevToolsTab::Console,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &state);
+        crate::chrome::focus_devtools_console_input(&mut doc);
+        let enter = test_key_event(
+            KeyCode::Enter,
+            ElementState::Pressed,
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+        );
+        assert_eq!(
+            super::dispatch_devtools_console_keys(&doc, &enter, true, true, true),
+            None
         );
     }
 

@@ -44,7 +44,7 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Cmd/Ctrl+= / Cmd/Ctrl++ / Numpad+ | Zoom page in (10% steps, also with Shift held) |
 | Cmd/Ctrl+- / Numpad- | Zoom page out |
 | Cmd/Ctrl+0 | Reset zoom to 100% (non-100% zoom shows a **%** label in the toolbar) |
-| Cmd/Ctrl+D | Bookmark or unbookmark the current page (toolbar **☆** / **★**) |
+| Cmd/Ctrl+D | Bookmark or unbookmark the current page (toolbar star outline / filled) |
 | Space / Shift+Space / PgUp / PgDn / Home / End / arrows | Scroll the page when no text field is focused |
 
 Text fields (address bar and in-page inputs) use normal editing shortcuts: Backspace and
@@ -148,7 +148,7 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 - http, https, and file pages, plus stylesheets, images, and web fonts.
 - Link clicks, in-page fragment jumps, scrolling, text selection, and form controls that Blitz implements (the address bar is one of those).
 - Tabs with a tab strip, new-tab button, per-tab close controls, and an in-window File/Edit/View/History/Bookmarks/Tabs/Help menu bar.
-- A Safari-like toolbar: borderless back, forward and reload icons, a centered address field that shows the page title and switches to the URL when you click it, and the bookmark and JavaScript controls on the right. The window always shows at least one tab.
+- A Safari-like (macOS light) look: one neutral grey chrome surface in the system font, thin line icons for back and forward, a centered borderless address field with reload inside it that shows the page title and switches to the URL (with a blue focus ring) when you click it, and the zoom, JavaScript and bookmark controls on the right. Tabs sit below the toolbar as equal-width segments with the close button at the leading edge, and the find bar has chevrons and Done. The window always shows at least one tab.
 - Back, forward, and reload. Redirects replace the current history entry. A link click pushes a new one. Each tab keeps its own history, address, title, loading state, find state and zoom.
 - Loading indicator, stop (Esc or the toolbar **Stop** button while a page is loading), and a readable error page when a page fails to load. **Retry** on the error page reloads the same URL. HTTP redirects (301, 302, 303, 307, 308, a `Refresh` header, and a zero-delay `<meta http-equiv="refresh">`) are followed and the address bar shows the final URL. A refresh that sits only inside `<noscript>` is followed when that is the page's only content. A 4xx or 5xx response with a body is shown as that page; an empty error status or a host that cannot be reached still uses Glide's error page.
 - Per-tab page zoom (30%–300%) and find-in-page with match highlight and scroll-into-view. Both persist per tab across restarts.
@@ -166,7 +166,7 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 
 ## Layout
 
-The chrome is an HTML document drawn by Blitz. It contains a menu bar, tab strip, toolbar and find bar. Back, forward, tab and menu actions are links (`glide://back`, `glide://new-tab`, `glide://menu-open?menu=file`, and similar). The address field is a form whose submit is intercepted. The page is an `<iframe>`; clicks inside it stay in Blitz, and Glide records the iframe's URL as history for the active tab. Switching tabs reloads the single iframe and restores the selected tab's state.
+The chrome is an HTML document drawn by Blitz. It contains, top to bottom, a menu bar, toolbar, tab strip and find bar. Back, forward, tab and menu actions are links (`glide://back`, `glide://new-tab`, `glide://menu-open?menu=file`, and similar). The address field is a form whose submit is intercepted. The page is an `<iframe>`; clicks inside it stay in Blitz, and Glide records the iframe's URL as history for the active tab. Switching tabs reloads the single iframe and restores the selected tab's state.
 
 ```
 src/lib.rs        crate modules and library entry points

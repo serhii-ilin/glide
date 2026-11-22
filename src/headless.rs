@@ -246,7 +246,11 @@ fn load_once(url: &str, js_enabled: bool) -> Result<(HtmlPageDocument, Option<ur
 
     if js_enabled {
         let _ = js_host.drain_console_wire();
-        js_host.flush_dom_rpc(&mut document.0, Duration::from_secs(4));
+        js_host.flush_dom_rpc_until_idle(
+            &mut document.0,
+            Duration::from_secs(4),
+            Duration::from_millis(50),
+        );
         document.0.resolve(0.0);
         if !html.trim().is_empty() && !has_visible_content(&document.0) {
             logging::warn(

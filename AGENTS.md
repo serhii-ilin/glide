@@ -116,9 +116,21 @@ ever throwing. These rules keep records parseable, bounded and useful.
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo nextest run --profile ci
+cargo nextest run --profile ci --stress-count 10 --no-fail-fast
+cargo test --doc
 cargo build --release        # when user-facing behavior changes
 ```
+
+Install [cargo-nextest](https://nexte.st/) locally with
+`curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"`
+(Linux) or the `taiki-e/install-action` with `tool: cargo-nextest@0.9.152` on macOS and in CI
+(see `.github/workflows/ci.yml`). Nextest runs each test in its own process, so the
+`TEST_CONSOLE_SERIAL` lock in `src/js/console_feed.rs` no longer serializes the whole suite.
+Nextest does not run doctests — `cargo test --doc` covers those. Retries stay at 0 in
+`.config/nextest.toml`, so a flaky test is a failure; use the stress run above instead of
+looping `cargo test` many times. Keep the in-process console lock so plain `cargo test` still
+passes when run locally or in tools that do not use nextest.
 
 ## Requirements, feature descriptions and Gherkin specs
 

@@ -59,13 +59,15 @@ code on its branch. Runs are **sequential in the main checkout** (no worktrees).
 4. **Progress** (read-only): `python3 .claude/skills/cursor-agents/scripts/ca-status.py ~/.claude/cursor-runs/glide/<slug> --texts 5`
 5. **Review** every finished branch; do not trust the report:
    - `git log --oneline main..HEAD`, `git diff main...HEAD --stat`, read the diff;
-   - re-run all gates yourself: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
+   - re-run all gates yourself:
+     `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo nextest run --profile ci && cargo test --doc`
      (+ `cargo build --release` for user-facing changes);
    - spawn the review subagent (Sonnet or Opus per routing) with the diff range and the
      task's acceptance criteria; ask for correctness bugs, scope creep, weakened tests,
      missing registry update, and an `MCP` column / tool that ignores the
      "Agent control (MCP)" rules in `AGENTS.md`;
-   - loop new tests 10× to catch flakes (`for i in $(seq 10); do cargo test <name> -q || break; done`).
+   - stress new tests for flakes:
+     `cargo nextest run --profile ci --stress-count 10 --no-fail-fast <filter>`.
 6. **Fix rounds:** write concrete findings to `<task>-fix<N>.md` and run
    `ca-run.sh -n feat/<task> -p <fix-file> -r <chat-id>`. Escalate per the routing table.
 7. **Merge** (user's policy: local, no PR):

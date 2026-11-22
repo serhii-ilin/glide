@@ -201,8 +201,7 @@ impl RemoteServer {
         listener
             .set_nonblocking(true)
             .map_err(|err| cleanup(err, "listen"))?;
-        let metadata = fs::symlink_metadata(path)
-            .map_err(|err| format!("remote control inspect {}: {err}", path.display()))?;
+        let metadata = fs::symlink_metadata(path).map_err(|err| cleanup(err, "inspect"))?;
         let stop = Arc::new(AtomicBool::new(false));
         let connections = Arc::new(std::sync::Mutex::new(Vec::new()));
         let accept = std::thread::Builder::new()
@@ -721,6 +720,8 @@ pub struct RemoteClient {
     writer: std::os::unix::net::UnixStream,
     reader: std::os::unix::net::UnixStream,
     buffer: Vec<u8>,
+    /// Prefix of `buffer` already searched for a newline, so large responses scan linearly.
+    scanned: usize,
     next_id: u64,
     response_limit: usize,
     poisoned: bool,
@@ -751,6 +752,7 @@ impl RemoteClient {
             writer: stream,
             reader: read_stream,
             buffer: Vec::new(),
+            scanned: 0,
             next_id: 1,
             response_limit,
             poisoned: false,
@@ -778,13 +780,16 @@ impl RemoteClient {
             .checked_add(timeout)
             .ok_or_else(|| "remote control timeout is too large".to_string())?;
         self.writer
+            .set_write_timeout(Some(timeout))
+            .map_err(|err| format!("remote control timeout: {err}"))?;
+        self.writer
             .write_all(encode_request(id, &request).as_bytes())
             .map_err(|err| format!("remote control write failed: {err}"))?;
         self.writer
             .flush()
             .map_err(|err| format!("remote control write failed: {err}"))?;
         loop {
-            if let Some(line) = take_response_line(&mut self.buffer) {
+            if let Some(line) = take_response_line(&mut self.buffer, &mut self.scanned) {
                 if line.len() > self.response_limit {
                     self.poisoned = true;
                     return Err(BROKEN.to_string());
@@ -808,6 +813,10 @@ impl RemoteClient {
                     }
                 }
             }
+            if self.buffer.len() > self.response_limit {
+                self.poisoned = true;
+                return Err(BROKEN.to_string());
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(timeout_message(timeout));
@@ -818,13 +827,7 @@ impl RemoteClient {
             let mut chunk = [0u8; 64 * 1024];
             match self.reader.read(&mut chunk) {
                 Ok(0) => return Err("remote control connection closed".to_string()),
-                Ok(read) => {
-                    self.buffer.extend_from_slice(&chunk[..read]);
-                    if !self.buffer.contains(&b'\n') && self.buffer.len() > self.response_limit {
-                        self.poisoned = true;
-                        return Err(BROKEN.to_string());
-                    }
-                }
+                Ok(read) => self.buffer.extend_from_slice(&chunk[..read]),
                 Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(err)
                     if matches!(
@@ -846,57 +849,24 @@ fn timeout_message(timeout: std::time::Duration) -> String {
 }
 
 /// Take one complete newline-terminated line out of the persistent read buffer.
+///
+/// `scanned` is how much of `buffer` is already known to hold no newline; only new bytes are
+/// searched, so a long response costs one pass instead of one pass per read.
 #[cfg(unix)]
-fn take_response_line(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let end = buffer.iter().position(|byte| *byte == b'\n')?;
+fn take_response_line(buffer: &mut Vec<u8>, scanned: &mut usize) -> Option<Vec<u8>> {
+    let start = (*scanned).min(buffer.len());
+    let Some(offset) = buffer[start..].iter().position(|byte| *byte == b'\n') else {
+        *scanned = buffer.len();
+        return None;
+    };
+    *scanned = 0;
+    let end = start + offset;
     let mut line: Vec<u8> = buffer.drain(..=end).collect();
     line.pop();
     if line.last() == Some(&b'\r') {
         line.pop();
     }
     Some(line)
-}
-
-#[cfg(not(unix))]
-const UNIX_ONLY: &str = "remote control needs a Unix platform";
-
-#[cfg(not(unix))]
-pub struct RemoteServer;
-
-#[cfg(not(unix))]
-impl RemoteServer {
-    pub fn bind(_path: &Path, _handler: Handler) -> Result<RemoteServer, String> {
-        Err(UNIX_ONLY.to_string())
-    }
-
-    pub fn path(&self) -> &Path {
-        Path::new("")
-    }
-
-    pub fn shutdown(&mut self) {}
-}
-
-#[cfg(not(unix))]
-impl Drop for RemoteServer {
-    fn drop(&mut self) {}
-}
-
-#[cfg(not(unix))]
-pub struct RemoteClient;
-
-#[cfg(not(unix))]
-impl RemoteClient {
-    pub fn connect(_path: &Path) -> Result<RemoteClient, String> {
-        Err(UNIX_ONLY.to_string())
-    }
-
-    pub fn call(
-        &mut self,
-        _request: serde_json::Value,
-        _timeout: std::time::Duration,
-    ) -> Result<serde_json::Value, String> {
-        Err(UNIX_ONLY.to_string())
-    }
 }
 
 #[cfg(not(unix))]
@@ -1433,6 +1403,21 @@ mod tests {
     }
 
     #[test]
+    fn take_response_line_resumes_scan_across_reads() {
+        let mut buffer = b"{\"id\":1".to_vec();
+        let mut scanned = 0;
+        assert_eq!(take_response_line(&mut buffer, &mut scanned), None);
+        assert_eq!(scanned, buffer.len(), "the partial line is not rescanned");
+        buffer.extend_from_slice(b",\"ok\":1}\r\n{\"id\":2");
+        assert_eq!(
+            take_response_line(&mut buffer, &mut scanned).as_deref(),
+            Some(&b"{\"id\":1,\"ok\":1}"[..])
+        );
+        assert_eq!(scanned, 0);
+        assert_eq!(buffer, b"{\"id\":2");
+    }
+
+    #[test]
     fn shutdown_closes_open_connections() {
         let dir = TempDir::new();
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1444,13 +1429,20 @@ mod tests {
         let mut server =
             RemoteServer::bind(&socket_path(dir.path()), handler).expect("bind guarded server");
         let mut client = RemoteClient::connect(&socket_path(dir.path())).expect("client");
-        thread::sleep(Duration::from_millis(50));
+        client
+            .call(json!(null), Duration::from_secs(2))
+            .expect("connection is served before shutdown");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         server.shutdown();
         let error = client
             .call(json!(null), Duration::from_secs(1))
             .expect_err("connection closed by shutdown");
         assert!(!error.is_empty(), "an error explains the closed connection");
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "handler must not run");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "handler must not run after shutdown"
+        );
     }
 
     #[test]

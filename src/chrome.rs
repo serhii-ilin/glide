@@ -18,6 +18,10 @@ pub enum NavCommand {
     FindClose,
     FindNext,
     FindPrev,
+    DevToolsToggle,
+    DevToolsDockBottom,
+    DevToolsDockRight,
+    DevToolsTab(crate::devtools::DevToolsTab),
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -126,6 +130,13 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
             Some("find-close") => Some(NavCommand::FindClose),
             Some("find-next") => Some(NavCommand::FindNext),
             Some("find-prev") => Some(NavCommand::FindPrev),
+            Some("devtools") => Some(NavCommand::DevToolsToggle),
+            Some("devtools-dock-bottom") => Some(NavCommand::DevToolsDockBottom),
+            Some("devtools-dock-right") => Some(NavCommand::DevToolsDockRight),
+            Some("devtools-tab") => query_value(url, "tab")
+                .as_deref()
+                .and_then(crate::devtools::DevToolsTab::parse)
+                .map(NavCommand::DevToolsTab),
             Some("zoom-in") => Some(NavCommand::ZoomIn),
             Some("zoom-out") => Some(NavCommand::ZoomOut),
             Some("zoom-reset") => Some(NavCommand::ZoomReset),
@@ -603,12 +614,92 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     min-width: calc(72px * var(--ui));
     text-align: center;
   }}
-  iframe {{
+  #stage {{
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }}
+  #stage.dock-right {{
+    flex-direction: row;
+  }}
+  #devtools-split,
+  #devtools {{
+    display: none;
+    flex: none;
+  }}
+  #stage.devtools-open #devtools-split {{
+    display: block;
+    background: #d9d3c8;
+    flex: none;
+  }}
+  #stage.devtools-open.dock-bottom #devtools-split {{
+    height: calc(6px * var(--ui));
+    cursor: row-resize;
+  }}
+  #stage.devtools-open.dock-right #devtools-split {{
+    width: calc(6px * var(--ui));
+    cursor: col-resize;
+  }}
+  #stage.devtools-open #devtools {{
+    display: flex;
+    flex-direction: column;
+    background: #f0ece4;
+    overflow: hidden;
+    flex: none;
+  }}
+  #stage.devtools-open.dock-bottom #devtools {{
+    border-top: calc(1px * var(--ui)) solid #d9d3c8;
+  }}
+  #stage.devtools-open.dock-right #devtools {{
+    border-left: calc(1px * var(--ui)) solid #d9d3c8;
+  }}
+  div.devtools-tabs {{
+    display: flex;
+    gap: calc(2px * var(--ui));
+    padding: calc(4px * var(--ui)) calc(6px * var(--ui));
+    background: #e8e4dc;
+    border-bottom: calc(1px * var(--ui)) solid #d9d3c8;
+    flex: none;
+  }}
+  a.devtools-tab {{
+    padding: calc(4px * var(--ui)) calc(10px * var(--ui));
+    border-radius: calc(6px * var(--ui));
+    font-size: calc(12px * var(--ui));
+    color: #4d4841;
+    text-decoration: none;
+  }}
+  a.devtools-tab.active {{
+    background: #f7f5f2;
+    color: #1c1915;
+  }}
+  div.devtools-pane {{
+    display: none;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+  }}
+  div.devtools-pane.active {{
+    display: block;
+  }}
+  p.devtools-placeholder {{
+    margin: calc(8px * var(--ui));
+    font-size: calc(12px * var(--ui));
+    color: #6b6358;
+  }}
+  #inspect-hl {{
+    display: none;
+    pointer-events: none;
+  }}
+  iframe#page {{
     flex: 1;
     width: 100%;
     border: 0;
     background: #fff;
     min-height: 0;
+    min-width: 0;
   }}
   #loading {{
     height: calc(2px * var(--ui));
@@ -649,7 +740,21 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     <a class="btn" href="glide://find-close" title="Close find">&times;</a>
   </div>
   <div id="loading"></div>
-  <iframe id="page" src="{url}"></iframe>
+  <div id="stage" class="dock-bottom">
+    <iframe id="page" src="{url}"></iframe>
+    <div id="devtools-split"></div>
+    <aside id="devtools" tabindex="-1">
+      <div class="devtools-tabs">
+        <a id="devtools-tab-console" class="devtools-tab active" href="glide://devtools-tab?tab=console">Console</a>
+        <a id="devtools-tab-elements" class="devtools-tab" href="glide://devtools-tab?tab=elements">Elements</a>
+        <a id="devtools-tab-network" class="devtools-tab" href="glide://devtools-tab?tab=network">Network</a>
+      </div>
+      <div id="devtools-pane-console" class="devtools-pane active"><p class="devtools-placeholder">Console output will appear here.</p></div>
+      <div id="devtools-pane-elements" class="devtools-pane"><p class="devtools-placeholder">DOM tree will appear here.</p></div>
+      <div id="devtools-pane-network" class="devtools-pane"><p class="devtools-placeholder">Network log will appear here.</p></div>
+    </aside>
+  </div>
+  <div id="inspect-hl"></div>
 </body>
 </html>
 "#
@@ -779,6 +884,12 @@ fn menu_items_html(menu: MenuId, view: &ChromeViewState) -> String {
             items.push(MenuItem::action("Reset Zoom", "glide://zoom-reset", "⌘0"));
             items.push(MenuItem::separator());
             items.push(MenuItem::action("Reload Page", "glide://reload", "⌘R"));
+            items.push(MenuItem::separator());
+            items.push(MenuItem::action(
+                "Toggle Developer Tools",
+                "glide://devtools",
+                "F12",
+            ));
             items.push(MenuItem::separator());
             let js_label = if view.js_enabled {
                 "Turn JavaScript Off"
@@ -949,6 +1060,7 @@ fn replace_inner_html(doc: &mut BaseDocument, id: blitz_traits::node_id::NodeId,
 }
 
 use blitz_dom::{BaseDocument, local_name, qual_name};
+use blitz_traits::node_id::NodeId;
 
 /// Whether the address bar currently has keyboard focus.
 pub fn address_bar_focused(doc: &BaseDocument) -> bool {
@@ -1153,6 +1265,192 @@ pub fn set_ui_scale(doc: &mut BaseDocument, ui: f32) {
     let style = format!("--ui: {ui}");
     doc.mutate()
         .set_attribute(root, qual_name!("style"), &style);
+}
+
+use crate::devtools::{DevToolsDock, DevToolsState, DevToolsTab};
+
+pub fn devtools_open(doc: &BaseDocument) -> bool {
+    doc.get_element_by_id("stage").is_some_and(|id| {
+        doc.get_node(id)
+            .and_then(|n| n.attr(local_name!("class")))
+            .is_some_and(|c| c.split_whitespace().any(|part| part == "devtools-open"))
+    })
+}
+
+pub fn devtools_focused(doc: &BaseDocument) -> bool {
+    let Some(devtools_id) = doc.get_element_by_id("devtools") else {
+        return false;
+    };
+    let Some(focus) = doc.get_focussed_node_id() else {
+        return false;
+    };
+    if focus == devtools_id {
+        return true;
+    }
+    is_ancestor_of(doc, devtools_id, focus)
+}
+
+fn is_ancestor_of(doc: &BaseDocument, ancestor: NodeId, node: NodeId) -> bool {
+    let mut current = node;
+    while let Some(parent) = doc.get_node(current).and_then(|n| n.parent) {
+        if parent == ancestor {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
+pub fn stage_layout_axis_css_px(doc: &BaseDocument, dock: DevToolsDock) -> Option<f32> {
+    let id = doc.get_element_by_id("stage")?;
+    let layout = doc.get_node(id)?.final_layout();
+    let axis = match dock {
+        DevToolsDock::Bottom => layout.size.height,
+        DevToolsDock::Right => layout.size.width,
+    };
+    if axis <= 0.0 {
+        return None;
+    }
+    Some(axis)
+}
+
+/// Logical pixels for clamping: CSS layout size times page zoom (matches `calc(Npx * var(--ui))`).
+pub fn stage_axis_budget_logical_px(doc: &BaseDocument, dock: DevToolsDock) -> Option<i32> {
+    let css = stage_layout_axis_css_px(doc, dock)?;
+    let zoom = doc.viewport().zoom();
+    let logical = (css * zoom).round() as i32;
+    Some((logical - crate::devtools::SPLITTER_PX).max(0))
+}
+
+pub fn apply_devtools_state(doc: &mut BaseDocument, state: &DevToolsState) {
+    let Some(stage_id) = doc.get_element_by_id("stage") else {
+        return;
+    };
+    let devtools_id = doc.get_element_by_id("devtools");
+    let tab_ids: Vec<(NodeId, NodeId, bool)> = [
+        DevToolsTab::Console,
+        DevToolsTab::Elements,
+        DevToolsTab::Network,
+    ]
+    .into_iter()
+    .filter_map(|tab| {
+        let tab_id = doc.get_element_by_id(&format!("devtools-tab-{}", tab.name()))?;
+        let pane_id = doc.get_element_by_id(&format!("devtools-pane-{}", tab.name()))?;
+        Some((tab_id, pane_id, state.tab == tab))
+    })
+    .collect();
+    let dock_class = match state.dock {
+        DevToolsDock::Bottom => "dock-bottom",
+        DevToolsDock::Right => "dock-right",
+    };
+    let stage_class = if state.open {
+        format!("devtools-open {dock_class}")
+    } else {
+        dock_class.to_string()
+    };
+    let axis_style = if state.open {
+        match state.dock {
+            DevToolsDock::Bottom => format!("height: calc({}px * var(--ui))", state.size_px),
+            DevToolsDock::Right => format!("width: calc({}px * var(--ui))", state.size_px),
+        }
+    } else {
+        String::new()
+    };
+    let mut m = doc.mutate();
+    m.set_attribute(stage_id, qual_name!("class"), &stage_class);
+    if let Some(id) = devtools_id {
+        m.set_attribute(id, qual_name!("style"), &axis_style);
+    }
+    for (tab_el, pane_el, active) in tab_ids {
+        let tab_class = if active {
+            "devtools-tab active"
+        } else {
+            "devtools-tab"
+        };
+        let pane_class = if active {
+            "devtools-pane active"
+        } else {
+            "devtools-pane"
+        };
+        m.set_attribute(tab_el, qual_name!("class"), tab_class);
+        m.set_attribute(pane_el, qual_name!("class"), pane_class);
+    }
+}
+
+pub fn node_is_devtools_split(doc: &BaseDocument, node_id: NodeId) -> bool {
+    doc.get_element_by_id("devtools-split")
+        .is_some_and(|split_id| node_id == split_id || is_ancestor_of(doc, split_id, node_id))
+}
+
+pub fn hit_test_chrome(doc: &mut BaseDocument, x: f32, y: f32) -> Option<NodeId> {
+    let pruned = crate::js::prune_stale_paint_children(doc);
+    if pruned > 0 {
+        doc.resolve(0.0);
+    }
+    doc.hit(x, y).map(|hit| hit.node_id)
+}
+
+pub fn focus_devtools_panel(doc: &mut BaseDocument) {
+    if let Some(id) = doc.get_element_by_id("devtools") {
+        doc.set_focus_to(id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DevToolsFocusRestore {
+    pub chrome_focus: Option<NodeId>,
+    pub page_inner_focus: Option<NodeId>,
+}
+
+pub fn capture_devtools_focus_restore(doc: &BaseDocument) -> DevToolsFocusRestore {
+    let chrome_focus = doc.get_focussed_node_id();
+    let page_inner_focus = (|| {
+        let page_id = doc.get_element_by_id("page")?;
+        if doc.get_focussed_node_id() != Some(page_id) {
+            return None;
+        }
+        doc.get_node(page_id)?
+            .subdoc()?
+            .inner()
+            .get_focussed_node_id()
+    })();
+    DevToolsFocusRestore {
+        chrome_focus,
+        page_inner_focus,
+    }
+}
+
+pub fn restore_devtools_focus(doc: &mut BaseDocument, saved: DevToolsFocusRestore) {
+    let devtools_id = doc.get_element_by_id("devtools");
+    if let Some(inner_id) = saved.page_inner_focus {
+        let Some(page_id) = doc.get_element_by_id("page") else {
+            return;
+        };
+        if doc.get_node(inner_id).is_some() {
+            doc.set_focus_to(page_id);
+            if let Some(sub) = doc.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
+                sub.inner_mut().set_focus_to(inner_id);
+            }
+            return;
+        }
+    }
+    if let Some(id) = saved.chrome_focus
+        && doc.get_node(id).is_some()
+        && devtools_id != Some(id)
+        && !devtools_id.is_some_and(|devtools| is_ancestor_of(doc, devtools, id))
+    {
+        doc.set_focus_to(id);
+        return;
+    }
+    if let Some(page_id) = doc.get_element_by_id("page") {
+        doc.set_focus_to(page_id);
+    }
+}
+
+pub fn node_layout_size(doc: &BaseDocument, element_id: &str) -> Option<(f32, f32)> {
+    let id = doc.get_element_by_id(element_id)?;
+    let layout = doc.get_node(id)?.final_layout();
+    Some((layout.size.width, layout.size.height))
 }
 
 pub fn toolbar_layout_height(doc: &BaseDocument) -> Option<f32> {
@@ -1556,5 +1854,129 @@ mod tests {
             .and_then(|node| node.attr(local_name!("class")))
             .unwrap_or_default()
             .to_string()
+    }
+
+    #[test]
+    fn devtools_markup_wraps_page_iframe() {
+        let html = chrome_document("about:blank", true, false);
+        assert!(html.contains("id=\"stage\""));
+        assert!(html.contains("id=\"devtools-split\""));
+        assert!(html.contains("id=\"devtools\""));
+        assert!(html.contains("id=\"inspect-hl\""));
+        assert!(html.contains("id=\"page\""));
+    }
+
+    #[test]
+    fn classifies_devtools_commands() {
+        use crate::devtools::DevToolsTab;
+
+        let parse = |url| command_from_url(&Url::parse(url).unwrap());
+        assert_eq!(parse("glide://devtools"), Some(NavCommand::DevToolsToggle));
+        assert_eq!(
+            parse("glide://devtools-dock-bottom"),
+            Some(NavCommand::DevToolsDockBottom)
+        );
+        assert_eq!(
+            parse("glide://devtools-dock-right"),
+            Some(NavCommand::DevToolsDockRight)
+        );
+        assert_eq!(
+            parse("glide://devtools-tab?tab=network"),
+            Some(NavCommand::DevToolsTab(DevToolsTab::Network))
+        );
+    }
+
+    #[test]
+    fn closed_devtools_leaves_stage_without_open_class() {
+        let mut doc = parse_chrome(&chrome_document("about:blank", true, false));
+        let open = crate::devtools::DevToolsState {
+            open: true,
+            size_px: 240,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &open);
+        doc.resolve(0.0);
+        let closed = crate::devtools::DevToolsState::default();
+        crate::chrome::apply_devtools_state(&mut doc, &closed);
+        doc.resolve(0.0);
+        let stage = doc.get_element_by_id("stage").expect("stage");
+        let class = class_of(&doc, stage);
+        assert!(!class.contains("devtools-open"));
+        let (stage_w, stage_h) = crate::chrome::node_layout_size(&doc, "stage").expect("stage box");
+        let (iframe_w, iframe_h) =
+            crate::chrome::node_layout_size(&doc, "page").expect("iframe box");
+        assert!((stage_w - iframe_w).abs() < 2.0);
+        assert!((stage_h - iframe_h).abs() < 2.0);
+        let split = doc.get_element_by_id("devtools-split").expect("split");
+        assert!(
+            doc.get_node(split)
+                .is_some_and(|n| n.final_layout().size.height < 1.0),
+            "splitter is hidden when closed"
+        );
+    }
+
+    #[test]
+    fn open_bottom_dock_sets_height_with_ui_var() {
+        let mut doc = parse_chrome(&chrome_document("about:blank", true, false));
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            dock: crate::devtools::DevToolsDock::Bottom,
+            size_px: 240,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &state);
+        let devtools = doc.get_element_by_id("devtools").expect("devtools");
+        let style = doc
+            .get_node(devtools)
+            .and_then(|n| n.attr(local_name!("style")))
+            .unwrap_or_default();
+        assert!(style.contains("height: calc(240px * var(--ui))"));
+    }
+
+    #[test]
+    fn open_right_dock_sets_width_with_ui_var() {
+        let mut doc = parse_chrome(&chrome_document("about:blank", true, false));
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            dock: crate::devtools::DevToolsDock::Right,
+            size_px: 200,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &state);
+        let stage = doc.get_element_by_id("stage").expect("stage");
+        assert!(class_of(&doc, stage).contains("dock-right"));
+        let devtools = doc.get_element_by_id("devtools").expect("devtools");
+        let style = doc
+            .get_node(devtools)
+            .and_then(|n| n.attr(local_name!("style")))
+            .unwrap_or_default();
+        assert!(style.contains("width: calc(200px * var(--ui))"));
+    }
+
+    #[test]
+    fn devtools_tab_switch_updates_active_pane() {
+        let mut doc = parse_chrome(&chrome_document("about:blank", true, false));
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            tab: crate::devtools::DevToolsTab::Elements,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &state);
+        let tab = doc.get_element_by_id("devtools-tab-elements").expect("tab");
+        assert!(class_of(&doc, tab).contains("active"));
+        let pane = doc
+            .get_element_by_id("devtools-pane-elements")
+            .expect("pane");
+        assert!(class_of(&doc, pane).contains("active"));
+    }
+
+    #[test]
+    fn view_menu_lists_toggle_developer_tools() {
+        let html = chrome_document_from_state(&ChromeViewState::default());
+        assert!(html.contains("Toggle Developer Tools"));
+        assert!(html.contains("glide://devtools"));
     }
 }

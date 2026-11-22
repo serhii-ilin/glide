@@ -49,6 +49,7 @@ fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::LayoutField { reply, .. }
         | DomRequest::PageUrl { reply }
         | DomRequest::Navigate { reply, .. }
+        | DomRequest::SubmitForm { reply, .. }
         | DomRequest::ListenTarget { reply, .. }
         | DomRequest::RandomBytes { reply, .. }
         | DomRequest::NodeCount { reply } => *reply,
@@ -82,7 +83,23 @@ fn apply_inner(
             DomResponse::ok(reply, DomValue::String(base_url.to_string()))
         }
         DomRequest::Navigate { url, reply } => {
-            let _ = url;
+            navigate(doc, base_url, &url);
+            DomResponse::ok(reply, DomValue::Null)
+        }
+        DomRequest::SubmitForm {
+            form,
+            submitter,
+            reply,
+        } => {
+            if let (Some(form), Some(submitter)) = (
+                super::bridge::resolve_handle(doc, form),
+                super::bridge::resolve_handle(doc, submitter),
+            ) && doc.get_node(form).is_some_and(|node| {
+                node.data
+                    .is_element_with_tag_name(&blitz_dom::local_name!("form"))
+            }) {
+                doc.submit_form(form, submitter);
+            }
             DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::RandomBytes { size, reply } => apply_random_bytes(size, reply),
@@ -118,6 +135,27 @@ fn apply_inner(
             reply,
         } => apply_fetch(net, base_url, &url, &method, &headers, &body, reply),
     }
+}
+
+/// Hand a page-initiated navigation (a `location` assignment, a form submit)
+/// to the document's [`NavigationProvider`](blitz_traits::navigation::NavigationProvider).
+/// In the window the page document's provider forwards the URL to the chrome
+/// iframe; a headless document may have no provider.
+fn navigate(doc: &BaseDocument, base_url: &str, raw: &str) {
+    let parsed =
+        url::Url::parse(raw).or_else(|_| url::Url::parse(base_url).and_then(|base| base.join(raw)));
+    let Ok(parsed) = parsed else {
+        return;
+    };
+    if matches!(parsed.scheme(), "javascript" | "about") {
+        return;
+    }
+    doc.navigation_provider
+        .navigate_to(blitz_traits::navigation::NavigationOptions::new(
+            parsed,
+            None,
+            doc.id(),
+        ));
 }
 
 const MAX_RANDOM_BYTES: usize = 65_536;
@@ -560,5 +598,73 @@ mod tests {
         assert!(map.contains_key("content-type"));
         assert!(!map.contains_key("Set-Cookie"));
         assert!(!map.contains_key("set-cookie"));
+    }
+
+    use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl NavigationProvider for Recorder {
+        fn navigate_to(&self, options: NavigationOptions) {
+            self.0
+                .lock()
+                .expect("recorder")
+                .push(options.url.to_string());
+        }
+    }
+
+    fn page_with_recorder(html: &str) -> (BaseDocument, Arc<Recorder>) {
+        let recorder = Arc::new(Recorder::default());
+        let config = DocumentConfig {
+            base_url: Some("https://example.test/".into()),
+            navigation_provider: Some(recorder.clone()),
+            ..DocumentConfig::default()
+        };
+        let doc = crate::parse::document_from_html(html, config, false);
+        (doc, recorder)
+    }
+
+    fn recorded(recorder: &Recorder) -> Vec<String> {
+        recorder.0.lock().expect("recorder").clone()
+    }
+
+    #[test]
+    fn submit_form_rpc_navigates_with_the_entry_list() {
+        let (mut doc, recorder) = page_with_recorder(
+            "<!DOCTYPE html><html><body><form action=\"/search\" method=\"get\">\
+         <input name=\"q\" value=\"glide\"></form></body></html>",
+        );
+        let form = doc.query_selector("form").expect("selector").expect("form");
+        apply_request(
+            &mut doc,
+            None,
+            "https://example.test/",
+            DomRequest::SubmitForm {
+                form: node_to_handle(form),
+                submitter: node_to_handle(form),
+                reply: 1,
+            },
+        );
+        assert_eq!(
+            recorded(&recorder),
+            vec!["https://example.test/search?q=glide"]
+        );
+    }
+
+    #[test]
+    fn navigate_rpc_requests_the_target_url() {
+        let (mut doc, recorder) = page_with_recorder("<!DOCTYPE html><html><body></body></html>");
+        apply_request(
+            &mut doc,
+            None,
+            "https://example.test/",
+            DomRequest::Navigate {
+                url: "/next?x=1".into(),
+                reply: 1,
+            },
+        );
+        assert_eq!(recorded(&recorder), vec!["https://example.test/next?x=1"]);
     }
 }

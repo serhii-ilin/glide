@@ -356,7 +356,17 @@ impl HeadlessSession {
         timeout: Duration,
         history: LoadHistory,
     ) -> Result<(), String> {
-        let load_started = Instant::now();
+        self.load_url_at(url, timeout, history, Instant::now(), 0)
+    }
+
+    fn load_url_at(
+        &mut self,
+        url: String,
+        timeout: Duration,
+        history: LoadHistory,
+        load_started: Instant,
+        hop: u32,
+    ) -> Result<(), String> {
         let handle = tokio::runtime::Handle::current();
         let net = Arc::new(Provider::new(None));
         let (final_url, bytes) = headless::fetch_page(&url, self.opts.js_enabled, &handle, &net)?;
@@ -373,10 +383,12 @@ impl HeadlessSession {
         };
         let net_provider: Arc<dyn NetProvider> = net.clone();
         let mut js_host = JsHost::new(self.opts.js_enabled, tap, Some(net.clone()));
+        let navigation = Arc::new(headless::JsNavigation::default());
 
         let config = DocumentConfig {
             base_url: Some(final_url.clone()),
             net_provider: Some(net_provider),
+            navigation_provider: Some(navigation.clone()),
             html_parser_provider: Some(Arc::new(html_provider)),
             viewport: Some(Viewport::new(
                 VIEWPORT_WIDTH,
@@ -448,6 +460,22 @@ impl HeadlessSession {
         self.epoch = new_epoch;
         self.current_url = final_url.clone();
         self.last_status = last_status;
+
+        // A page-script navigation (JavaScript challenge, `location.assign`)
+        // replaces this page; give it the remaining budget and the caller's
+        // history intent so only the final URL is recorded.
+        if let Some(next) = navigation.take() {
+            let remaining = timeout.saturating_sub(load_started.elapsed());
+            if hop < headless::MAX_JS_NAVIGATIONS && remaining > Duration::from_millis(50) {
+                return self.load_url_at(
+                    next.to_string(),
+                    remaining,
+                    history,
+                    load_started,
+                    hop + 1,
+                );
+            }
+        }
 
         match history {
             LoadHistory::Push => match &mut self.history {

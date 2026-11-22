@@ -13,6 +13,7 @@ src/app.rs            window, history sync, keyboard shortcuts, JS pump
 src/history.rs        back/forward stack
 src/args.rs           CLI parsing
 src/chrome.rs         chrome markup (HTML) and navigation commands
+src/custom_elements.rs  fallbacks for unupgraded custom elements (visibility, streamed suspense)
 src/net.rs            loading state, stop, and error pages for failed loads
 src/http.rs           HTTP redirects, Refresh, and non-2xx document bodies
 src/nav.rs            navigation pending vs. iframe URL observations

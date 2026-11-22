@@ -9,6 +9,7 @@ pub mod args;
 mod bookmarks;
 pub mod chrome;
 pub mod compat;
+pub mod control;
 pub mod devtools;
 pub mod find;
 pub mod headless;

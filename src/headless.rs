@@ -75,6 +75,7 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     };
     let mut document = HtmlPageDocument(parse::document_from_html(&html, config, js_enabled));
 
+    js_host.set_console_route(0, 1);
     let start = Instant::now();
     js_host.maybe_start_page(&document.0, &final_url, &handle);
     let mut js_quiet_ticks = 0_u32;
@@ -98,12 +99,14 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
             || start.elapsed() > Duration::from_secs(12)
         {
             document.0.resolve(0.0);
+            let _ = crate::js::console_feed::drain_pending();
             break;
         }
         thread::sleep(Duration::from_millis(30));
     }
 
     if js_enabled {
+        let _ = js_host.drain_console_wire();
         js_host.flush_dom_rpc(&mut document.0, Duration::from_secs(4));
         document.0.resolve(0.0);
         if !html.trim().is_empty() && !has_visible_content(&document.0) {
@@ -342,5 +345,22 @@ mod tests {
             true,
         );
         assert_eq!(format_dump_text(&doc, true), "a\nb\n");
+    }
+
+    #[test]
+    fn headless_load_drains_console_queue() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let _enter = rt.enter();
+        let _lock = crate::js::console_feed::test_console_serial_lock();
+        let _ = crate::js::console_feed::drain_pending();
+        let url = "data:text/html,<!DOCTYPE html><html><body><script>console.log('headless-drain')</script></body></html>";
+        let _doc = load(url, true).expect("headless load");
+        assert!(
+            crate::js::console_feed::drain_pending().is_empty(),
+            "headless load should drain console wire queue"
+        );
     }
 }

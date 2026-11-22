@@ -1103,3 +1103,175 @@ fn failed_external_script_does_not_panic() {
         crate::js::scripts::ScriptSource::Failed
     ));
 }
+
+#[test]
+fn console_log_reaches_console_feed() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      console.log('devtools-console-test');
+      console.warn('watch');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, std::time::Duration::from_millis(120));
+    assert_eq!(result.final_text, "");
+    let events = result.console_wire;
+    let messages: Vec<_> = events.iter().map(|e| e.message.as_str()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("devtools-console-test")),
+        "{messages:?}"
+    );
+    assert!(messages.iter().any(|m| m.contains("watch")), "{messages:?}");
+    assert!(events.iter().any(|e| e.level == "log"));
+    assert!(events.iter().any(|e| e.level == "warn"));
+}
+
+#[test]
+fn console_log_includes_line_number_from_stack() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      console.log('line-numbered');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, std::time::Duration::from_millis(120));
+    let log = result
+        .console_wire
+        .iter()
+        .find(|e| e.level == "log" && e.message.contains("line-numbered"))
+        .expect("console log wire");
+    assert!(
+        log.line.is_some(),
+        "expected line number on console log, got {log:?}"
+    );
+}
+
+#[test]
+fn uncaught_exception_reaches_console_feed() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      throw new Error('boom-console');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, std::time::Duration::from_millis(120));
+    let events = result.console_wire;
+    assert!(
+        events
+            .iter()
+            .any(|e| e.level == "uncaught" && e.message.contains("boom-console")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn unhandled_rejection_reaches_console_feed() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      Promise.reject(new Error('reject-console'));
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_extra_settle(
+        html,
+        std::time::Duration::from_millis(200),
+        8,
+    );
+    let events = result.console_wire;
+    assert!(
+        events
+            .iter()
+            .any(|e| e.level == "rejection" && e.message.contains("reject-console")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn handled_rejection_revokes_console_row_same_turn() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      Promise.reject(new Error('catch-me')).catch(function () {});
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_extra_settle(
+        html,
+        std::time::Duration::from_millis(200),
+        8,
+    );
+    let mut tabs = crate::tabs::TabManager::new();
+    let id = tabs.add("https://example.test/");
+    assert_eq!(tabs.tab_mut(id).map(|t| t.console_epoch), Some(1));
+    crate::devtools::console::apply_console_wire(&mut tabs, &result.console_wire);
+    let tab = tabs.active().expect("tab");
+    assert!(
+        tab.console.entries().all(|e| !matches!(
+            e.level,
+            crate::devtools::console::ConsoleLevel::UnhandledRejection
+        )),
+        "{:?}",
+        tab.console.entries().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn handled_rejection_revokes_after_settimeout_catch() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var p = Promise.reject(new Error('late-catch'));
+      setTimeout(function () {
+        p.catch(function () {});
+        document.getElementById('t').textContent = 'done';
+      }, 10);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_extra_settle(
+        html,
+        std::time::Duration::from_millis(300),
+        8,
+    );
+    assert_eq!(result.final_text, "done");
+    let mut tabs = crate::tabs::TabManager::new();
+    let id = tabs.add("https://example.test/");
+    assert_eq!(tabs.tab_mut(id).map(|t| t.console_epoch), Some(1));
+    crate::devtools::console::apply_console_wire(&mut tabs, &result.console_wire);
+    let tab = tabs.active().expect("tab");
+    assert!(
+        tab.console.entries().all(|e| !matches!(
+            e.level,
+            crate::devtools::console::ConsoleLevel::UnhandledRejection
+        )),
+        "{:?}",
+        tab.console.entries().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn two_unhandled_rejections_revoking_one_leaves_one_row() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      var p1 = Promise.reject(new Error('one'));
+      var p2 = Promise.reject(new Error('two'));
+      p1.catch(function () {});
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_extra_settle(
+        html,
+        std::time::Duration::from_millis(250),
+        8,
+    );
+    let mut tabs = crate::tabs::TabManager::new();
+    let id = tabs.add("https://example.test/");
+    assert_eq!(tabs.tab_mut(id).map(|t| t.console_epoch), Some(1));
+    crate::devtools::console::apply_console_wire(&mut tabs, &result.console_wire);
+    let tab = tabs.active().expect("tab");
+    let rejections: Vec<_> = tab
+        .console
+        .entries()
+        .filter(|e| {
+            matches!(
+                e.level,
+                crate::devtools::console::ConsoleLevel::UnhandledRejection
+            )
+        })
+        .collect();
+    assert_eq!(
+        rejections.len(),
+        1,
+        "{:?}",
+        tab.console.entries().collect::<Vec<_>>()
+    );
+    assert!(
+        rejections[0].message.contains("two"),
+        "{:?}",
+        rejections[0].message
+    );
+}

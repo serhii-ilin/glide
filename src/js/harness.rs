@@ -14,6 +14,7 @@ use crate::parse;
 
 pub struct JsRunResult {
     pub final_text: String,
+    pub console_wire: Vec<crate::js::console_feed::ConsoleWireEvent>,
 }
 
 pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
@@ -21,10 +22,30 @@ pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    run_inline_page_with_runtime(html, pump_for, rt.handle())
+    run_inline_page_with_runtime(html, pump_for, rt.handle(), 0)
 }
 
-fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> JsRunResult {
+pub fn run_inline_page_with_extra_settle(
+    html: &str,
+    pump_for: Duration,
+    extra_settle: u32,
+) -> JsRunResult {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    run_inline_page_with_runtime(html, pump_for, rt.handle(), extra_settle)
+}
+
+fn run_inline_page_with_runtime(
+    html: &str,
+    pump_for: Duration,
+    rt: &Handle,
+    extra_settle: u32,
+) -> JsRunResult {
+    let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
+    let _ = crate::js::console_feed::drain_pending();
+
     let net = Arc::new(Provider::new(None));
     let tap = JsTap::new_enabled();
     let provider = GlideHtmlProvider {
@@ -32,6 +53,7 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
         js_tap: tap.clone(),
     };
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.set_console_route(0, 1);
     let config = DocumentConfig {
         base_url: Some("https://example.test/".into()),
         net_provider: Some(net.clone()),
@@ -50,6 +72,10 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
     }
     js_host.flush_dom_rpc(&mut document.0, Duration::from_millis(200));
     document.0.resolve(0.0);
+    for _ in 0..extra_settle {
+        js_host.pump(&mut document.0, Instant::now());
+        thread::sleep(Duration::from_millis(5));
+    }
 
     let final_text = document
         .0
@@ -58,5 +84,10 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
         .map(|n| n.text_content())
         .unwrap_or_default();
 
-    JsRunResult { final_text }
+    let console_wire = js_host.drain_console_wire();
+
+    JsRunResult {
+        final_text,
+        console_wire,
+    }
 }

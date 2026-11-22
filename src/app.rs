@@ -15,7 +15,9 @@ use winit::event::{ButtonSource, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
 
-use crate::devtools::{DevToolsDock, DevToolsSession};
+use crate::devtools::console::apply_console_wire;
+use crate::devtools::{DevToolsDock, DevToolsSession, DevToolsTab};
+use crate::js::console_feed;
 
 use std::sync::atomic::Ordering;
 
@@ -431,6 +433,7 @@ fn capture_active_tab(
     bookmarks: &mut BookmarksState,
     load_state: &LoadState,
     committed: &mut Option<(ObserveEffect, String, String)>,
+    js: &mut JsHost,
 ) {
     let Some(actual) = page_url(doc) else {
         return;
@@ -453,6 +456,12 @@ fn capture_active_tab(
         {
             tab.find.close_bar(doc);
         }
+        crate::devtools::console::observe_navigation_console_effect(
+            effect,
+            tab,
+            js,
+            &mut reset_tab_console_for_navigation,
+        );
         effect
     };
     bookmarks.sync_star(doc, &actual);
@@ -464,13 +473,37 @@ fn capture_active_tab(
     }
 }
 
-fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &mut JsHost) {
+fn reset_tab_console_for_navigation(tab: &mut Tab, js: &mut JsHost) {
+    tab.console.clear();
+    tab.console_epoch = tab.console_epoch.saturating_add(1);
+    console_feed::discard_pending_for_tab(tab.id);
+    js.set_console_route(tab.id, tab.console_epoch);
+}
+
+fn sync_active_tab_console(
+    devtools: &mut DevToolsSession,
+    tabs: &TabManager,
+    doc: &mut BaseDocument,
+) -> bool {
+    let Some(tab) = tabs.active() else {
+        return false;
+    };
+    devtools.sync_console_pane(doc, &tab.console, tab.id)
+}
+
+fn apply_active_tab_to_doc(
+    tabs: &mut TabManager,
+    doc: &mut BaseDocument,
+    js: &mut JsHost,
+    tab_switched: bool,
+) {
     let url = tabs
         .active()
         .map(Tab::url)
         .unwrap_or("about:blank")
         .to_string();
     let observed = page_url(doc);
+    let reload = observed.as_deref() != Some(url.as_str());
     if let Some(tab) = tabs.active_mut() {
         tab.nav.switch_to(&url, observed.as_deref());
         tab.address_written = url.clone();
@@ -480,10 +513,26 @@ fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &m
         tab.find.restore(doc, find_open, &find_query);
         tab.zoom.apply_to_chrome(doc);
     }
-    if observed.as_deref() != Some(url.as_str()) {
+    if tab_switched {
+        if reload {
+            if let Some(tab) = tabs.active_mut() {
+                bump_tab_console_epoch_for_switch(tab, js);
+            }
+        } else if let Some(tab) = tabs.active() {
+            js.set_console_route(tab.id, tab.console_epoch);
+        }
+    }
+    if reload {
+        if !tab_switched && let Some(tab) = tabs.active() {
+            js.set_console_route(tab.id, tab.console_epoch);
+        }
         js.on_navigation(doc, &url);
         load_iframe(doc, &url);
     }
+}
+
+fn bump_tab_console_epoch_for_switch(tab: &mut Tab, js: &mut JsHost) {
+    crate::devtools::console::bump_tab_console_epoch_for_switch(tab, js);
 }
 
 impl Glide {
@@ -619,6 +668,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let target = {
                             let Some(tab) = self.tabs.active_mut() else {
@@ -630,6 +680,9 @@ impl Glide {
                             tab.nav.navigate(kind, None)
                         };
                         if let Some(url) = target {
+                            if let Some(tab) = self.tabs.active_mut() {
+                                reset_tab_console_for_navigation(tab, &mut self.js);
+                            }
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             set_address(&mut doc, &url);
@@ -657,6 +710,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let new = !js_enabled;
                         set_js_runtime_mode(&self.html_provider, &mut self.js, &doc, new);
@@ -665,6 +719,9 @@ impl Glide {
                             .active_mut()
                             .and_then(|tab| tab.nav.navigate(NavKind::Reload, None));
                         if let Some(url) = target {
+                            if let Some(tab) = self.tabs.active_mut() {
+                                reset_tab_console_for_navigation(tab, &mut self.js);
+                            }
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             set_js_indicator(&mut doc, new);
@@ -691,8 +748,12 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let url = resolve_location(raw);
+                        if let Some(tab) = self.tabs.active_mut() {
+                            reset_tab_console_for_navigation(tab, &mut self.js);
+                        }
                         self.js.on_navigation(&doc, &url);
                         load_iframe(&mut doc, &url);
                         if let Some(tab) = self.tabs.active_mut() {
@@ -723,6 +784,7 @@ impl Glide {
                     }
                     NavCommand::DevToolsToggle => {
                         self.devtools.toggle(&mut doc);
+                        sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         save_settings_after = true;
                     }
                     NavCommand::DevToolsDockBottom => {
@@ -735,6 +797,16 @@ impl Glide {
                     }
                     NavCommand::DevToolsTab(tab) => {
                         self.devtools.set_tab(*tab, &mut doc);
+                        if *tab == DevToolsTab::Console {
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
+                        }
+                    }
+                    NavCommand::DevToolsConsoleClear => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.console.clear();
+                            console_feed::discard_pending_for_tab(tab.id);
+                        }
+                        sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                     }
                     NavCommand::ZoomIn | NavCommand::ZoomOut | NavCommand::ZoomReset => {
                         if let Some(tab) = self.tabs.active_mut() {
@@ -754,12 +826,14 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         self.tabs.add("about:blank");
                         if let Some(tab) = self.tabs.active_mut() {
                             tab.zoom = self.session.default_zoom;
                         }
-                        apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                        apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, false);
+                        sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         structure_changed = true;
                     }
                     NavCommand::DuplicateTab => {
@@ -769,10 +843,12 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         if let Some(tab) = self.tabs.active().cloned() {
                             self.tabs.insert(tab);
-                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, false);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -787,6 +863,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         if self.tabs.active_id() == Some(id) {
                             self.tabs.close_active();
@@ -799,7 +876,8 @@ impl Glide {
                                     .send_event(BlitzShellEvent::CloseWindow { window_id });
                                 break;
                             }
-                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, false);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         } else {
                             self.tabs.close(id);
                         }
@@ -812,6 +890,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let selected = match &command {
                             NavCommand::SelectTab(id) => self.tabs.select(*id),
@@ -819,7 +898,8 @@ impl Glide {
                             _ => false,
                         };
                         if selected {
-                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, true);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -830,6 +910,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let moved = if matches!(&command, NavCommand::NextTab) {
                             self.tabs.select_next()
@@ -837,7 +918,8 @@ impl Glide {
                             self.tabs.select_previous()
                         };
                         if moved {
-                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, true);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -867,6 +949,7 @@ impl Glide {
                 &mut self.bookmarks,
                 &self.load_state,
                 &mut committed,
+                &mut self.js,
             );
 
             if titles_changed(&self.tabs, &titles_before) {
@@ -951,19 +1034,33 @@ impl Glide {
             let chrome = view.doc.inner();
             page_url(&chrome)
         };
-        if let Some(url) = page_url_now {
+        if let Some(tab) = self.tabs.active() {
+            self.js.set_console_route(tab.id, tab.console_epoch);
+        }
+        if let Some(url) = &page_url_now {
             let handle = tokio::runtime::Handle::current();
-            {
-                let chrome = view.doc.inner();
-                self.js.maybe_start_page(&chrome, &url, &handle);
+            let chrome = view.doc.inner();
+            self.js.maybe_start_page(&chrome, url, &handle);
+        }
+        let mut js_redraw = if let Some(_url) = &page_url_now {
+            let mut chrome = view.doc.inner_mut();
+            self.js.pump(&mut chrome, Instant::now())
+        } else {
+            let _ = self.js.drain_console_wire();
+            false
+        };
+        let wire = self.js.drain_console_wire();
+        let had_console = apply_console_wire(&mut self.tabs, &wire);
+        if had_console {
+            let mut chrome = view.doc.inner_mut();
+            if sync_active_tab_console(&mut self.devtools, &self.tabs, &mut chrome) {
+                js_redraw = true;
             }
-            let js_redraw = {
-                let mut chrome = view.doc.inner_mut();
-                self.js.pump(&mut chrome, Instant::now())
-            };
-            if js_redraw {
-                view.request_redraw();
-            }
+            js_redraw = js_redraw
+                || (self.devtools.state.open && self.devtools.state.tab == DevToolsTab::Console);
+        }
+        if js_redraw {
+            view.request_redraw();
         }
     }
 

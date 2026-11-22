@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use keyboard_types::Modifiers;
 use serde::{Deserialize, Serialize};
 
+use crate::devtools::console::ConsoleJournal;
 use crate::find::FindSession;
 use crate::history::History;
 use crate::nav::NavTracker;
@@ -22,6 +23,9 @@ pub struct Tab {
     pub loading: bool,
     pub find: FindSession,
     pub zoom: PageZoom,
+    pub console: ConsoleJournal,
+    /// Bumped on each navigation so stale console wire events are ignored.
+    pub console_epoch: u64,
     /// Last URL written into the address field, so a focused field is left alone.
     pub address_written: String,
 }
@@ -35,6 +39,8 @@ impl Tab {
             loading: false,
             find: FindSession::default(),
             zoom: PageZoom::new(),
+            console: ConsoleJournal::default(),
+            console_epoch: 1,
             address_written: url,
         }
     }
@@ -119,6 +125,8 @@ impl TabManager {
         let id = self.next_id;
         self.next_id += 1;
         tab.id = id;
+        tab.console = ConsoleJournal::default();
+        tab.console_epoch = 1;
         self.tabs.push(tab);
         self.active = Some(self.tabs.len() - 1);
         id
@@ -164,6 +172,9 @@ impl TabManager {
         if index >= self.tabs.len() {
             return false;
         }
+        if self.active == Some(index) {
+            return false;
+        }
         self.active = Some(index);
         true
     }
@@ -190,6 +201,10 @@ impl TabManager {
     pub fn active_mut(&mut self) -> Option<&mut Tab> {
         let index = self.active?;
         self.tabs.get_mut(index)
+    }
+
+    pub fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|tab| tab.id == id)
     }
 
     pub fn active_index(&self) -> Option<usize> {
@@ -428,6 +443,21 @@ mod tests {
     }
 
     #[test]
+    fn selecting_active_tab_is_a_noop() {
+        let mut tabs = manager(&["https://a/"]);
+        let id = tabs.active_id().expect("active");
+        assert!(!tabs.select(id));
+        assert_eq!(tabs.active_id(), Some(id));
+    }
+
+    #[test]
+    fn next_tab_on_single_tab_is_a_noop() {
+        let mut tabs = manager(&["https://only/"]);
+        assert!(!tabs.select_next());
+        assert!(!tabs.select_previous());
+    }
+
+    #[test]
     fn a_new_tab_becomes_active() {
         let mut tabs = TabManager::new();
         assert!(tabs.is_empty());
@@ -455,7 +485,7 @@ mod tests {
     fn closing_active_tab_selects_the_left_neighbour_when_last() {
         let mut tabs = manager(&["https://a/", "https://b/", "https://c/"]);
         let c = tabs.by_index(2).map(|tab| tab.id).expect("tab C");
-        assert!(tabs.select(c));
+        assert_eq!(tabs.active_id(), Some(c));
         tabs.close_active();
         assert_eq!(tabs.active().map(Tab::url), Some("https://b/"));
     }

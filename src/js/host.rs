@@ -11,6 +11,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 
 use super::apply::apply_request;
 use super::bridge::{DomRequest, DomResponse, bubble_handles};
+use super::console_feed::{self, ConsoleWireEvent};
 use super::paint_prune::prune_stale_paint_children;
 use super::scripts::{
     ScriptSource, ScriptSpec, collect_scripts_for_page, execution_plan, source_body,
@@ -20,6 +21,7 @@ use super::snapshot;
 use super::tap::JsTap;
 use super::worker::JsWorker;
 use crate::logging;
+use crate::tabs::TabId;
 
 pub struct DomRpc {
     pub request: DomRequest,
@@ -39,6 +41,8 @@ pub struct JsHost {
     pending_sources: Option<Receiver<Vec<ScriptSource>>>,
     pending_indices: Option<(Vec<usize>, Vec<usize>, Vec<usize>)>,
     script_specs: Vec<ScriptSpec>,
+    console_tab_id: TabId,
+    console_page_epoch: u64,
 }
 
 impl JsHost {
@@ -56,7 +60,23 @@ impl JsHost {
             pending_sources: None,
             pending_indices: None,
             script_specs: Vec::new(),
+            console_tab_id: 1,
+            console_page_epoch: 1,
         }
+    }
+
+    pub fn set_console_route(&mut self, tab_id: TabId, page_epoch: u64) {
+        let changed = self.console_tab_id != tab_id || self.console_page_epoch != page_epoch;
+        self.console_tab_id = tab_id;
+        self.console_page_epoch = page_epoch;
+        if changed && let Some(worker) = &self.worker {
+            worker.set_console_route(tab_id, page_epoch);
+        }
+    }
+
+    /// Console messages and exceptions from the worker, not yet merged into a tab journal.
+    pub fn drain_console_wire(&mut self) -> Vec<ConsoleWireEvent> {
+        console_feed::drain_pending()
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -120,7 +140,12 @@ impl JsHost {
                 .unwrap_or_else(|| snapshot::snapshot_tree(chrome)),
         )
         .unwrap_or_else(|_| "[]".into());
-        worker.init_page(snapshot_json, page_url.to_string());
+        worker.init_page(
+            snapshot_json,
+            page_url.to_string(),
+            self.console_tab_id,
+            self.console_page_epoch,
+        );
         self.worker = Some(worker);
 
         let plan = execution_plan(&specs);

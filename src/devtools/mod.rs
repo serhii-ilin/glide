@@ -1,5 +1,7 @@
 //! DevTools panel shell state: dock side, size, active tab, and chrome commands.
 
+pub mod console;
+
 use blitz_dom::BaseDocument;
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +126,10 @@ pub fn panel_size_from_drag(
 pub struct DevToolsSession {
     pub state: DevToolsState,
     focus_restore: Option<DevToolsFocusRestore>,
+    console_render_generation: u64,
+    console_rendered_len: usize,
+    console_rendered_total: u64,
+    console_last_tab: Option<crate::tabs::TabId>,
 }
 
 impl DevToolsSession {
@@ -131,6 +137,7 @@ impl DevToolsSession {
         Self {
             state: DevToolsState::from_settings(settings.devtools_dock, settings.devtools_size_px),
             focus_restore: None,
+            ..Default::default()
         }
     }
 
@@ -173,6 +180,33 @@ impl DevToolsSession {
         self.state.set_tab(tab);
         if self.state.open {
             self.sync_chrome(doc);
+        }
+    }
+
+    pub fn sync_console_pane(
+        &mut self,
+        doc: &mut BaseDocument,
+        journal: &console::ConsoleJournal,
+        tab_id: crate::tabs::TabId,
+    ) -> bool {
+        let tab_changed = self.console_last_tab != Some(tab_id);
+        if tab_changed {
+            self.console_render_generation = u64::MAX;
+            self.console_rendered_len = 0;
+            self.console_rendered_total = 0;
+            self.console_last_tab = Some(tab_id);
+        }
+        if self.state.open && self.state.tab == DevToolsTab::Console {
+            console::render_devtools_console(
+                doc,
+                journal,
+                &mut self.console_render_generation,
+                &mut self.console_rendered_len,
+                &mut self.console_rendered_total,
+                tab_changed,
+            )
+        } else {
+            false
         }
     }
 

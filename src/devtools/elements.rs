@@ -309,13 +309,11 @@ fn row_label(_doc: &BaseDocument, _id: NodeId, node: &blitz_dom::node::Node) -> 
         }
         NodeData::Text(data) => {
             let preview = truncate_preview(data.content.trim(), MAX_TEXT_PREVIEW_LEN);
-            let escaped = escape_elements_text(&preview);
-            (format!("\"{escaped}\""), false)
+            (format!("\"{preview}\""), false)
         }
         NodeData::Comment { contents } => {
             let preview = truncate_preview(contents.trim(), MAX_TEXT_PREVIEW_LEN);
-            let escaped = escape_elements_text(&preview);
-            (format!("<!-- {escaped} -->"), false)
+            (format!("<!-- {preview} -->"), false)
         }
     }
 }
@@ -327,9 +325,8 @@ fn format_element_attrs(attrs: &[blitz_dom::node::Attribute]) -> String {
             parts.push("…".to_string());
             break;
         }
-        let name = escape_elements_text(a.name.local.as_ref());
+        let name = a.name.local.as_str();
         let value = truncate_preview(&a.value, MAX_ATTR_VALUE_LEN);
-        let value = escape_elements_text(&value);
         parts.push(format!("{name}=\"{value}\""));
     }
     parts.join(" ")
@@ -408,8 +405,13 @@ pub fn render_tree_rows_html(rows: &[TreeRow], selected: Option<u64>) -> String 
         } else {
             " "
         };
+        let twist_href = if row.has_children {
+            format!(r#"glide://devtools-elements-toggle?node={handle}"#)
+        } else {
+            "#".to_string()
+        };
         html.push_str(&format!(
-            r#"<a class="devtools-elements-row{selected_class}" href="glide://devtools-elements-select?node={handle}"><span class="twist">{twist}</span><span class="indent" style="padding-left: calc({}px * var(--ui))"></span><span class="label">{line}</span></a>
+            r#"<div class="devtools-elements-row{selected_class}"><a class="twist-link" href="{twist_href}"><span class="twist">{twist}</span></a><a class="devtools-elements-row-link" href="glide://devtools-elements-select?node={handle}"><span class="indent" style="padding-left: calc({}px * var(--ui))"></span><span class="label">{line}</span></a></div>
 "#,
             row.depth * 12,
             line = escape_elements_text(&row.line)
@@ -439,15 +441,11 @@ pub fn prepare_elements_render(
     state: &mut ElementsPanelState,
     stamp: PageTreeStamp,
     last_stamp: &Option<PageTreeStamp>,
-    last_ui_generation: u64,
-    force_full: bool,
+    _last_ui_generation: u64,
+    _force_full: bool,
 ) -> Option<ElementsRenderPlan> {
     state.prune_expansion(page);
-    let generation_changed = state.ui_generation != last_ui_generation;
-    let stamp_changed = last_stamp.as_ref() != Some(&stamp);
-    if !force_full && !generation_changed && !stamp_changed {
-        return None;
-    }
+    let _ = last_stamp;
     let rows = flatten_dom_tree(page, state);
     state.sync_flat_handles(&rows);
     if state.selected.is_none() {
@@ -594,5 +592,138 @@ mod tests {
         let html = render_tree_rows_html(&rows, None);
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
+    }
+
+    fn first_text_child(doc: &BaseDocument, parent: NodeId) -> Option<NodeId> {
+        let parent_node = doc.get_node(parent)?;
+        for &child in &parent_node.children {
+            if matches!(doc.get_node(child)?.data, NodeData::Text(_)) {
+                return Some(child);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn prepare_elements_render_reflects_text_and_attribute_edits_without_node_count_change() {
+        let mut doc = parse_page(
+            r#"<!DOCTYPE html><html><body><p id="t" data-v="old">hello</p></body></html>"#,
+        );
+        let mut state = ElementsPanelState::default();
+        state.apply_default_expansion(&doc);
+        let p = doc.get_element_by_id("t").unwrap();
+        state.expanded.insert(node_to_handle(p));
+        let stamp = page_tree_stamp(&doc, 1);
+        let plan1 =
+            prepare_elements_render(&doc, &mut state, stamp, &None, u64::MAX, false).expect("plan");
+        assert!(
+            plan1.rows.iter().any(|r| r.line.contains("hello")),
+            "rows: {:?}",
+            plan1.rows
+        );
+        let text_id = first_text_child(&doc, p).unwrap();
+        let count_before = doc.tree().len();
+        {
+            let mut m = doc.mutate();
+            m.set_node_text(text_id, "Tom & Jerry");
+            m.set_attribute(
+                p,
+                blitz_dom::QualName::new(None, blitz_dom::ns!(html), "data-v".into()),
+                "new\"quote",
+            );
+        }
+        assert_eq!(doc.tree().len(), count_before);
+        let stamp2 = page_tree_stamp(&doc, 1);
+        assert_eq!(stamp, stamp2, "stamp must not detect text/attr edits");
+        let plan2 = prepare_elements_render(&doc, &mut state, stamp2, &Some(stamp), 0, false)
+            .expect("updated plan after DOM edit");
+        assert!(
+            plan2
+                .rows
+                .iter()
+                .any(|r| r.line.contains("Tom & Jerry")),
+            "raw row: {:?}",
+            plan2.rows
+        );
+        assert!(
+            plan2.tree_html.contains("Tom &amp; Jerry"),
+            "tree: {}",
+            plan2.tree_html
+        );
+        assert!(!plan2.tree_html.contains("&amp;amp;"), "{:?}", plan2.tree_html);
+        state.set_selected_handle(Some(node_to_handle(p)));
+        let detail = render_detail_html(&doc, Some(node_to_handle(p)));
+        assert!(detail.contains("new&quot;quote"), "detail: {detail}");
+    }
+
+    #[test]
+    fn tree_row_escapes_text_and_attributes_once() {
+        let doc =
+            parse_page(r#"<!DOCTYPE html><html><body><p id="t">Tom & Jerry</p></body></html>"#);
+        let mut state = ElementsPanelState::default();
+        state.apply_default_expansion(&doc);
+        if let Some(body) = first_element_named(&doc, "body") {
+            state.expanded.insert(node_to_handle(body));
+        }
+        let p = doc.get_element_by_id("t").unwrap();
+        state.expanded.insert(node_to_handle(p));
+        let rows = flatten_dom_tree(&doc, &state);
+        let text_row = rows
+            .iter()
+            .find(|r| r.line.contains("Tom"))
+            .expect("text row");
+        assert_eq!(text_row.line, r#""Tom & Jerry""#);
+        let html = render_tree_rows_html(&rows, None);
+        assert!(
+            html.contains("Tom &amp; Jerry"),
+            "single escape in HTML: {html}"
+        );
+        assert!(!html.contains("&amp;amp;"));
+        let doc2 =
+            parse_page(r#"<!DOCTYPE html><html><body><script>alert(1)</script></body></html>"#);
+        let mut state2 = ElementsPanelState::default();
+        state2.apply_default_expansion(&doc2);
+        if let Some(body) = first_element_named(&doc2, "body") {
+            state2.expanded.insert(node_to_handle(body));
+        }
+        let rows2 = flatten_dom_tree(&doc2, &state2);
+        let script = rows2
+            .iter()
+            .find(|r| r.line.starts_with("<script"))
+            .expect("script row");
+        let html2 = render_tree_rows_html(std::slice::from_ref(script), None);
+        assert!(!html2.contains("<script>"));
+        assert!(html2.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn toggle_expanded_via_state_matches_toggle_command_behavior() {
+        let doc = parse_page(
+            r#"<!DOCTYPE html><html><body><div id="a"><span></span></div></body></html>"#,
+        );
+        let div = doc.get_element_by_id("a").unwrap();
+        let handle = node_to_handle(div);
+        let mut state = ElementsPanelState::default();
+        state.apply_default_expansion(&doc);
+        state.expanded.insert(node_to_handle(doc.root_node().id));
+        if let Some(body) = first_element_named(&doc, "body") {
+            state.expanded.insert(node_to_handle(body));
+        }
+        assert!(!state.expanded.contains(&handle));
+        state.toggle_expanded(handle);
+        assert!(state.expanded.contains(&handle));
+        let rows = flatten_dom_tree(&doc, &state);
+        assert!(
+            rows.iter().any(|r| r.line.contains("<span")),
+            "span visible when expanded: {:?}",
+            rows
+        );
+        state.toggle_expanded(handle);
+        assert!(
+            !flatten_dom_tree(&doc, &state)
+                .iter()
+                .any(|r| r.line.contains("<span")),
+            "span hidden when collapsed"
+        );
     }
 }

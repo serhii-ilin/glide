@@ -853,6 +853,14 @@ impl Glide {
                         if let Some(tab) = self.tabs.active_mut() {
                             tab.elements.set_selected_handle(Some(*node));
                         }
+                        crate::chrome::focus_devtools_elements_tree(&mut doc);
+                        sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut doc);
+                    }
+                    NavCommand::DevToolsElementsToggle(node) => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.elements.toggle_expanded(*node);
+                        }
+                        crate::chrome::focus_devtools_elements_tree(&mut doc);
                         sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut doc);
                     }
                     NavCommand::DevToolsConsoleClear => {

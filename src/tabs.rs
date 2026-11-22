@@ -137,6 +137,8 @@ impl TabManager {
         tab.console = ConsoleJournal::default();
         tab.console_repl_history = ConsoleReplHistory::default();
         tab.console_epoch = 1;
+        tab.elements = ElementsPanelState::default();
+        tab.elements_epoch = 1;
         self.tabs.push(tab);
         self.active = Some(self.tabs.len() - 1);
         id
@@ -526,6 +528,25 @@ mod tests {
         let a = tabs.by_index(0).map(|tab| tab.id).expect("tab A");
         assert!(tabs.close(a).is_some());
         assert_eq!(tabs.active().map(Tab::url), Some("https://b/"));
+    }
+
+    #[test]
+    fn duplicate_tab_resets_elements_expansion() {
+        let mut tabs = manager(&["https://a/"]);
+        let source = tabs.active().expect("active").id;
+        {
+            let tab = tabs.active_mut().expect("active");
+            tab.elements.expanded.insert(99);
+            tab.elements.selected = Some(42);
+            tab.elements_epoch = 5;
+        }
+        let duped = tabs.active().expect("active").clone();
+        let new_id = tabs.insert(duped);
+        assert_ne!(source, new_id);
+        let tab = tabs.active().expect("dup tab");
+        assert!(tab.elements.expanded.is_empty());
+        assert_eq!(tab.elements.selected, None);
+        assert_eq!(tab.elements_epoch, 1);
     }
 
     #[test]

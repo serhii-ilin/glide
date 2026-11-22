@@ -1955,6 +1955,47 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_devtools_elements_keys_after_row_select_focus() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            tab: crate::devtools::DevToolsTab::Elements,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &state);
+        let tree = doc
+            .get_element_by_id("devtools-elements-tree")
+            .expect("tree");
+        let row_html = concat!(
+            "<div class=\"devtools-elements-row\">",
+            "<a class=\"twist-link\" href=\"#\"><span class=\"twist\"> </span></a>",
+            "<a class=\"devtools-elements-row-link\" href=\"glide://devtools-elements-select?node=1\">",
+            "<span class=\"label\">x</span></a></div>"
+        );
+        crate::parse::parse_inner_html_into_mutator(&mut doc.mutate(), tree, row_html, false);
+        doc.resolve(0.0);
+        let link = doc
+            .get_node(tree)
+            .and_then(|n| n.children.first().copied())
+            .and_then(|row| doc.get_node(row))
+            .and_then(|row| row.children.get(1).copied())
+            .expect("row link");
+        doc.set_focus_to(link);
+        assert!(crate::chrome::devtools_elements_tree_focused(&doc));
+        let down = test_key_event(
+            KeyCode::ArrowDown,
+            ElementState::Pressed,
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown),
+        );
+        assert_eq!(
+            super::dispatch_devtools_elements_keys(&doc, &down, true, true),
+            Some(BrowserShortcut::DevToolsElementsDown)
+        );
+    }
+
+    #[test]
     fn dispatch_devtools_elements_tree_keys() {
         let html = chrome_document("about:blank", true, false);
         let mut doc = parse::document_from_html(&html, test_document_config(), false);

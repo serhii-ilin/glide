@@ -24,6 +24,7 @@ pub enum NavCommand {
     DevToolsTab(crate::devtools::DevToolsTab),
     DevToolsConsoleClear,
     DevToolsElementsSelect(u64),
+    DevToolsElementsToggle(u64),
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -143,6 +144,9 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
             Some("devtools-elements-select") => query_value(url, "node")
                 .and_then(|n| n.parse().ok())
                 .map(NavCommand::DevToolsElementsSelect),
+            Some("devtools-elements-toggle") => query_value(url, "node")
+                .and_then(|n| n.parse().ok())
+                .map(NavCommand::DevToolsElementsToggle),
             Some("zoom-in") => Some(NavCommand::ZoomIn),
             Some("zoom-out") => Some(NavCommand::ZoomOut),
             Some("zoom-reset") => Some(NavCommand::ZoomReset),
@@ -819,18 +823,33 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     line-height: 1.35;
     padding: calc(4px * var(--ui)) 0;
   }}
-  a.devtools-elements-row {{
-    display: block;
+  div.devtools-elements-row {{
+    display: flex;
+    align-items: baseline;
     padding: calc(1px * var(--ui)) calc(6px * var(--ui));
     color: var(--text);
-    text-decoration: none;
     white-space: nowrap;
   }}
-  a.devtools-elements-row:hover {{
+  div.devtools-elements-row:hover {{
     background: var(--field-fill);
   }}
-  a.devtools-elements-row.selected {{
+  div.devtools-elements-row.selected {{
     background: rgba(0, 122, 255, 0.14);
+  }}
+  a.twist-link,
+  a.devtools-elements-row-link {{
+    color: inherit;
+    text-decoration: none;
+  }}
+  a.twist-link {{
+    flex: none;
+    width: calc(12px * var(--ui));
+  }}
+  a.devtools-elements-row-link {{
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }}
   div.devtools-elements-row.more {{
     padding: calc(1px * var(--ui)) calc(6px * var(--ui));
@@ -853,8 +872,8 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   div.devtools-elements-attr {{
     padding: calc(1px * var(--ui)) 0;
   }}
-  span.attr-name {{ color: #994500; }}
-  span.attr-value {{ color: #0645ad; }}
+  span.attr-name {{ color: var(--accent); }}
+  span.attr-value {{ color: var(--text-secondary); }}
   p.devtools-elements-detail-empty {{
     margin: 0;
     color: var(--text-secondary);
@@ -1430,10 +1449,21 @@ pub fn focus_devtools_elements_tree(doc: &mut BaseDocument) {
 }
 
 pub fn devtools_elements_tree_focused(doc: &BaseDocument) -> bool {
-    let Some(id) = doc.get_element_by_id("devtools-elements-tree") else {
+    let Some(tree_id) = doc.get_element_by_id("devtools-elements-tree") else {
         return false;
     };
-    doc.get_focussed_node_id() == Some(id)
+    let Some(mut focus) = doc.get_focussed_node_id() else {
+        return false;
+    };
+    loop {
+        if focus == tree_id {
+            return true;
+        }
+        let Some(parent) = doc.get_node(focus).and_then(|n| n.parent) else {
+            return false;
+        };
+        focus = parent;
+    }
 }
 
 pub fn find_input_focused(doc: &BaseDocument) -> bool {
@@ -2475,6 +2505,11 @@ mod tests {
             parse("glide://devtools-elements-select?node=42"),
             Some(NavCommand::DevToolsElementsSelect(42))
         );
+        assert_eq!(
+            parse("glide://devtools-elements-toggle?node=7"),
+            Some(NavCommand::DevToolsElementsToggle(7))
+        );
+        assert_eq!(parse("glide://devtools-elements-toggle?node=bad"), None);
     }
 
     #[test]
@@ -2544,6 +2579,35 @@ mod tests {
             .and_then(|n| n.attr(local_name!("style")))
             .unwrap_or_default();
         assert!(style.contains("width: calc(200px * var(--ui))"));
+    }
+
+    #[test]
+    fn devtools_elements_tree_focused_includes_descendant() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse_chrome(&html);
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            tab: crate::devtools::DevToolsTab::Elements,
+            ..Default::default()
+        };
+        super::apply_devtools_state(&mut doc, &state);
+        let tree = doc
+            .get_element_by_id("devtools-elements-tree")
+            .expect("tree");
+        crate::parse::parse_inner_html_into_mutator(
+            &mut doc.mutate(),
+            tree,
+            "<a class=\"devtools-elements-row-link\" href=\"#\"><span class=\"label\">x</span></a>",
+            false,
+        );
+        doc.resolve(0.0);
+        let link = doc
+            .get_node(tree)
+            .and_then(|n| n.children.first().copied())
+            .expect("link");
+        doc.set_focus_to(link);
+        assert!(super::devtools_elements_tree_focused(&doc));
     }
 
     #[test]

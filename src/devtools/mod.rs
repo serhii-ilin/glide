@@ -135,6 +135,8 @@ pub struct DevToolsSession {
     elements_last_tab: Option<crate::tabs::TabId>,
     elements_last_stamp: Option<elements::PageTreeStamp>,
     elements_last_ui_generation: u64,
+    elements_last_tree_html: String,
+    elements_last_detail_html: String,
     pub repl_ui: repl::ConsoleReplUi,
 }
 
@@ -198,6 +200,8 @@ impl DevToolsSession {
         if tab_changed {
             self.elements_last_stamp = None;
             self.elements_last_ui_generation = u64::MAX;
+            self.elements_last_tree_html.clear();
+            self.elements_last_detail_html.clear();
             self.elements_last_tab = Some(tab.id);
         }
         if !(self.state.open && self.state.tab == DevToolsTab::Elements) {
@@ -220,10 +224,17 @@ impl DevToolsSession {
             Some(Some(plan)) => plan,
             _ => return false,
         };
+        if plan.tree_html == self.elements_last_tree_html
+            && plan.detail_html == self.elements_last_detail_html
+        {
+            return false;
+        }
         let painted = elements::paint_elements_render(chrome, &plan);
         if painted {
             self.elements_last_stamp = Some(plan.stamp);
             self.elements_last_ui_generation = tab.elements.ui_generation;
+            self.elements_last_tree_html = plan.tree_html.clone();
+            self.elements_last_detail_html = plan.detail_html.clone();
         }
         painted
     }

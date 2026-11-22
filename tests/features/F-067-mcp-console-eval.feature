@@ -11,12 +11,17 @@ Feature: F-067 MCP console and JavaScript evaluation
   # Registry: docs/features.md -> F-067
   # Tests: js::repl_eval::tests::json_eval_source_wraps_with_stringify,
   #        js::integration::{repl_eval_reply_receives_result,repl_eval_reply_receives_error,
-  #        repl_eval_reply_on_watchdog_timeout,eval_blocking_returns_value,
+  #        repl_eval_reply_on_watchdog_timeout,repl_eval_respects_watchdog,
+  #        throwing_eval_does_not_leave_watchdog_armed,
+  #        compile_error_eval_does_not_leave_watchdog_armed,
+  #        stale_route_eval_reply_is_error,eval_blocking_returns_value,
   #        eval_blocking_dom_mutation_is_mirrored,eval_blocking_with_js_disabled_is_error,
   #        json_eval_returns_json_text},
   #        devtools::console::tests::{since_returns_entries_after_cursor,since_respects_limit,
-  #        since_reports_dropped_after_eviction,since_cursor_past_end_after_clear}
-  # MCP: glide_console_messages, glide_eval (server tools pending F-066/F-067)
+  #        since_reports_dropped_after_eviction,since_foreign_cursor_past_end_starts_at_oldest,
+  #        since_stable_after_revoke_rejection}
+  # MCP: glide_console_messages, glide_eval (server tools pending F-066/F-067;
+  #      MCP stdio scenario pending tests/mcp_stdio.rs)
 
   Background:
     Given JavaScript is enabled and a page has loaded in the active tab
@@ -59,6 +64,7 @@ Feature: F-067 MCP console and JavaScript evaluation
     When the agent asks for console messages since that cursor
     Then the reply reports how many entries were evicted before being read
 
+  # Pending tests/mcp_stdio.rs: the MCP server lands with F-066/F-067.
   @mcp-stdio
   Scenario: glide_eval and glide_console_messages over MCP
     Given `glide --mcp` serves a headless page over stdio

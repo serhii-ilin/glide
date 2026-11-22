@@ -83,6 +83,7 @@ pub struct FetchRequest {
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub reply: u64,
+    pub initiator: crate::devtools::network::NetworkInitiator,
 }
 
 #[derive(Debug, Clone)]

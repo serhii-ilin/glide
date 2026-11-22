@@ -23,6 +23,8 @@ pub enum NavCommand {
     DevToolsDockRight,
     DevToolsTab(crate::devtools::DevToolsTab),
     DevToolsConsoleClear,
+    DevToolsNetworkClear,
+    DevToolsNetworkSelect(u64),
     DevToolsElementsSelect(u64),
     DevToolsElementsToggle(u64),
     DevToolsInspectToggle,
@@ -142,6 +144,10 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
                 .and_then(crate::devtools::DevToolsTab::parse)
                 .map(NavCommand::DevToolsTab),
             Some("devtools-console-clear") => Some(NavCommand::DevToolsConsoleClear),
+            Some("devtools-network-clear") => Some(NavCommand::DevToolsNetworkClear),
+            Some("devtools-network-select") => query_value(url, "id")
+                .and_then(|n| n.parse().ok())
+                .map(NavCommand::DevToolsNetworkSelect),
             Some("devtools-elements-select") => query_value(url, "node")
                 .and_then(|n| n.parse().ok())
                 .map(NavCommand::DevToolsElementsSelect),
@@ -815,6 +821,75 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   #devtools-console-input:focus {{
     outline: none;
   }}
+  div.devtools-network-toolbar {{
+    display: flex;
+    align-items: center;
+    gap: calc(8px * var(--ui));
+    height: calc(28px * var(--ui));
+    padding: 0 calc(6px * var(--ui));
+    border-bottom: calc(1px * var(--ui)) solid var(--hairline);
+    flex: none;
+  }}
+  #devtools-network-filter {{
+    flex: 1;
+    min-width: 0;
+    height: calc(22px * var(--ui));
+    padding: 0 calc(6px * var(--ui));
+    border: calc(1px * var(--ui)) solid var(--hairline);
+    border-radius: calc(4px * var(--ui));
+    font-size: calc(11px * var(--ui));
+  }}
+  a#devtools-network-clear {{
+    height: calc(20px * var(--ui));
+    padding: 0 calc(8px * var(--ui));
+    flex: none;
+  }}
+  #devtools-network-body {{
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }}
+  #devtools-network-table-wrap {{
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    font-size: calc(11px * var(--ui));
+  }}
+  table.devtools-network-table {{
+    width: 100%;
+    border-collapse: collapse;
+  }}
+  table.devtools-network-table th,
+  table.devtools-network-table td {{
+    padding: calc(2px * var(--ui)) calc(6px * var(--ui));
+    text-align: left;
+    border-bottom: calc(1px * var(--ui)) solid var(--hairline);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: calc(160px * var(--ui));
+  }}
+  tr.devtools-network-row.selected {{
+    background: rgba(0, 122, 255, 0.12);
+  }}
+  a.devtools-network-row-link {{
+    color: inherit;
+    text-decoration: none;
+    display: block;
+  }}
+  a.devtools-network-row-link:hover {{
+    text-decoration: underline;
+  }}
+  #devtools-network-detail {{
+    flex: none;
+    max-height: 40%;
+    overflow: auto;
+    border-top: calc(1px * var(--ui)) solid var(--hairline);
+    padding: calc(4px * var(--ui));
+    font-size: calc(11px * var(--ui));
+  }}
   #devtools-pane-console {{
     display: none;
     flex-direction: column;
@@ -1055,7 +1130,16 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
         <div id="devtools-elements-detail"></div>
         <div id="devtools-elements-computed"></div>
       </div>
-      <div id="devtools-pane-network" class="devtools-pane"><p class="devtools-placeholder">Network log will appear here.</p></div>
+      <div id="devtools-pane-network" class="devtools-pane">
+        <div class="devtools-network-toolbar">
+          <input id="devtools-network-filter" type="text" spellcheck="false" autocomplete="off" placeholder="Filter">
+          <a id="devtools-network-clear" class="text-btn" href="glide://devtools-network-clear">Clear</a>
+        </div>
+        <div id="devtools-network-body">
+          <div id="devtools-network-table-wrap"></div>
+          <div id="devtools-network-detail"><p class="devtools-network-detail-empty">Select a request to see details</p></div>
+        </div>
+      </div>
     </aside>
   </div>
   <div id="inspect-hl"></div>
@@ -2671,6 +2755,15 @@ mod tests {
     }
 
     #[test]
+    fn classifies_devtools_network_clear() {
+        let url = Url::parse("glide://devtools-network-clear").expect("url");
+        assert_eq!(
+            command_from_url(&url),
+            Some(NavCommand::DevToolsNetworkClear)
+        );
+    }
+
+    #[test]
     fn classifies_devtools_commands() {
         use crate::devtools::DevToolsTab;
 
@@ -2691,6 +2784,14 @@ mod tests {
         assert_eq!(
             parse("glide://devtools-console-clear"),
             Some(NavCommand::DevToolsConsoleClear)
+        );
+        assert_eq!(
+            parse("glide://devtools-network-clear"),
+            Some(NavCommand::DevToolsNetworkClear)
+        );
+        assert_eq!(
+            parse("glide://devtools-network-select?id=3"),
+            Some(NavCommand::DevToolsNetworkSelect(3))
         );
         assert_eq!(
             parse("glide://devtools-elements-select?node=42"),

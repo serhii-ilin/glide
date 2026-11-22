@@ -187,22 +187,29 @@ pub fn start_fetch(
         headers,
         body,
         reply,
+        initiator,
     } = fetch;
+    let stamp = crate::network_feed::capture_worker_stamp();
+    let started = std::time::Instant::now();
     let send_now = |value: DomResponse| {
         let _ = reply_tx.send(value);
     };
     if is_data_url(&url) {
-        send_now(match data_url_response_json(&url) {
+        let response = match data_url_response_json(&url) {
             Ok(value) => DomResponse::ok(reply, DomValue::Json(value)),
             Err(reason) => DomResponse::err(reply, reason),
-        });
+        };
+        record_js_network(stamp, &method, &url, initiator, &response, started);
+        send_now(response);
         return;
     }
     let resolved = Url::parse(&url)
         .or_else(|_| Url::parse(base_url).and_then(|b| b.join(&url)))
         .map_err(|e| e.to_string());
     let Ok(parsed) = resolved else {
-        send_now(DomResponse::err(reply, "invalid url"));
+        let response = DomResponse::err(reply, "invalid url");
+        record_js_network(stamp, &method, &url, initiator, &response, started);
+        send_now(response);
         return;
     };
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -216,10 +223,76 @@ pub fn start_fetch(
             return;
         }
     };
+    let method_for_log = method.clone();
+    let url_for_log = url.clone();
     handle.spawn(async move {
         let response = fetch_response(net, request, reply).await;
+        record_js_network(
+            stamp,
+            &method_for_log,
+            &url_for_log,
+            initiator,
+            &response,
+            started,
+        );
         let _ = reply_tx.send(response);
     });
+}
+
+fn record_js_network(
+    stamp: crate::network_feed::NetworkStamp,
+    method: &str,
+    url: &str,
+    initiator: crate::devtools::network::NetworkInitiator,
+    response: &DomResponse,
+    started: std::time::Instant,
+) {
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let (status, error, size_bytes, response_headers) = match &response.value {
+        DomValue::Json(v) => {
+            let status = v.get("status").and_then(|s| s.as_u64()).map(|s| s as u16);
+            let body = v
+                .get("bodyBase64")
+                .and_then(|b| b.as_str())
+                .and_then(|s| {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(s)
+                        .ok()
+                        .map(|bytes| bytes.len() as u64)
+                })
+                .or_else(|| {
+                    v.get("body")
+                        .and_then(|b| b.as_str())
+                        .map(|s| s.len() as u64)
+                });
+            let hdrs = v
+                .get("headers")
+                .and_then(|h| h.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (status, None, body, hdrs)
+        }
+        DomValue::Error(msg) => (None, Some(msg.clone()), None, Vec::new()),
+        _ => (None, None, None, Vec::new()),
+    };
+    crate::network_feed::publish_completed(
+        stamp,
+        crate::network_feed::NetworkCompleted {
+            method: method.to_string(),
+            url: url.to_string(),
+            initiator,
+            status,
+            error,
+            duration_ms,
+            size_bytes,
+            response_headers,
+        },
+    );
 }
 
 async fn fetch_response(net: Option<Arc<Provider>>, request: Request, reply: u64) -> DomResponse {
@@ -753,6 +826,7 @@ mod tests {
                 headers: Vec::new(),
                 body: String::new(),
                 reply: 1,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
             reply_tx,
         );
@@ -783,6 +857,122 @@ mod tests {
     }
 
     #[test]
+    fn start_fetch_records_network_entry() {
+        crate::network_feed::set_worker_route(7, 1);
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        start_fetch(
+            None,
+            "https://example.test/",
+            FetchRequest {
+                url: "data:,hello".into(),
+                method: "GET".into(),
+                headers: Vec::new(),
+                body: String::new(),
+                reply: 1,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
+            },
+            reply_tx,
+        );
+        let _ = reply_rx.recv().expect("reply");
+        let batch = crate::network_feed::drain_pending();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].tab_id, 7);
+        assert_eq!(batch[0].url, "data:,hello");
+        assert_eq!(
+            batch[0].initiator,
+            crate::devtools::network::NetworkInitiator::Fetch
+        );
+        assert!(batch[0].started_ms > 0);
+    }
+
+    #[test]
+    fn start_fetch_xhr_records_xhr_initiator() {
+        let _ = crate::network_feed::drain_pending();
+        crate::network_feed::set_worker_route(3, 1);
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        start_fetch(
+            None,
+            "https://example.test/",
+            FetchRequest {
+                url: "data:,xhr".into(),
+                method: "GET".into(),
+                headers: Vec::new(),
+                body: String::new(),
+                reply: 1,
+                initiator: crate::devtools::network::NetworkInitiator::Xhr,
+            },
+            reply_tx,
+        );
+        let _ = reply_rx.recv().expect("reply");
+        let batch = crate::network_feed::drain_pending();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(
+            batch[0].initiator,
+            crate::devtools::network::NetworkInitiator::Xhr
+        );
+    }
+
+    #[test]
+    fn start_fetch_invalid_url_records_error_before_reply() {
+        let _ = crate::network_feed::drain_pending();
+        crate::network_feed::set_worker_route(2, 1);
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        start_fetch(
+            None,
+            "https://example.test/",
+            FetchRequest {
+                url: "http://".into(),
+                method: "GET".into(),
+                headers: Vec::new(),
+                body: String::new(),
+                reply: 1,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
+            },
+            reply_tx,
+        );
+        let batch = crate::network_feed::drain_pending();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].error.as_deref(), Some("invalid url"));
+        let _ = reply_rx.recv().expect("reply still sent");
+    }
+
+    #[test]
+    fn start_fetch_file_uses_stamp_captured_at_start() {
+        let _ = crate::network_feed::drain_pending();
+        crate::network_feed::set_worker_route(1, 1);
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/input.html");
+        let net = std::sync::Arc::new(blitz_net::Provider::new(None));
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        let file_url = url::Url::from_file_path(&path)
+            .expect("file url")
+            .to_string();
+        start_fetch(
+            Some(net),
+            "file:///unused",
+            FetchRequest {
+                url: file_url,
+                method: "GET".into(),
+                headers: Vec::new(),
+                body: String::new(),
+                reply: 1,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
+            },
+            reply_tx,
+        );
+        let _ = reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("reply");
+        crate::network_feed::set_worker_route(9, 9);
+        let batch = crate::network_feed::drain_pending();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].tab_id, 1);
+        assert_eq!(batch[0].network_epoch, 1);
+    }
+
+    #[test]
     fn start_fetch_answers_data_urls_inline() {
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
         start_fetch(
@@ -794,6 +984,7 @@ mod tests {
                 headers: Vec::new(),
                 body: String::new(),
                 reply: 2,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
             reply_tx,
         );

@@ -897,11 +897,11 @@
     return h;
   }
 
-  function hostFetch(url, optionsJson) {
+  function hostFetch(op, url, optionsJson) {
     if (optionsJson == null) {
-      return __glide_dom_sync('fetch', 0, String(url));
+      return __glide_dom_sync(op, 0, String(url));
     }
-    return __glide_dom_sync('fetch', 0, String(url), optionsJson);
+    return __glide_dom_sync(op, 0, String(url), optionsJson);
   }
 
   function normalizeHostPayload(raw, fallbackUrl) {
@@ -1072,7 +1072,7 @@
             reject(err);
             return;
           }
-          const raw = hostFetch(req.url, toRpcOptions(req.method, req.headers, req._body));
+          const raw = hostFetch('fetch', req.url, toRpcOptions(req.method, req.headers, req._body));
           const payload = normalizeHostPayload(raw, req.url);
           resolve(new Response(payload.body, payload));
         } catch (e) {
@@ -1262,7 +1262,7 @@
       dispatchXhrEvent(this, 'loadstart');
       const started = performance.now();
       try {
-        const raw = hostFetch(this._url, toRpcOptions(this._method, this._headers, body));
+        const raw = hostFetch('xhr', this._url, toRpcOptions(this._method, this._headers, body));
         if (this._aborted) return;
         if (this.timeout > 0 && (performance.now() - started) > this.timeout) {
           this._onTimeout();
@@ -1524,7 +1524,7 @@
     const body = data == null ? '' : (typeof data === 'string' ? data : String(data));
     setTimeout(() => {
       try {
-        hostFetch(String(url), JSON.stringify({ method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=UTF-8' } }));
+        hostFetch('fetch', String(url), JSON.stringify({ method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=UTF-8' } }));
       } catch (_) { /* fire-and-forget */ }
     }, 0);
     return true;

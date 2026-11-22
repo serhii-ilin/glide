@@ -5,6 +5,7 @@ pub mod console;
 pub mod elements;
 pub mod highlight;
 pub mod inspect;
+pub mod network;
 pub mod repl;
 
 use blitz_dom::BaseDocument;
@@ -135,6 +136,10 @@ pub struct DevToolsSession {
     console_rendered_len: usize,
     console_rendered_total: u64,
     console_last_tab: Option<crate::tabs::TabId>,
+    network_last_tab: Option<crate::tabs::TabId>,
+    network_last_generation: u64,
+    network_last_table_html: String,
+    network_last_detail_html: String,
     elements_last_tab: Option<crate::tabs::TabId>,
     elements_last_stamp: Option<elements::PageTreeStamp>,
     elements_last_ui_generation: u64,
@@ -349,6 +354,32 @@ impl DevToolsSession {
             self.elements_last_highlight = highlight;
         }
         painted || highlight_changed
+    }
+
+    pub fn sync_network_pane(
+        &mut self,
+        doc: &mut BaseDocument,
+        tab: &mut crate::tabs::Tab,
+    ) -> bool {
+        let tab_changed = self.network_last_tab != Some(tab.id);
+        if tab_changed {
+            self.network_last_generation = u64::MAX;
+            self.network_last_table_html.clear();
+            self.network_last_detail_html.clear();
+            self.network_last_tab = Some(tab.id);
+        }
+        if !(self.state.open && self.state.tab == DevToolsTab::Network) {
+            return false;
+        }
+        network::render_devtools_network(
+            doc,
+            &tab.network,
+            &mut tab.network_panel,
+            &mut self.network_last_generation,
+            &mut self.network_last_table_html,
+            &mut self.network_last_detail_html,
+            tab_changed,
+        )
     }
 
     pub fn sync_console_pane(

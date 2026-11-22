@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use blitz_net::{Provider, ProviderError};
 use blitz_traits::net::{
@@ -12,6 +12,9 @@ use blitz_traits::net::{
 };
 use tokio::sync::Notify;
 use url::Url;
+
+use crate::devtools::network::NetworkInitiator;
+use crate::network_feed::{self, NetworkCompleted, NetworkRoute, NetworkStamp};
 
 /// Tracks in-flight page and subresource loads for chrome UI and stop.
 #[derive(Default)]
@@ -152,6 +155,24 @@ pub struct GlideNet {
     /// Live scripting mode, shared with the HTML provider. It decides whether a
     /// `<noscript>` meta refresh may redirect the first navigation.
     scripting_enabled: Arc<AtomicBool>,
+    network_route: Arc<NetworkRoute>,
+}
+
+fn record_network_complete(stamp: NetworkStamp, started: Instant, completed: NetworkCompleted) {
+    network_feed::publish_completed(
+        stamp,
+        NetworkCompleted {
+            duration_ms: started.elapsed().as_millis() as u64,
+            ..completed
+        },
+    );
+}
+
+struct PageLoadSuccess {
+    url: String,
+    bytes: Bytes,
+    status: u16,
+    headers: Vec<(String, String)>,
 }
 
 impl GlideNet {
@@ -169,6 +190,7 @@ impl GlideNet {
             waker,
             bookmarks,
             Arc::new(AtomicBool::new(true)),
+            Arc::new(NetworkRoute::default()),
         )
     }
 
@@ -179,6 +201,7 @@ impl GlideNet {
         waker: Arc<dyn NetWaker>,
         bookmarks: Arc<dyn Fn() -> String + Send + Sync>,
         scripting_enabled: Arc<AtomicBool>,
+        network_route: Arc<NetworkRoute>,
     ) -> Arc<Self> {
         Arc::new(Self {
             inner,
@@ -186,7 +209,12 @@ impl GlideNet {
             waker,
             bookmarks,
             scripting_enabled,
+            network_route,
         })
+    }
+
+    pub fn network_route(&self) -> Arc<NetworkRoute> {
+        self.network_route.clone()
     }
 
     fn deliver_internal_page(
@@ -254,6 +282,10 @@ impl GlideNet {
         let glide_signal = token.glide_signal;
         let cancel_notify = token.notify;
         let scripting_enabled = self.scripting_enabled.load(Ordering::Relaxed);
+        let network_route = self.network_route.clone();
+        let stamp = network_route.begin_document_load();
+        let method = request.method.to_string();
+        let started = Instant::now();
         #[cfg(test)]
         let test_delay_ms = state.test_page_delay_ms.load(Ordering::Relaxed);
         #[cfg(not(test))]
@@ -279,13 +311,41 @@ impl GlideNet {
             .await;
 
             match result {
-                Ok((url, bytes)) => {
+                Ok(page) => {
                     state.mark_page_load_succeeded(&original_url);
-                    handler.bytes(url, bytes)
+                    record_network_complete(
+                        stamp,
+                        started,
+                        NetworkCompleted {
+                            method,
+                            url: page.url.clone(),
+                            initiator: NetworkInitiator::Document,
+                            status: Some(page.status),
+                            error: None,
+                            size_bytes: Some(page.bytes.len() as u64),
+                            response_headers: page.headers,
+                            duration_ms: 0,
+                        },
+                    );
+                    handler.bytes(page.url, page.bytes)
                 }
                 Err(LoadFail::Abort) => drop(handler),
                 Err(LoadFail::Failed(reason)) => {
                     state.mark_page_load_failed(&original_url);
+                    record_network_complete(
+                        stamp,
+                        started,
+                        NetworkCompleted {
+                            method,
+                            url: original_url.clone(),
+                            initiator: NetworkInitiator::Document,
+                            status: None,
+                            error: Some(reason.clone()),
+                            size_bytes: None,
+                            response_headers: Vec::new(),
+                            duration_ms: 0,
+                        },
+                    );
                     let html = error_page_html(&original_url, &reason);
                     handler.bytes(original_url, Bytes::from(html));
                 }
@@ -302,18 +362,34 @@ impl GlideNet {
         self.state.subresource_started();
         let state = self.state.clone();
         let waker = self.waker.clone();
+        let stamp = self.network_route.capture_stamp();
+        let method = request.method.to_string();
+        let url = request.url.to_string();
+        let started = Instant::now();
         let wrapped = Box::new(SubresourceHandler {
             state,
             inner: Some(handler),
             waker,
             doc_id,
+            stamp,
+            method,
+            url,
+            started,
+            initiator: NetworkInitiator::Subresource,
         });
         tokio::spawn(async move {
             match crate::http::fetch_followed(request).await {
                 Ok(resp) if (200..300).contains(&resp.status) => {
-                    wrapped.bytes(resp.url, resp.body);
+                    wrapped.deliver_http_success(resp);
                 }
-                _ => drop(wrapped),
+                Ok(resp) => {
+                    wrapped.record_failure(Some(resp.status), None, resp.headers);
+                    drop(wrapped);
+                }
+                Err(err) => {
+                    wrapped.record_failure(None, Some(err), Vec::new());
+                    drop(wrapped);
+                }
             }
         });
     }
@@ -354,11 +430,20 @@ impl NetProvider for GlideNet {
         self.state.subresource_started();
         let state = self.state.clone();
         let waker = self.waker.clone();
+        let stamp = self.network_route.capture_stamp();
+        let method = request.method.to_string();
+        let url = request.url.to_string();
+        let started = Instant::now();
         let wrapped = Box::new(SubresourceHandler {
             state,
             inner: Some(handler),
             waker,
             doc_id,
+            stamp,
+            method,
+            url,
+            started,
+            initiator: NetworkInitiator::Subresource,
         });
         self.inner.fetch(doc_id, request, wrapped);
     }
@@ -369,6 +454,81 @@ struct SubresourceHandler {
     inner: Option<Box<dyn NetHandler>>,
     waker: Arc<dyn NetWaker>,
     doc_id: usize,
+    stamp: NetworkStamp,
+    method: String,
+    url: String,
+    started: Instant,
+    initiator: NetworkInitiator,
+}
+
+impl SubresourceHandler {
+    fn deliver_http_success(mut self, resp: crate::http::Followed) {
+        if self.inner.is_some() {
+            self.finish_counting();
+        }
+        record_network_complete(
+            self.stamp,
+            self.started,
+            NetworkCompleted {
+                method: self.method.clone(),
+                url: resp.url.clone(),
+                initiator: self.initiator,
+                status: Some(resp.status),
+                error: None,
+                size_bytes: Some(resp.body.len() as u64),
+                response_headers: resp.headers,
+                duration_ms: 0,
+            },
+        );
+        if let Some(inner) = self.inner.take() {
+            inner.bytes(resp.url, resp.body);
+        }
+    }
+
+    fn record_success(
+        &self,
+        url: String,
+        size: usize,
+        status: u16,
+        headers: Vec<(String, String)>,
+    ) {
+        record_network_complete(
+            self.stamp,
+            self.started,
+            NetworkCompleted {
+                method: self.method.clone(),
+                url,
+                initiator: self.initiator,
+                status: Some(status),
+                error: None,
+                size_bytes: Some(size as u64),
+                response_headers: headers,
+                duration_ms: 0,
+            },
+        );
+    }
+
+    fn record_failure(
+        &self,
+        status: Option<u16>,
+        error: Option<String>,
+        headers: Vec<(String, String)>,
+    ) {
+        record_network_complete(
+            self.stamp,
+            self.started,
+            NetworkCompleted {
+                method: self.method.clone(),
+                url: self.url.clone(),
+                initiator: self.initiator,
+                status,
+                error,
+                size_bytes: None,
+                response_headers: headers,
+                duration_ms: 0,
+            },
+        );
+    }
 }
 
 impl SubresourceHandler {
@@ -385,6 +545,7 @@ impl NetHandler for SubresourceHandler {
         if self.inner.is_some() {
             self.finish_counting();
         }
+        self.record_success(resolved_url.clone(), bytes.len(), 200, Vec::new());
         if let Some(inner) = self.inner.take() {
             inner.bytes(resolved_url, bytes);
         }
@@ -412,7 +573,7 @@ async fn fetch_racing_aborts(
     cancel_notify: &Notify,
     test_delay_ms: usize,
     scripting_enabled: bool,
-) -> Result<(String, Bytes), LoadFail> {
+) -> Result<PageLoadSuccess, LoadFail> {
     let fetch_fut = page_fetch(provider, request, test_delay_ms, scripting_enabled);
     tokio::pin!(fetch_fut);
     tokio::select! {
@@ -426,18 +587,33 @@ async fn page_fetch(
     request: Request,
     test_delay_ms: usize,
     scripting_enabled: bool,
-) -> Result<(String, Bytes), LoadFail> {
+) -> Result<PageLoadSuccess, LoadFail> {
     if test_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
     }
     if crate::http::is_navigable_http(&request) {
         return match crate::http::fetch_document(request, scripting_enabled).await {
-            crate::http::DocumentFetch::Page { url, body } => Ok((url, body)),
+            crate::http::DocumentFetch::Page {
+                url,
+                body,
+                status,
+                headers,
+            } => Ok(PageLoadSuccess {
+                url,
+                bytes: body,
+                status,
+                headers,
+            }),
             crate::http::DocumentFetch::Failed { reason, .. } => Err(LoadFail::Failed(reason)),
         };
     }
     match provider.fetch_async(request).await {
-        Ok(pair) => Ok(pair),
+        Ok((url, bytes)) => Ok(PageLoadSuccess {
+            url,
+            bytes,
+            status: 200,
+            headers: Vec::new(),
+        }),
         Err(ProviderError::Abort) => Err(LoadFail::Abort),
         Err(err) => Err(LoadFail::Failed(provider_error_reason(&err))),
     }
@@ -696,6 +872,188 @@ mod tests {
         let bytes = record.lock().expect("record").clone().expect("bytes").1;
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("input"));
+    }
+
+    #[test]
+    fn network_log_records_subresource() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/network-subresources.css");
+        assert!(path.is_file(), "network-subresources.css fixture");
+
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(1);
+        let route = Arc::new(NetworkRoute::default());
+        route.set(9, 2);
+        let net = GlideNet::with_scripting(
+            inner,
+            state.clone(),
+            waker,
+            test_bookmarks_supplier(),
+            Arc::new(AtomicBool::new(true)),
+            route,
+        );
+
+        let _ = crate::network_feed::drain_pending();
+
+        let record = Arc::new(StdMutex::new(None));
+        let handler = Box::new(RecordHandler {
+            done: record.clone(),
+        });
+        net.fetch(
+            99,
+            Request::get(file_url(path.to_str().expect("utf8"))),
+            handler,
+        );
+
+        for _ in 0..200 {
+            if record.lock().expect("record").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(record.lock().expect("record").is_some());
+
+        let events = crate::network_feed::drain_pending();
+        assert_eq!(events.len(), 1);
+        let ev = &events[0];
+        assert_eq!(ev.tab_id, 9);
+        assert_eq!(ev.network_epoch, 2);
+        assert_eq!(ev.initiator, NetworkInitiator::Subresource);
+        assert_eq!(ev.status, Some(200));
+        assert!(ev.url.contains("network-subresources.css"));
+        assert!(ev.size_bytes.unwrap_or(0) > 0);
+        assert!(ev.started_ms > 0);
+    }
+
+    #[test]
+    fn http_subresource_records_status_and_headers() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let port = addr.port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body = b"nf";
+            let response = format!(
+                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nX-Test: a&b\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            stream.write_all(body).expect("body");
+        });
+
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(1);
+        let route = Arc::new(NetworkRoute::default());
+        route.set(1, 1);
+        let net = GlideNet::with_scripting(
+            inner,
+            state,
+            waker,
+            test_bookmarks_supplier(),
+            Arc::new(AtomicBool::new(true)),
+            route,
+        );
+        let _ = crate::network_feed::drain_pending();
+        let record = Arc::new(StdMutex::new(None));
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/missing.css")).expect("url");
+        net.fetch(
+            2,
+            Request::get(url),
+            Box::new(RecordHandler {
+                done: record.clone(),
+            }),
+        );
+        let mut events = Vec::new();
+        for _ in 0..200 {
+            events = crate::network_feed::drain_pending();
+            if !events.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            events.iter().any(|e| e.status == Some(404)),
+            "events: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| {
+                e.response_headers
+                    .iter()
+                    .any(|(k, v)| k == "x-test" && v == "a&b")
+            }),
+            "events: {events:?}"
+        );
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn http_subresource_no_content_records_204() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 512];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nX-Empty: 1\r\n\r\n")
+                .expect("write");
+        });
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(1);
+        let route = Arc::new(NetworkRoute::default());
+        route.set(1, 1);
+        let net = GlideNet::with_scripting(
+            inner,
+            state,
+            waker,
+            test_bookmarks_supplier(),
+            Arc::new(AtomicBool::new(true)),
+            route,
+        );
+        let _ = crate::network_feed::drain_pending();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/empty.css")).expect("url");
+        net.fetch(
+            2,
+            Request::get(url),
+            Box::new(RecordHandler {
+                done: Arc::new(StdMutex::new(None)),
+            }),
+        );
+        for _ in 0..300 {
+            let batch = crate::network_feed::drain_pending();
+            if batch.iter().any(|e| e.status == Some(204)) {
+                assert!(
+                    batch
+                        .iter()
+                        .any(|e| { e.response_headers.iter().any(|(k, _)| k == "x-empty") })
+                );
+                server.join().expect("server");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for 204 record");
     }
 
     #[test]

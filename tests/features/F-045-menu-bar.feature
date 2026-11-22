@@ -61,6 +61,11 @@ Feature: F-045 In-window menu bar
     Then no dropdown is open
     And the page load is not stopped
 
+  Scenario: Losing window focus closes the open menu
+    Given the File menu is open
+    When the window loses focus
+    Then no dropdown is open
+
   Scenario: Unavailable commands are disabled, not active
     Given a single tab with no back or forward history
     When the History and File menus are rendered

@@ -61,6 +61,21 @@ impl ConsoleLevel {
             Self::ReplResult => "OUT",
         }
     }
+
+    /// Wire / feed level string (matches `console_feed` and MCP filters).
+    pub fn wire_level(self) -> &'static str {
+        match self {
+            Self::Log => "log",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+            Self::Debug => "debug",
+            Self::Uncaught => "uncaught",
+            Self::UnhandledRejection => "rejection",
+            Self::ReplInput => "repl-input",
+            Self::ReplResult => "repl-result",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

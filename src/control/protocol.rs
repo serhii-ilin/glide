@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_MAX_CHARS: usize = 20_000;
 pub const DEFAULT_QUERY_LIMIT: usize = 50;
+pub const DEFAULT_CONSOLE_LIMIT: usize = 100;
+pub const MAX_CONSOLE_LIMIT: usize = 500;
+pub const CONSOLE_MESSAGE_MAX_CHARS: usize = 2_000;
 pub const DEFAULT_NAV_TIMEOUT_MS: u64 = 12_000;
 /// Upper bound for client-supplied navigation/wait timeouts (MCP and control callers).
 pub const MAX_CLIENT_TIMEOUT_MS: u64 = 120_000;
@@ -28,6 +31,8 @@ pub enum ControlRequest {
     Dom(DomParams),
     Query(QueryParams),
     Screenshot,
+    ConsoleMessages(ConsoleParams),
+    Eval(EvalParams),
 }
 
 /// Arguments for `glide_navigate`.
@@ -80,6 +85,34 @@ pub struct QueryParams {
     pub limit: Option<usize>,
 }
 
+/// Arguments for `glide_console_messages`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConsoleParams {
+    /// Sequence cursor; omit or 0 to read from the oldest retained entry (default 0).
+    #[serde(default)]
+    pub since: Option<u64>,
+    /// When set, only rows at these levels (e.g. log, warn, error, uncaught, rejection,
+    /// repl-input, repl-result; case-insensitive).
+    #[serde(default)]
+    pub levels: Option<Vec<String>>,
+    /// Maximum rows to return (default 100, maximum 500).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Arguments for `glide_eval`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EvalParams {
+    /// JavaScript expression to evaluate in the page global scope (indirect eval).
+    pub expression: String,
+    /// When true, return `JSON.stringify` output instead of a DevTools-style preview.
+    #[serde(default)]
+    pub json: bool,
+    /// Maximum Unicode scalar values of the value text (default 20000 characters).
+    #[serde(default)]
+    pub max_chars: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlResult {
@@ -95,6 +128,29 @@ pub enum ControlResult {
     },
     Elements(Vec<ElementInfo>),
     Png(Vec<u8>),
+    Console(ConsoleSlice),
+    Eval {
+        value: String,
+        truncated: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsoleSlice {
+    pub entries: Vec<ConsoleMessage>,
+    pub next_cursor: u64,
+    pub dropped: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsoleMessage {
+    pub seq: u64,
+    pub level: String,
+    pub message: String,
+    pub source: Option<String>,
+    pub line: Option<usize>,
+    pub timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

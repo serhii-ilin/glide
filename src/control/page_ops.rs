@@ -76,6 +76,40 @@ pub fn query(
     Ok(out)
 }
 
+/// Centre of the first element matching `selector` in page coordinates.
+///
+/// Hidden and zero-size elements have no layout box, so they cannot be clicked.
+pub fn element_center(
+    doc: &BaseDocument,
+    selector: &str,
+) -> Result<(f32, f32, ElementInfo), String> {
+    let id = doc
+        .query_selector(selector)
+        .map_err(|_| format!("invalid selector `{selector}`"))?
+        .ok_or_else(|| format!("no element matches selector `{selector}`"))?;
+    let info = element_info(doc, id, true)
+        .ok_or_else(|| format!("element `{selector}` is not visible"))?;
+    if !info.visible {
+        return Err(format!("element `{selector}` is not visible"));
+    }
+    Ok((
+        info.rect.x + info.rect.width / 2.0,
+        info.rect.y + info.rect.height / 2.0,
+        info,
+    ))
+}
+
+/// Element under a page point, used to report the target of a coordinate click.
+pub fn element_at(doc: &BaseDocument, x: f32, y: f32) -> Option<ElementInfo> {
+    let hit = doc.hit(x, y)?;
+    element_info(doc, hit.node_id, true)
+}
+
+/// Element info for a known node, used to report the focused target when typing.
+pub(crate) fn element_info_for(doc: &BaseDocument, id: NodeId) -> Option<ElementInfo> {
+    element_info(doc, id, true)
+}
+
 pub fn page_title(doc: &BaseDocument) -> String {
     let Ok(Some(title_id)) = doc.query_selector("title") else {
         return String::new();
@@ -223,6 +257,40 @@ mod tests {
         let doc = laid_out("<!DOCTYPE html><html><body></body></html>");
         let err = dom_html(&doc, Some("[[["), false, DEFAULT_MAX_CHARS).expect_err("err");
         assert!(err.contains("invalid selector `[[[`"), "{err}");
+    }
+
+    #[test]
+    fn element_center_uses_layout_box() {
+        let mut doc = laid_out(
+            r#"<!DOCTYPE html><html><body>
+            <div id="on" style="width:50px;height:20px;margin-left:10px;margin-top:5px">Hi</div>
+            </body></html>"#,
+        );
+        doc.resolve(0.0);
+        let (x, y, info) = element_center(&doc, "#on").expect("centre");
+        assert_eq!(info.id.as_deref(), Some("on"));
+        assert!((x - (info.rect.x + info.rect.width / 2.0)).abs() < 0.01);
+        assert!((y - (info.rect.y + info.rect.height / 2.0)).abs() < 0.01);
+        assert!(info.visible);
+    }
+
+    #[test]
+    fn hidden_element_has_no_center() {
+        let mut doc = laid_out(
+            r#"<!DOCTYPE html><html><body>
+            <div id="off" style="display:none">Hide</div>
+            </body></html>"#,
+        );
+        doc.resolve(0.0);
+        let err = element_center(&doc, "#off").expect_err("hidden");
+        assert!(err.contains("is not visible"), "{err}");
+    }
+
+    #[test]
+    fn unknown_selector_has_no_center() {
+        let doc = laid_out("<!DOCTYPE html><html><body></body></html>");
+        let err = element_center(&doc, "#nope").expect_err("missing");
+        assert!(err.contains("no element matches selector"), "{err}");
     }
 
     #[test]

@@ -18,6 +18,8 @@ pub enum ControlRequest {
     Dom(DomParams),
     Query(QueryParams),
     Screenshot,
+    Click(ClickParams),
+    Type(TypeParams),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +73,7 @@ pub enum ControlResult {
     },
     Elements(Vec<ElementInfo>),
     Png(Vec<u8>),
+    Input(InputOutcome),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +110,58 @@ pub struct Rect {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClickParams {
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub x: Option<f32>,
+    #[serde(default)]
+    pub y: Option<f32>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+// `ControlRequest` derives `Eq`; a click point is a float pair, so provide the marker
+// implementation that the derive cannot produce for `f32`.
+impl Eq for ClickParams {}
+
+impl ClickParams {
+    /// Exactly one of a selector or both x and y must be supplied.
+    pub fn validate(&self) -> Result<(), String> {
+        let has_selector = self
+            .selector
+            .as_deref()
+            .is_some_and(|selector| !selector.trim().is_empty());
+        let has_point = self.x.is_some() && self.y.is_some();
+        if has_selector != has_point {
+            Ok(())
+        } else {
+            Err("give a selector or both x and y".to_string())
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeParams {
+    pub text: String,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub submit: bool,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InputOutcome {
+    pub x: f32,
+    pub y: f32,
+    pub target: Option<ElementInfo>,
+    pub navigated: bool,
+    pub page: PageInfo,
 }
 
 /// Truncate `s` to at most `max` Unicode scalar values; returns whether anything was cut.
@@ -151,5 +206,56 @@ mod tests {
         let (whole, cut) = truncate_chars("hello", 10);
         assert_eq!(whole, "hello");
         assert!(!cut);
+    }
+
+    #[test]
+    fn click_params_require_selector_or_point() {
+        let err = ClickParams {
+            selector: None,
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }
+        .validate()
+        .expect_err("neither");
+        assert_eq!(err, "give a selector or both x and y");
+
+        let err = ClickParams {
+            selector: None,
+            x: Some(10.0),
+            y: None,
+            timeout_ms: None,
+        }
+        .validate()
+        .expect_err("half a point");
+        assert_eq!(err, "give a selector or both x and y");
+
+        let err = ClickParams {
+            selector: Some("#x".into()),
+            x: Some(10.0),
+            y: Some(20.0),
+            timeout_ms: None,
+        }
+        .validate()
+        .expect_err("selector and point");
+        assert_eq!(err, "give a selector or both x and y");
+
+        ClickParams {
+            selector: Some("#x".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }
+        .validate()
+        .expect("selector");
+
+        ClickParams {
+            selector: None,
+            x: Some(10.0),
+            y: Some(20.0),
+            timeout_ms: None,
+        }
+        .validate()
+        .expect("point");
     }
 }

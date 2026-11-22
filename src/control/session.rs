@@ -2,22 +2,28 @@
 
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use blitz_dom::DocumentConfig;
+use blitz_dom::{Document, DocumentConfig};
 use blitz_net::Provider;
+use blitz_traits::events::{
+    BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, KeyState, MouseEventButton,
+    MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
+};
+use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::NetProvider;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use crossbeam_channel::{RecvTimeoutError, Sender, bounded, unbounded};
+use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
 
 use super::ControlBackend;
 use super::page_ops;
 use super::protocol::{
-    ControlRequest, ControlResult, DEFAULT_MAX_CHARS, DEFAULT_NAV_TIMEOUT_MS, DEFAULT_QUERY_LIMIT,
-    LoadStatus, PageInfo,
+    ClickParams, ControlRequest, ControlResult, DEFAULT_MAX_CHARS, DEFAULT_NAV_TIMEOUT_MS,
+    DEFAULT_QUERY_LIMIT, InputOutcome, LoadStatus, PageInfo, TypeParams,
 };
 use crate::devtools::console::{ConsoleEntry, ConsoleJournal};
 use crate::headless::{self, SettleOptions, VIEWPORT_HEIGHT, VIEWPORT_WIDTH};
@@ -34,8 +40,24 @@ const SESSION_TAB_BASE: u64 = 1_u64 << 32;
 const SESSION_LOG_PAGE_URL_MAX: usize = 120;
 const CONTROL_SESSION_TARGET: &str = "control.session";
 const SESSION_PANIC_DETAIL_MAX: usize = 512;
+const DEFAULT_INPUT_TIMEOUT_MS: u64 = 2_000;
+const INPUT_QUIET_TICKS: u32 = 5;
 
 static NEXT_SESSION_TAB: AtomicU64 = AtomicU64::new(SESSION_TAB_BASE);
+
+/// Collects navigations requested by Blitz default actions (link clicks, form submits)
+/// so the session thread can load them after the input event has been processed.
+struct SessionNavigation {
+    queue: Arc<Mutex<Vec<String>>>,
+}
+
+impl NavigationProvider for SessionNavigation {
+    fn navigate_to(&self, options: NavigationOptions) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.push(options.url.to_string());
+        }
+    }
+}
 
 fn next_session_tab_id() -> TabId {
     NEXT_SESSION_TAB.fetch_add(1, Ordering::Relaxed)
@@ -194,6 +216,8 @@ fn request_method_name(request: &ControlRequest) -> String {
         ControlRequest::Dom(_) => "dom",
         ControlRequest::Query(_) => "query",
         ControlRequest::Screenshot => "screenshot",
+        ControlRequest::Click(_) => "click",
+        ControlRequest::Type(_) => "type",
     }
     .to_string()
 }
@@ -203,6 +227,8 @@ pub struct HeadlessSession {
     opts: SessionOptions,
     document: Option<HtmlPageDocument>,
     js_host: Option<JsHost>,
+    tap: JsTap,
+    pending_nav: Arc<Mutex<Vec<String>>>,
     history: Option<History>,
     console: ConsoleJournal,
     tab_id: TabId,
@@ -217,6 +243,8 @@ impl HeadlessSession {
             opts,
             document: None,
             js_host: None,
+            tap: JsTap::new_disabled(),
+            pending_nav: Arc::new(Mutex::new(Vec::new())),
             history: None,
             console: ConsoleJournal::default(),
             tab_id: next_session_tab_id(),
@@ -276,6 +304,14 @@ impl HeadlessSession {
                 doc.0.resolve(0.0);
                 let png = page_ops::paint_png(&mut doc.0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)?;
                 Ok(ControlResult::Png(png))
+            }
+            ControlRequest::Click(p) => {
+                let outcome = self.click(p)?;
+                Ok(ControlResult::Input(outcome))
+            }
+            ControlRequest::Type(p) => {
+                let outcome = self.type_text(p)?;
+                Ok(ControlResult::Input(outcome))
             }
         }
     }
@@ -337,6 +373,154 @@ impl HeadlessSession {
         self.page_info()
     }
 
+    /// Click at a selector's centre or at explicit page coordinates.
+    pub fn click(&mut self, params: ClickParams) -> Result<InputOutcome, String> {
+        params.validate()?;
+        let timeout = input_timeout(params.timeout_ms);
+        let (x, y, target) = if let Some(selector) = params.selector.as_deref() {
+            if let Some(doc) = self.document.as_mut() {
+                doc.0.resolve(0.0);
+            }
+            let doc = self.document.as_ref().ok_or_else(no_page_loaded)?;
+            let (x, y, info) = page_ops::element_center(&doc.0, selector)?;
+            (x, y, Some(info))
+        } else {
+            let (x, y) = match (params.x, params.y) {
+                (Some(x), Some(y)) => (x, y),
+                _ => return Err("give a selector or both x and y".to_string()),
+            };
+            if let Some(doc) = self.document.as_mut() {
+                doc.0.resolve(0.0);
+            }
+            let target = {
+                let doc = self.document.as_ref().ok_or_else(no_page_loaded)?;
+                page_ops::element_at(&doc.0, x, y)
+            };
+            (x, y, target)
+        };
+
+        self.send_pointer(x, y);
+        self.settle_after_input(timeout);
+        let navigated = self.follow_pending_navigation(timeout)?;
+        let page = self.page_info()?;
+        Ok(InputOutcome {
+            x,
+            y,
+            target,
+            navigated,
+            page,
+        })
+    }
+
+    /// Type text, optionally into a selector, and optionally press Enter.
+    pub fn type_text(&mut self, params: TypeParams) -> Result<InputOutcome, String> {
+        let timeout = input_timeout(params.timeout_ms);
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut target = None;
+
+        if let Some(selector) = params.selector.as_deref() {
+            if let Some(doc) = self.document.as_mut() {
+                doc.0.resolve(0.0);
+            }
+            let (cx, cy, info) = {
+                let doc = self.document.as_ref().ok_or_else(no_page_loaded)?;
+                page_ops::element_center(&doc.0, selector)?
+            };
+            x = cx;
+            y = cy;
+            target = Some(info);
+            self.send_pointer(x, y);
+        } else if let Some(doc) = self.document.as_ref()
+            && let Some(id) = doc.0.get_focussed_node_id()
+            && doc
+                .0
+                .get_node(id)
+                .and_then(|node| node.element_data())
+                .is_some_and(|el| el.text_input_data().is_some())
+            && let Some(info) = page_ops::element_info_for(&doc.0, id)
+        {
+            x = info.rect.x + info.rect.width / 2.0;
+            y = info.rect.y + info.rect.height / 2.0;
+            target = Some(info);
+        }
+
+        self.dispatch_ui_event(&UiEvent::Ime(BlitzImeEvent::Commit(params.text)));
+        if params.submit {
+            self.dispatch_ui_event(&UiEvent::KeyDown(enter_key_event(KeyState::Pressed)));
+            self.dispatch_ui_event(&UiEvent::KeyUp(enter_key_event(KeyState::Released)));
+        }
+
+        self.settle_after_input(timeout);
+        let navigated = self.follow_pending_navigation(timeout)?;
+        let page = self.page_info()?;
+        Ok(InputOutcome {
+            x,
+            y,
+            target,
+            navigated,
+            page,
+        })
+    }
+
+    fn dispatch_ui_event(&mut self, event: &UiEvent) {
+        if let Some(doc) = self.document.as_mut() {
+            doc.0.handle_ui_event(event.clone());
+        }
+        self.tap.record_ui_event(event);
+    }
+
+    fn send_pointer(&mut self, x: f32, y: f32) {
+        let move_event = UiEvent::PointerMove(pointer_event(x, y, MouseEventButtons::None));
+        self.dispatch_ui_event(&move_event);
+        let down_event = UiEvent::PointerDown(pointer_event(x, y, MouseEventButtons::Primary));
+        self.dispatch_ui_event(&down_event);
+        let up_event = UiEvent::PointerUp(pointer_event(x, y, MouseEventButtons::None));
+        self.dispatch_ui_event(&up_event);
+    }
+
+    /// Pump page JavaScript until it has been quiet for a few ticks, then flush DOM RPC.
+    fn settle_after_input(&mut self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut quiet = 0;
+        while let Some(doc) = self.document.as_mut() {
+            let Some(js_host) = self.js_host.as_mut() else {
+                break;
+            };
+            doc.0.resolve(0.0);
+            if js_host.pump(&mut doc.0, Instant::now()) {
+                quiet = 0;
+            } else {
+                quiet += 1;
+            }
+            if quiet >= INPUT_QUIET_TICKS || Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if let (Some(doc), Some(js_host)) = (self.document.as_mut(), self.js_host.as_mut())
+            && remaining > Duration::ZERO
+        {
+            js_host.flush_dom_rpc_until_idle(
+                &mut doc.0,
+                remaining.min(Duration::from_secs(1)),
+                Duration::from_millis(50),
+            );
+            doc.0.resolve(0.0);
+        }
+        self.drain_console_wire();
+    }
+
+    fn follow_pending_navigation(&mut self, timeout: Duration) -> Result<bool, String> {
+        let Some(url) = self.pending_nav.lock().ok().and_then(|mut q| q.pop()) else {
+            return Ok(false);
+        };
+        self.navigate(&url, timeout)?;
+        Ok(true)
+    }
+
     pub fn page_info(&self) -> Result<PageInfo, String> {
         let doc = self.document.as_ref().ok_or_else(no_page_loaded)?;
         Ok(self.build_page_info(&doc.0, &self.current_url))
@@ -357,6 +541,9 @@ impl HeadlessSession {
         history: LoadHistory,
     ) -> Result<(), String> {
         let load_started = Instant::now();
+        if let Ok(mut queue) = self.pending_nav.lock() {
+            queue.clear();
+        }
         let handle = tokio::runtime::Handle::current();
         let net = Arc::new(Provider::new(None));
         let (final_url, bytes) = headless::fetch_page(&url, self.opts.js_enabled, &handle, &net)?;
@@ -372,11 +559,14 @@ impl HeadlessSession {
             js_tap: tap.clone(),
         };
         let net_provider: Arc<dyn NetProvider> = net.clone();
-        let mut js_host = JsHost::new(self.opts.js_enabled, tap, Some(net.clone()));
+        let mut js_host = JsHost::new(self.opts.js_enabled, tap.clone(), Some(net.clone()));
 
         let config = DocumentConfig {
             base_url: Some(final_url.clone()),
             net_provider: Some(net_provider),
+            navigation_provider: Some(Arc::new(SessionNavigation {
+                queue: self.pending_nav.clone(),
+            })),
             html_parser_provider: Some(Arc::new(html_provider)),
             viewport: Some(Viewport::new(
                 VIEWPORT_WIDTH,
@@ -445,6 +635,7 @@ impl HeadlessSession {
 
         self.document = Some(document);
         self.js_host = Some(js_host);
+        self.tap = tap;
         self.epoch = new_epoch;
         self.current_url = final_url.clone();
         self.last_status = last_status;
@@ -500,6 +691,45 @@ fn no_page_loaded() -> String {
 
 fn nav_timeout(timeout_ms: Option<u64>) -> Duration {
     Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_NAV_TIMEOUT_MS))
+}
+
+fn input_timeout(timeout_ms: Option<u64>) -> Duration {
+    Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_INPUT_TIMEOUT_MS))
+}
+
+fn pointer_event(x: f32, y: f32, buttons: MouseEventButtons) -> BlitzPointerEvent {
+    let coords = PointerCoords {
+        page_x: x,
+        page_y: y,
+        screen_x: x,
+        screen_y: y,
+        client_x: x,
+        client_y: y,
+    };
+    BlitzPointerEvent {
+        id: BlitzPointerId::Mouse,
+        is_primary: true,
+        coords,
+        button: MouseEventButton::Main,
+        buttons,
+        mods: Modifiers::default(),
+        details: PointerDetails::default(),
+        element: Point { x: 0.0, y: 0.0 },
+        active_pointers: Arc::new(Default::default()),
+    }
+}
+
+fn enter_key_event(state: KeyState) -> BlitzKeyEvent {
+    BlitzKeyEvent {
+        key: Key::Named(NamedKey::Enter),
+        code: Code::Enter,
+        modifiers: Modifiers::default(),
+        location: Location::Standard,
+        is_auto_repeating: false,
+        is_composing: false,
+        state,
+        text: None,
+    }
 }
 
 pub(crate) fn resolve_nav_url(raw: &str) -> String {

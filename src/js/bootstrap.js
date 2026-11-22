@@ -90,7 +90,129 @@
   };
 
   global.Promise = Promise;
-  global.performance = { now: () => nowMs };
+
+  const performanceTimeOrigin = Date.now() - nowMs;
+  const perfEntries = [];
+  const perfMarks = new Map();
+
+  function performanceTiming() {
+    const nav = performanceTimeOrigin;
+    const stamp = nav + Math.max(0, nowMs);
+    return {
+      navigationStart: nav,
+      unloadEventStart: nav,
+      unloadEventEnd: nav,
+      redirectStart: nav,
+      redirectEnd: nav,
+      fetchStart: nav,
+      domainLookupStart: nav,
+      domainLookupEnd: nav,
+      connectStart: nav,
+      connectEnd: nav,
+      secureConnectionStart: nav,
+      requestStart: nav,
+      responseStart: stamp,
+      responseEnd: stamp,
+      domLoading: stamp,
+      domInteractive: stamp,
+      domContentLoadedEventStart: stamp,
+      domContentLoadedEventEnd: stamp,
+      domComplete: stamp,
+      loadEventStart: stamp,
+      loadEventEnd: stamp,
+    };
+  }
+
+  function navigationPerformanceEntry() {
+    const href = (global.location && global.location.href) || '';
+    return {
+      name: href,
+      entryType: 'navigation',
+      startTime: 0,
+      duration: nowMs,
+    };
+  }
+
+  function pushPerfEntry(entry) {
+    perfEntries.push(entry);
+  }
+
+  global.performance = {
+    get timeOrigin() { return performanceTimeOrigin; },
+    get timing() { return performanceTiming(); },
+    navigation: { type: 0, redirectCount: 0 },
+    now: () => nowMs,
+    getEntries() {
+      return [navigationPerformanceEntry(), ...perfEntries.slice()];
+    },
+    getEntriesByType(type) {
+      const want = String(type);
+      return global.performance.getEntries().filter((e) => e.entryType === want);
+    },
+    getEntriesByName(name, type) {
+      const want = String(name);
+      const kind = type == null ? null : String(type);
+      return global.performance.getEntries().filter((e) => {
+        if (e.name !== want) return false;
+        if (kind != null && e.entryType !== kind) return false;
+        return true;
+      });
+    },
+    mark(name) {
+      const label = String(name);
+      perfMarks.set(label, nowMs);
+      pushPerfEntry({ name: label, entryType: 'mark', startTime: nowMs, duration: 0 });
+    },
+    measure(name, startMark, endMark) {
+      const label = String(name);
+      let start = 0;
+      let end = nowMs;
+      if (startMark != null) {
+        const key = String(startMark);
+        if (perfMarks.has(key)) start = perfMarks.get(key);
+      }
+      if (endMark != null) {
+        const key = String(endMark);
+        if (perfMarks.has(key)) end = perfMarks.has(key) ? perfMarks.get(key) : end;
+      }
+      pushPerfEntry({
+        name: label,
+        entryType: 'measure',
+        startTime: start,
+        duration: Math.max(0, end - start),
+      });
+    },
+    clearMarks(name) {
+      if (name == null) {
+        perfMarks.clear();
+        for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+          if (perfEntries[i].entryType === 'mark') perfEntries.splice(i, 1);
+        }
+        return;
+      }
+      const label = String(name);
+      perfMarks.delete(label);
+      for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+        const e = perfEntries[i];
+        if (e.entryType === 'mark' && e.name === label) perfEntries.splice(i, 1);
+      }
+    },
+    clearMeasures(name) {
+      if (name == null) {
+        for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+          if (perfEntries[i].entryType === 'measure') perfEntries.splice(i, 1);
+        }
+        return;
+      }
+      const label = String(name);
+      for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+        const e = perfEntries[i];
+        if (e.entryType === 'measure' && e.name === label) perfEntries.splice(i, 1);
+      }
+    },
+    clearResourceTimings() {},
+    setResourceTimingBufferSize() {},
+  };
   global.console = console;
 
   function invalidCharacter() {
@@ -790,12 +912,174 @@
   XMLHttpRequest.DONE = XHR_DONE;
   global.XMLHttpRequest = XMLHttpRequest;
 
+  function cloneHistoryState(state) {
+    if (state === undefined) return null;
+    try {
+      return JSON.parse(JSON.stringify(state));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function pageHref() {
+    if (typeof global.__glide_get_page_url === 'function') {
+      return global.__glide_get_page_url();
+    }
+    return (global.location && global.location.href) || '';
+  }
+
+  function resolvePageUrl(url) {
+    const raw = String(url);
+    const base = pageHref();
+    const parsed = __glide_url_parse(raw, base);
+    if (!parsed) return null;
+    const current = __glide_url_parse(base);
+    if (current && parsed.origin !== current.origin) {
+      const err = new Error('The operation is insecure.');
+      err.name = 'SecurityError';
+      throw err;
+    }
+    return parsed.href;
+  }
+
+  const historyEntries = [{ url: null, state: null }];
+  let historyIndex = 0;
+
+  function activeHistoryUrl() {
+    const entry = historyEntries[historyIndex];
+    if (entry && entry.url != null) return entry.url;
+    return pageHref();
+  }
+
+  function applyHistoryUrl(href) {
+    if (href != null && typeof global.__glide_set_page_url === 'function') {
+      global.__glide_set_page_url(href);
+    }
+  }
+
+  function firePopState(state) {
+    const EventCtor = global.Event || function () {};
+    const ev = new EventCtor('popstate');
+    ev.state = state;
+    global.dispatchEvent(ev);
+  }
+
+  function historyGo(target) {
+    if (target < 0 || target >= historyEntries.length) return;
+    historyIndex = target;
+    const entry = historyEntries[historyIndex];
+    const href = entry.url != null ? entry.url : pageHref();
+    applyHistoryUrl(href);
+    firePopState(cloneHistoryState(entry.state));
+  }
+
+  global.__glide_reset_page_history = function () {
+    historyEntries.length = 0;
+    historyEntries.push({ url: null, state: null });
+    historyIndex = 0;
+  };
+
+  global.history = {
+    get state() {
+      const entry = historyEntries[historyIndex];
+      return cloneHistoryState(entry ? entry.state : null);
+    },
+    get length() {
+      return Math.max(1, historyEntries.length);
+    },
+    scrollRestoration: 'auto',
+    pushState(state, _unused, url) {
+      const resolved = url ? resolvePageUrl(url) : null;
+      const clone = cloneHistoryState(state);
+      historyEntries.length = historyIndex + 1;
+      const href = resolved || activeHistoryUrl();
+      historyEntries.push({ url: href, state: clone });
+      historyIndex = historyEntries.length - 1;
+      if (resolved) applyHistoryUrl(href);
+    },
+    replaceState(state, _unused, url) {
+      const resolved = url ? resolvePageUrl(url) : null;
+      const clone = cloneHistoryState(state);
+      const entry = historyEntries[historyIndex];
+      if (resolved) {
+        entry.url = resolved;
+        applyHistoryUrl(resolved);
+      }
+      entry.state = clone;
+    },
+    back() { historyGo(historyIndex - 1); },
+    forward() { historyGo(historyIndex + 1); },
+    go(delta) {
+      if (delta === 0) return;
+      historyGo(historyIndex + Number(delta));
+    },
+  };
+
+  const CRYPTO_BYTE_QUOTA = 65536;
+
+  function hostRandomBytes(size) {
+    const n = Number(size);
+    if (!Number.isFinite(n) || n < 0) throw new TypeError('Invalid random byte size');
+    const raw = __glide_dom_sync('randomBytes', 0, String(Math.floor(n)));
+    if (raw && raw.__error) {
+      const err = new Error(String(raw.__error));
+      err.name = raw.__error === 'QuotaExceededError' ? 'QuotaExceededError' : 'Error';
+      throw err;
+    }
+    return raw;
+  }
+
+  const RANDOM_TYPED_ARRAYS = new Set([
+    'Int8Array', 'Uint8Array', 'Uint8ClampedArray',
+    'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+    'BigInt64Array', 'BigUint64Array',
+  ]);
+
+  function cryptoGetRandomValues(view) {
+    if (!view || !ArrayBuffer.isView(view)) {
+      throw new TypeError('Expected an ArrayBuffer view');
+    }
+    const name = view.constructor && view.constructor.name;
+    if (!name || !RANDOM_TYPED_ARRAYS.has(name)) {
+      throw new TypeError('Expected a typed array');
+    }
+    const len = view.byteLength;
+    if (len > CRYPTO_BYTE_QUOTA) {
+      const err = new Error('The requested length exceeds the quota.');
+      err.name = 'QuotaExceededError';
+      throw err;
+    }
+    const bytes = hostRandomBytes(len);
+    const u8 = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    for (let i = 0; i < len; i += 1) u8[i] = bytes[i];
+    return view;
+  }
+
+  function cryptoRandomUUID() {
+    const bytes = hostRandomBytes(16);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  global.crypto = {
+    getRandomValues: cryptoGetRandomValues,
+    randomUUID: cryptoRandomUUID,
+    get subtle() { return undefined; },
+  };
+
   function ensureNavigator() {
     if (global.navigator == null) global.navigator = {};
     return global.navigator;
   }
   const navigatorShim = ensureNavigator();
   if (navigatorShim.userAgent == null) navigatorShim.userAgent = 'Glide';
+  if (navigatorShim.languages == null) navigatorShim.languages = ['en-US', 'en'];
+  if (navigatorShim.language == null) navigatorShim.language = 'en-US';
+  if (navigatorShim.platform == null) navigatorShim.platform = '';
+  if (navigatorShim.onLine == null) navigatorShim.onLine = true;
+  if (navigatorShim.hardwareConcurrency == null) navigatorShim.hardwareConcurrency = 1;
   navigatorShim.sendBeacon = function (url, data) {
     const body = data == null ? '' : (typeof data === 'string' ? data : String(data));
     setTimeout(() => {

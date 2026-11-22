@@ -31,6 +31,8 @@
   const ranScripts = new WeakSet();
   const handlerCache = new Map();
   const layoutCache = new Map();
+  let currentPageUrl = 'about:blank';
+  let pageLocation = null;
 
   function rpc(op, ...args) {
     const reply = nextReply++;
@@ -908,7 +910,37 @@
     return node;
   }
 
+  function parsedPageUrl(pageUrl) {
+    let parsed = null;
+    try { parsed = __glide_url_parse(String(pageUrl || 'about:blank')); } catch (_) { parsed = null; }
+    return parsed || {};
+  }
+
+  function fillLocationFields(loc, parsed, pageUrl) {
+    const href = parsed.href || pageUrl || 'about:blank';
+    loc.href = href;
+    loc.protocol = parsed.protocol || '';
+    loc.host = parsed.host || '';
+    loc.hostname = parsed.hostname || '';
+    loc.port = parsed.port || '';
+    loc.pathname = parsed.pathname || '';
+    loc.search = parsed.search || '';
+    loc.hash = parsed.hash || '';
+    loc.origin = parsed.origin || 'null';
+  }
+
+  function syncLocationObject(parsed, pageUrl) {
+    if (!pageLocation) return;
+    fillLocationFields(pageLocation, parsed, pageUrl);
+  }
+
+  function setPageUrl(href) {
+    currentPageUrl = String(href);
+    syncLocationObject(parsedPageUrl(currentPageUrl), currentPageUrl);
+  }
+
   function installGlobals(pageUrl) {
+    currentPageUrl = pageUrl || 'about:blank';
     global.document = pageDocument;
     if (global.navigator == null) global.navigator = { userAgent: 'Glide' };
     const impl = domino.impl;
@@ -939,33 +971,47 @@
       global.getComputedStyle = gcsImpl;
     }
     patchDomParser();
-    global.location = locationFrom(pageUrl || 'about:blank');
+    pageLocation = locationFrom(currentPageUrl);
+    global.location = pageLocation;
     try {
-      Object.defineProperty(global.document, 'URL', { configurable: true, get: () => pageUrl });
-      Object.defineProperty(global.document, 'documentURI', { configurable: true, get: () => pageUrl });
+      Object.defineProperty(global.document, 'URL', {
+        configurable: true,
+        get: () => currentPageUrl,
+      });
+      Object.defineProperty(global.document, 'documentURI', {
+        configurable: true,
+        get: () => currentPageUrl,
+      });
+      Object.defineProperty(global.document, 'location', {
+        configurable: true,
+        get: () => pageLocation,
+      });
     } catch (_) { /* domino defines these as readonly */ }
   }
 
   function locationFrom(pageUrl) {
-    let parsed = null;
-    try { parsed = __glide_url_parse(String(pageUrl || 'about:blank')); } catch (_) { parsed = null; }
-    parsed = parsed || {};
-    return {
-      href: parsed.href || pageUrl || 'about:blank',
-      protocol: parsed.protocol || '',
-      host: parsed.host || '',
-      hostname: parsed.hostname || '',
-      port: parsed.port || '',
-      pathname: parsed.pathname || '',
-      search: parsed.search || '',
-      hash: parsed.hash || '',
-      origin: parsed.origin || 'null',
-      assign(u) { rpc('navigate', String(u)); },
-      replace(u) { rpc('navigate', String(u)); },
+    const loc = {
+      assign(u) {
+        const base = currentPageUrl;
+        const resolved = __glide_url_parse(String(u), base);
+        const href = (resolved && resolved.href) || String(u);
+        rpc('navigate', href);
+      },
+      replace(u) {
+        const base = currentPageUrl;
+        const resolved = __glide_url_parse(String(u), base);
+        const href = (resolved && resolved.href) || String(u);
+        rpc('navigate', href);
+      },
       reload() {},
       toString() { return this.href; },
     };
+    fillLocationFields(loc, parsedPageUrl(pageUrl), pageUrl);
+    return loc;
   }
+
+  global.__glide_set_page_url = setPageUrl;
+  global.__glide_get_page_url = function () { return currentPageUrl; };
 
   global.__glide_init_page = function (snapshotJson, pageUrl) {
     pendingOnHandlers.length = 0;
@@ -1013,6 +1059,9 @@
       get: () => global,
     });
     installGlobals(pageUrl || 'about:blank');
+    if (typeof global.__glide_reset_page_history === 'function') {
+      global.__glide_reset_page_history();
+    }
     installDocumentWrite(pageDocument);
     patchEventPath();
     for (const [node, name, val] of pendingOnHandlers) applyOnAttribute(node, name, val);

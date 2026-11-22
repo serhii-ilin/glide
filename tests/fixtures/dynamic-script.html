@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p id="t">before</p>
+<script>
+  // Inline parser script: runs. It then inserts another script by hand.
+  var s = document.createElement('script');
+  s.textContent = "document.getElementById('t').textContent = 'dynamic'";
+  document.body.appendChild(s);
+  document.getElementById('t').textContent = 'after';
+</script>
+</body>
+</html>

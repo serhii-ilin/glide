@@ -141,7 +141,36 @@ thread_local! {
     };
 }
 
+/// Per-page failure tally emitted as one `js.page` record once the load settles.
+#[derive(Debug, Clone, Default)]
+pub struct PageCounts {
+    pub uncaught: u64,
+    pub console_errors: u64,
+    pub unsupported: u64,
+    pub kinds: std::collections::BTreeSet<String>,
+}
+
+thread_local! {
+    static COUNTS: RefCell<PageCounts> = RefCell::new(PageCounts::default());
+}
+
+pub fn reset_counts() {
+    COUNTS.with(|slot| *slot.borrow_mut() = PageCounts::default());
+}
+
+pub fn counts() -> PageCounts {
+    COUNTS.with(|slot| slot.borrow().clone())
+}
+
+fn count_kind(kind: &str) {
+    COUNTS.with(|slot| {
+        let mut counts = slot.borrow_mut();
+        counts.kinds.insert(kind.to_string());
+    });
+}
+
 pub fn set_page_url(url: impl Into<String>) {
+    COUNTS.with(|slot| *slot.borrow_mut() = PageCounts::default());
     CURRENT.with(|slot| slot.borrow_mut().page_url = Some(url.into()));
 }
 
@@ -199,6 +228,9 @@ pub fn record_uncaught(message: &str, line: Option<usize>, resource: Option<&str
     } else {
         format!("Uncaught {message}")
     };
+    let kind = classify(&message);
+    COUNTS.with(|slot| slot.borrow_mut().uncaught += 1);
+    count_kind(kind.as_str());
     let fields = uncaught_fields(&message, line, resource, stack, &ctx);
     logging::error("js.uncaught", message, &fields);
 }
@@ -210,8 +242,119 @@ pub fn record_console(level: Level, message: &str) {
         let kind = classify(message);
         fields.push(("error_kind", kind.as_str().to_string()));
         fields.push(("hint", hint(kind, message).to_string()));
+        if level == Level::Error {
+            COUNTS.with(|slot| slot.borrow_mut().console_errors += 1);
+            count_kind(kind.as_str());
+        }
     }
     logging::emit(level, "js.console", message, &fields);
+}
+
+/// A page feature Glide does not implement yet, reported by the DOM glue.
+///
+/// These are not exceptions, so they never reach `js.uncaught`; without this record
+/// a page can stay blank while every script "succeeds".
+pub fn record_unsupported(feature: &str, detail: &str) {
+    COUNTS.with(|slot| slot.borrow_mut().unsupported += 1);
+    count_kind("unsupported");
+    let mut fields = context_fields(&current());
+    fields.extend(unsupported_fields(feature, detail));
+    logging::warn("js.unsupported", "page feature is not implemented", &fields);
+}
+
+/// Report an unsupported feature from the UI thread, where there is no script
+/// context. Used by script discovery (module scripts).
+pub fn report_unsupported(page_url: &str, feature: &str, detail: &str) {
+    let mut fields = vec![("page_url", page_url.to_string())];
+    fields.extend(unsupported_fields(feature, detail));
+    logging::warn("js.unsupported", "page feature is not implemented", &fields);
+}
+
+fn unsupported_fields(feature: &str, detail: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("error_kind", "unsupported".to_string()),
+        ("feature", feature.to_string()),
+        ("detail", truncate_detail(detail)),
+        ("hint", unsupported_hint(feature).to_string()),
+    ]
+}
+
+/// Page-provided text (script URLs, inline markers) is capped so one record stays
+/// one bounded line, even for `data:` URLs.
+fn truncate_detail(detail: &str) -> String {
+    const LIMIT: usize = 160;
+    let mut out: String = detail.chars().take(LIMIT).collect();
+    if detail.chars().count() > LIMIT {
+        out.push('…');
+    }
+    out
+}
+
+/// Capabilities the page probed and did not find, as one debug record per page.
+///
+/// Page apps feature-detect these and silently take a fallback path when one is
+/// missing, so the absence never appears as an exception.
+pub fn record_capabilities(missing: &str) {
+    if missing.is_empty() {
+        return;
+    }
+    let mut fields = context_fields(&current());
+    fields.push(("missing", missing.to_string()));
+    fields.push((
+        "hint",
+        "Feature detection on these globals fails silently; implement the ones the page needs (F-032)."
+            .to_string(),
+    ));
+    logging::debug("js.caps", "page capabilities", &fields);
+}
+
+fn unsupported_hint(feature: &str) -> &'static str {
+    match feature {
+        "dynamic-script" => {
+            "Scripts inserted after parsing are mirrored into Blitz but not executed (F-036)."
+        }
+        "module-script" => "ES modules are parsed but never executed by the page runtime.",
+        "dynamic-import" => "import() is not wired to the script loader.",
+        _ => "A page feature reached the DOM bridge with no implementation; see F-032/F-036.",
+    }
+}
+
+/// One record per load once scripts settle, so a blank page still has a trace.
+///
+/// Degraded pages log at INFO so they surface with the default filter; a clean
+/// page logs at DEBUG, where it is diagnosis material rather than a warning.
+pub fn log_page_summary(scripts_run: u64) {
+    let counts = counts();
+    let degraded = counts.uncaught > 0 || counts.console_errors > 0 || counts.unsupported > 0;
+    if scripts_run == 0 && !degraded {
+        return;
+    }
+    let mut fields = context_fields(&current());
+    fields.push(("scripts", scripts_run.to_string()));
+    fields.push(("uncaught", counts.uncaught.to_string()));
+    fields.push(("console_errors", counts.console_errors.to_string()));
+    fields.push(("unsupported", counts.unsupported.to_string()));
+    if !counts.kinds.is_empty() {
+        fields.push((
+            "error_kinds",
+            counts.kinds.iter().cloned().collect::<Vec<_>>().join(","),
+        ));
+    }
+    fields.push((
+        "status",
+        if degraded { "degraded" } else { "clean" }.to_string(),
+    ));
+    fields.push((
+        "hint",
+        if degraded {
+            "Use GLIDE_LOG=debug for each script; js.unsupported lists missing DOM features."
+        } else {
+            "No script errors. If the page is blank, its app may rely on a missing DOM feature or network API."
+        }
+        .to_string(),
+    ));
+    let level = if degraded { Level::Info } else { Level::Debug };
+    logging::emit(level, "js.page", "page scripts settled", &fields);
 }
 
 fn context_fields(ctx: &ScriptContext) -> Vec<(&'static str, String)> {
@@ -234,6 +377,22 @@ fn context_fields(ctx: &ScriptContext) -> Vec<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_counts_tally_uncaught_console_and_unsupported() {
+        set_page_url("file:///page.html");
+        record_uncaught("TypeError: boom", None, None, "");
+        record_console(Level::Error, "Error: console boom");
+        record_console(Level::Warn, "warn only");
+        record_unsupported("dynamic-script", "<inline>");
+
+        let counts = counts();
+        assert_eq!(counts.uncaught, 1);
+        assert_eq!(counts.console_errors, 1);
+        assert_eq!(counts.unsupported, 1);
+        assert!(counts.kinds.contains("unsupported"));
+        assert!(counts.kinds.contains("other"));
+    }
 
     #[test]
     fn classify_recognizes_known_root_causes() {

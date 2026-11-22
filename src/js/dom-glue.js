@@ -24,6 +24,8 @@
   let batchErrorLogged = false;
   let eventPathPatched = false;
   let scriptKind = '';
+  let writingDocument = false;
+  const reportedUnsupported = new Set();
   const skippedInserts = new Set();
   const pendingOnHandlers = [];
   const ranScripts = new WeakSet();
@@ -37,6 +39,84 @@
       throw new Error(result.__error);
     }
     return result;
+  }
+
+  // Report a page feature the runtime does not implement once per detail, so a
+  // blank page still leaves a structured trace. Never let diagnostics throw.
+  function diagUnsupported(feature, detail) {
+    const key = feature + '\0' + detail;
+    if (reportedUnsupported.has(key) || reportedUnsupported.size >= 20) return;
+    reportedUnsupported.add(key);
+    try {
+      if (typeof __glide_diag === 'function') __glide_diag(String(feature), String(detail));
+    } catch (_) { /* diagnostics must not break page scripts */ }
+  }
+
+  // Scripts inserted by a script are mirrored but never fetched or executed,
+  // except inline scripts written by `document.write` (those run below).
+  function reportInsertedScripts(root) {
+    if (!root) return;
+    if (root.nodeType !== 1 && root.nodeType !== 11) return;
+    const stack = [root];
+    let checked = 0;
+    while (stack.length && checked < 64) {
+      const node = stack.pop();
+      checked += 1;
+      if (node.nodeType === 1 && String(node.localName || '').toLowerCase() === 'script') {
+        const attr = (name) => (node.getAttribute ? node.getAttribute(name) : null);
+        const src = attr('src');
+        if (src) {
+          diagUnsupported('dynamic-script', String(src));
+        } else if (!writingDocument) {
+          const isModule = String(attr('type') || '').toLowerCase() === 'module';
+          diagUnsupported(isModule ? 'module-script' : 'dynamic-script', '<inline>');
+        }
+        continue;
+      }
+      for (let c = node.firstChild; c; c = c.nextSibling) stack.push(c);
+    }
+  }
+
+  // Well-known globals page apps feature-detect. A missing one makes the app take
+  // a silent fallback path (no exception), which is why blank pages need this record.
+  const CAPABILITY_PROBES = [
+    ['requestIdleCallback', () => typeof global.requestIdleCallback === 'function'],
+    ['requestAnimationFrame', () => typeof global.requestAnimationFrame === 'function'],
+    ['fetch', () => typeof global.fetch === 'function'],
+    ['XMLHttpRequest', () => typeof global.XMLHttpRequest === 'function'],
+    ['localStorage', () => global.localStorage != null],
+    ['sessionStorage', () => global.sessionStorage != null],
+    ['WebAssembly', () => typeof global.WebAssembly === 'object'],
+    ['IntersectionObserver', () => typeof global.IntersectionObserver === 'function'],
+    ['ResizeObserver', () => typeof global.ResizeObserver === 'function'],
+    ['customElements', () => global.customElements != null],
+    ['Notification', () => typeof global.Notification === 'function'],
+    ['WebSocket', () => typeof global.WebSocket === 'function'],
+    ['Worker', () => typeof global.Worker === 'function'],
+    ['EventSource', () => typeof global.EventSource === 'function'],
+    ['Blob', () => typeof global.Blob === 'function'],
+    ['crypto', () => global.crypto != null],
+    ['matchMedia', () => typeof global.matchMedia === 'function'],
+    ['CSS.supports', () => !!(global.CSS && typeof global.CSS.supports === 'function')],
+    ['history.pushState', () => !!(global.history && typeof global.history.pushState === 'function')],
+    ['performance.timing', () => !!(global.performance && global.performance.timing != null)],
+    ['navigator.sendBeacon', () => !!(global.navigator && typeof global.navigator.sendBeacon === 'function')],
+    ['navigator.languages', () => !!(global.navigator && global.navigator.languages != null)],
+    ['queueMicrotask', () => typeof global.queueMicrotask === 'function'],
+  ];
+
+  function reportCapabilities() {
+    const missing = [];
+    for (let i = 0; i < CAPABILITY_PROBES.length; i++) {
+      const [name, probe] = CAPABILITY_PROBES[i];
+      let present = false;
+      try { present = !!probe(); } catch (_) { present = false; }
+      if (!present) missing.push(name);
+    }
+    if (!missing.length) return;
+    try {
+      if (typeof __glide_caps === 'function') __glide_caps(missing.join(','));
+    } catch (_) { /* diagnostics must not break page scripts */ }
   }
 
   function consoleError(err) {
@@ -257,6 +337,7 @@
     switch (rec.type) {
       case MUTATE.INSERT: {
         if (!rec.node || nodeToBlitz.get(rec.node) != null) return;
+        reportInsertedScripts(rec.node);
         assignFormOwners(rec.node, false);
         subtreeOps(rec.target, followingRef(rec.node), rec.node, pendingBatch);
         break;
@@ -758,13 +839,15 @@
     const script = global.__glideCurrentScript;
     if (!documentLoaded) {
       if (scriptKind === 'classic' && script && script.parentNode) {
-        insertAfterScript(html);
+        writingDocument = true;
+        try { insertAfterScript(html); } finally { writingDocument = false; }
         return;
       }
       warnIgnoredWrite();
       return;
     }
-    writeAfterLoad(html);
+    writingDocument = true;
+    try { writeAfterLoad(html); } finally { writingDocument = false; }
   }
 
   function installDocumentWrite(doc) {
@@ -896,6 +979,8 @@
     writeCursor = null;
     mirroringEnabled = false;
     scriptKind = '';
+    writingDocument = false;
+    reportedUnsupported.clear();
     skippedInserts.clear();
     layoutCache.clear();
     const tree = typeof snapshotJson === 'string' ? JSON.parse(snapshotJson) : snapshotJson;
@@ -952,6 +1037,7 @@
       });
     } catch (_) { /* ignore */ }
     pageDocument.readyState = 'loading';
+    reportCapabilities();
   };
 
   global.__glide_set_current_script = function (id) {

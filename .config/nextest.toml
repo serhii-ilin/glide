@@ -1,0 +1,14 @@
+# Nextest profiles do not inherit from one another: each [profile.*] block is complete.
+# When the CI environment variable is set (e.g. GitHub Actions), nextest selects the
+# `ci` profile if it is defined; locally use `cargo nextest run --profile ci` explicitly.
+
+[profile.default]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "60s", "terminate-after" = 2 }
+
+[profile.ci]
+fail-fast = false
+retries = 0
+# compat_dom_nodes takes about 47s under load.
+slow-timeout = { period = "120s", "terminate-after" = 2 }

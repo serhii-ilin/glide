@@ -79,6 +79,25 @@ impl JsHost {
         console_feed::drain_pending()
     }
 
+    pub fn page_js_active(&self) -> bool {
+        self.is_enabled() && self.worker.is_some()
+    }
+
+    pub fn submit_console_eval(&self, source: &str) -> Result<(), String> {
+        if !self.is_enabled() {
+            return Err("Console REPL unavailable: JavaScript is disabled.".to_string());
+        }
+        let Some(worker) = &self.worker else {
+            return Err("Console REPL unavailable: no active page is loaded.".to_string());
+        };
+        worker.eval_console(
+            source.to_string(),
+            self.console_tab_id,
+            self.console_page_epoch,
+        );
+        Ok(())
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
     }

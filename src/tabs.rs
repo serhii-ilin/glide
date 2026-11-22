@@ -6,6 +6,7 @@ use keyboard_types::Modifiers;
 use serde::{Deserialize, Serialize};
 
 use crate::devtools::console::ConsoleJournal;
+use crate::devtools::repl::ConsoleReplHistory;
 use crate::find::FindSession;
 use crate::history::History;
 use crate::nav::NavTracker;
@@ -24,6 +25,7 @@ pub struct Tab {
     pub find: FindSession,
     pub zoom: PageZoom,
     pub console: ConsoleJournal,
+    pub console_repl_history: ConsoleReplHistory,
     /// Bumped on each navigation so stale console wire events are ignored.
     pub console_epoch: u64,
     /// Last URL written into the address field, so a focused field is left alone.
@@ -40,6 +42,7 @@ impl Tab {
             find: FindSession::default(),
             zoom: PageZoom::new(),
             console: ConsoleJournal::default(),
+            console_repl_history: ConsoleReplHistory::default(),
             console_epoch: 1,
             address_written: url,
         }
@@ -126,6 +129,7 @@ impl TabManager {
         self.next_id += 1;
         tab.id = id;
         tab.console = ConsoleJournal::default();
+        tab.console_repl_history = ConsoleReplHistory::default();
         tab.console_epoch = 1;
         self.tabs.push(tab);
         self.active = Some(self.tabs.len() - 1);

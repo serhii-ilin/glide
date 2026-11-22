@@ -91,3 +91,60 @@ fn run_inline_page_with_runtime(
         console_wire,
     }
 }
+
+/// Run inline HTML, then evaluate a Console REPL expression and drain wire events.
+pub fn run_inline_page_with_repl(
+    html: &str,
+    expression: &str,
+    pump_for: Duration,
+) -> Result<Vec<crate::js::console_feed::ConsoleWireEvent>, String> {
+    run_inline_page_with_repl_post(html, expression, pump_for, Duration::from_millis(80))
+}
+
+pub fn run_inline_page_with_repl_post(
+    html: &str,
+    expression: &str,
+    pump_for: Duration,
+    post_eval: Duration,
+) -> Result<Vec<crate::js::console_feed::ConsoleWireEvent>, String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
+    let _ = crate::js::console_feed::drain_pending();
+    let net = Arc::new(Provider::new(None));
+    let tap = JsTap::new_enabled();
+    let provider = GlideHtmlProvider {
+        scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        js_tap: tap.clone(),
+    };
+    let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.set_console_route(0, 1);
+    let config = DocumentConfig {
+        base_url: Some("https://example.test/".into()),
+        net_provider: Some(net.clone()),
+        html_parser_provider: Some(Arc::new(provider)),
+        ..Default::default()
+    };
+    let mut document = HtmlPageDocument(parse::document_from_html(html, config, true));
+    js_host.maybe_start_page(&document.0, "https://example.test/", rt.handle());
+    js_host.finish_script_resolution_sync(
+        rt.handle(),
+        &crate::js::scripts::collect_scripts(&document.0),
+    );
+    let start = Instant::now();
+    while start.elapsed() < pump_for {
+        document.0.resolve(0.0);
+        js_host.pump(&mut document.0, Instant::now());
+        thread::sleep(Duration::from_millis(5));
+    }
+    js_host.submit_console_eval(expression)?;
+    let post_start = Instant::now();
+    while post_start.elapsed() < post_eval {
+        document.0.resolve(0.0);
+        js_host.pump(&mut document.0, Instant::now());
+        thread::sleep(Duration::from_millis(25));
+    }
+    Ok(js_host.drain_console_wire())
+}

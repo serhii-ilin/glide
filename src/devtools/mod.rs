@@ -1,6 +1,7 @@
 //! DevTools panel shell state: dock side, size, active tab, and chrome commands.
 
 pub mod console;
+pub mod repl;
 
 use blitz_dom::BaseDocument;
 use serde::{Deserialize, Serialize};
@@ -130,6 +131,7 @@ pub struct DevToolsSession {
     console_rendered_len: usize,
     console_rendered_total: u64,
     console_last_tab: Option<crate::tabs::TabId>,
+    pub repl_ui: repl::ConsoleReplUi,
 }
 
 impl DevToolsSession {

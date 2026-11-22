@@ -55,6 +55,11 @@ enum WorkerMessage {
         tab_id: u64,
         page_epoch: u64,
     },
+    Eval {
+        source: String,
+        tab_id: u64,
+        page_epoch: u64,
+    },
     Shutdown,
 }
 
@@ -115,6 +120,14 @@ impl JsWorker {
         let _ = self
             .tx
             .send(WorkerMessage::SetConsoleRoute { tab_id, page_epoch });
+    }
+
+    pub fn eval_console(&self, source: String, tab_id: u64, page_epoch: u64) {
+        let _ = self.tx.send(WorkerMessage::Eval {
+            source,
+            tab_id,
+            page_epoch,
+        });
     }
 }
 
@@ -227,6 +240,16 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
             }
             WorkerMessage::SetConsoleRoute { tab_id, page_epoch } => {
                 super::console_feed::set_worker_route(tab_id, page_epoch);
+            }
+            WorkerMessage::Eval {
+                source,
+                tab_id,
+                page_epoch,
+            } => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
+                super::repl_eval::eval_console_expression(scope, &source, tab_id, page_epoch);
             }
             WorkerMessage::DispatchBubble { path, event_type } => {
                 v8::scope!(let hs, isolate);

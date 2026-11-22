@@ -1275,3 +1275,52 @@ fn two_unhandled_rejections_revoking_one_leaves_one_row() {
         rejections[0].message
     );
 }
+
+#[test]
+fn repl_eval_returns_formatted_result() {
+    let html = r#"<!DOCTYPE html><html><body><script>var x = 0;</script></body></html>"#;
+    let wire = super::harness::run_inline_page_with_repl(
+        html,
+        "2 + 2",
+        std::time::Duration::from_millis(200),
+    )
+    .expect("repl eval");
+    assert!(
+        wire.iter()
+            .any(|e| e.level == "repl-result" && e.message.contains("< 4")),
+        "{wire:?}"
+    );
+}
+
+#[test]
+fn repl_eval_throws_error_row() {
+    let html = r#"<!DOCTYPE html><html><body></body></html>"#;
+    let wire = super::harness::run_inline_page_with_repl(
+        html,
+        "throw new Error('repl-fail')",
+        std::time::Duration::from_millis(200),
+    )
+    .expect("repl eval");
+    assert!(
+        wire.iter()
+            .any(|e| e.level == "error" && e.message.contains("repl-fail")),
+        "{wire:?}"
+    );
+}
+
+#[test]
+fn repl_eval_respects_watchdog() {
+    let html = r#"<!DOCTYPE html><html><body></body></html>"#;
+    let wire = super::harness::run_inline_page_with_repl_post(
+        html,
+        "while (true) {}",
+        std::time::Duration::from_millis(200),
+        std::time::Duration::from_secs(6),
+    )
+    .expect("repl eval");
+    assert!(
+        wire.iter()
+            .any(|e| { e.level == "error" && e.message.to_lowercase().contains("timed out") }),
+        "{wire:?}"
+    );
+}

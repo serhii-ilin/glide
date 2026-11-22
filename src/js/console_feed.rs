@@ -81,6 +81,10 @@ fn current_route() -> (TabId, u64) {
     WORKER_ROUTE.with(|r| *r.borrow())
 }
 
+pub fn worker_route() -> (TabId, u64) {
+    current_route()
+}
+
 fn publish_wire(
     level: &str,
     message: &str,
@@ -126,6 +130,19 @@ pub fn publish_uncaught(message: &str, line: Option<usize>, resource: Option<&st
 
 pub fn publish_unhandled_rejection(message: &str, promise_id: u64) {
     publish_wire("rejection", message, None, None, Some(promise_id));
+}
+
+pub fn publish_repl_result(message: &str) {
+    let body = if message.starts_with("< ") {
+        message.to_string()
+    } else {
+        format!("< {message}")
+    };
+    publish_wire("repl-result", &body, None, None, None);
+}
+
+pub fn publish_repl_error(message: &str) {
+    publish_wire("error", message, None, None, None);
 }
 
 pub fn publish_rejection_revoke(promise_id: u64) {

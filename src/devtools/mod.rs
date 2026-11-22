@@ -1,6 +1,7 @@
 //! DevTools panel shell state: dock side, size, active tab, and chrome commands.
 
 pub mod console;
+pub mod elements;
 pub mod repl;
 
 use blitz_dom::BaseDocument;
@@ -131,6 +132,11 @@ pub struct DevToolsSession {
     console_rendered_len: usize,
     console_rendered_total: u64,
     console_last_tab: Option<crate::tabs::TabId>,
+    elements_last_tab: Option<crate::tabs::TabId>,
+    elements_last_stamp: Option<elements::PageTreeStamp>,
+    elements_last_ui_generation: u64,
+    elements_last_tree_html: String,
+    elements_last_detail_html: String,
     pub repl_ui: repl::ConsoleReplUi,
 }
 
@@ -183,6 +189,54 @@ impl DevToolsSession {
         if self.state.open {
             self.sync_chrome(doc);
         }
+    }
+
+    pub fn sync_elements_pane(
+        &mut self,
+        chrome: &mut BaseDocument,
+        tab: &mut crate::tabs::Tab,
+    ) -> bool {
+        let tab_changed = self.elements_last_tab != Some(tab.id);
+        if tab_changed {
+            self.elements_last_stamp = None;
+            self.elements_last_ui_generation = u64::MAX;
+            self.elements_last_tree_html.clear();
+            self.elements_last_detail_html.clear();
+            self.elements_last_tab = Some(tab.id);
+        }
+        if !(self.state.open && self.state.tab == DevToolsTab::Elements) {
+            return false;
+        }
+        let plan = match elements::with_page_document(chrome, |page| {
+            if tab.elements.expanded.is_empty() {
+                tab.elements.apply_default_expansion(page);
+            }
+            let stamp = elements::page_tree_stamp(page, tab.elements_epoch);
+            elements::prepare_elements_render(
+                page,
+                &mut tab.elements,
+                stamp,
+                &self.elements_last_stamp,
+                self.elements_last_ui_generation,
+                tab_changed,
+            )
+        }) {
+            Some(Some(plan)) => plan,
+            _ => return false,
+        };
+        if plan.tree_html == self.elements_last_tree_html
+            && plan.detail_html == self.elements_last_detail_html
+        {
+            return false;
+        }
+        let painted = elements::paint_elements_render(chrome, &plan);
+        if painted {
+            self.elements_last_stamp = Some(plan.stamp);
+            self.elements_last_ui_generation = tab.elements.ui_generation;
+            self.elements_last_tree_html = plan.tree_html.clone();
+            self.elements_last_detail_html = plan.detail_html.clone();
+        }
+        painted
     }
 
     pub fn sync_console_pane(
@@ -352,6 +406,40 @@ mod tests {
         assert!(!state.open);
         assert_eq!(state.dock, DevToolsDock::Right);
         assert_eq!(state.size_px, 320);
+    }
+
+    #[test]
+    fn sync_elements_pane_renders_tree() {
+        let page = parse::document_from_html(
+            r#"<!DOCTYPE html><html><body><p id="t" class="ok">hi</p></body></html>"#,
+            DocumentConfig::default(),
+            true,
+        );
+        let mut chrome = parse_chrome(&chrome_document("about:blank", true, false));
+        chrome.resolve(0.0);
+        let mut tab = crate::tabs::Tab::new(1, "about:blank".into());
+        tab.elements.apply_default_expansion(&page);
+        let stamp = elements::page_tree_stamp(&page, tab.elements_epoch);
+        let plan = elements::prepare_elements_render(
+            &page,
+            &mut tab.elements,
+            stamp,
+            &None,
+            u64::MAX,
+            true,
+        )
+        .expect("plan");
+        assert!(plan.tree_html.contains("&lt;p"));
+        assert!(elements::paint_elements_render(&mut chrome, &plan));
+        let tree = chrome
+            .get_element_by_id("devtools-elements-tree")
+            .expect("tree");
+        assert!(
+            chrome
+                .get_node(tree)
+                .map(|n| !n.children.is_empty())
+                .unwrap_or(false)
+        );
     }
 
     #[test]

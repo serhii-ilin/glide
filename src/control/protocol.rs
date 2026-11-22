@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_MAX_CHARS: usize = 20_000;
 pub const DEFAULT_QUERY_LIMIT: usize = 50;
 pub const DEFAULT_NAV_TIMEOUT_MS: u64 = 12_000;
+/// Upper bound for client-supplied navigation/wait timeouts (MCP and control callers).
+pub const MAX_CLIENT_TIMEOUT_MS: u64 = 120_000;
+
+/// Resolve an optional client timeout to milliseconds, applying [`DEFAULT_NAV_TIMEOUT_MS`]
+/// when absent and capping at [`MAX_CLIENT_TIMEOUT_MS`].
+pub fn clamp_client_timeout_ms(timeout_ms: Option<u64>) -> u64 {
+    let ms = timeout_ms.unwrap_or(DEFAULT_NAV_TIMEOUT_MS);
+    ms.min(MAX_CLIENT_TIMEOUT_MS)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
@@ -26,7 +35,7 @@ pub enum ControlRequest {
 pub struct NavigateParams {
     /// Absolute `http(s):`, `file:`, or `data:` URL to load.
     pub url: String,
-    /// Optional navigation settle timeout in milliseconds (default [`DEFAULT_NAV_TIMEOUT_MS`]).
+    /// Optional navigation settle timeout in milliseconds (default 12000 ms; clamped to 120000 ms max).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
@@ -34,7 +43,7 @@ pub struct NavigateParams {
 /// Optional wait timeout for history navigation tools.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub struct WaitParams {
-    /// Optional settle timeout in milliseconds (default [`DEFAULT_NAV_TIMEOUT_MS`]).
+    /// Optional settle timeout in milliseconds (default 12000 ms; clamped to 120000 ms max).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
@@ -42,7 +51,7 @@ pub struct WaitParams {
 /// Arguments for `glide_snapshot_text`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TextParams {
-    /// Maximum Unicode scalar values to return (default [`DEFAULT_MAX_CHARS`], currently 20000).
+    /// Maximum Unicode scalar values to return (default 20000 characters).
     #[serde(default)]
     pub max_chars: Option<usize>,
 }
@@ -56,7 +65,7 @@ pub struct DomParams {
     /// When true and `selector` matches multiple nodes, return all matches.
     #[serde(default)]
     pub all: bool,
-    /// Maximum Unicode scalar values of HTML to return (default [`DEFAULT_MAX_CHARS`]).
+    /// Maximum Unicode scalar values of HTML to return (default 20000 characters).
     #[serde(default)]
     pub max_chars: Option<usize>,
 }
@@ -66,7 +75,7 @@ pub struct DomParams {
 pub struct QueryParams {
     /// CSS selector to match elements.
     pub selector: String,
-    /// Maximum number of elements (default [`DEFAULT_QUERY_LIMIT`], currently 50).
+    /// Maximum number of elements (default 50).
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -156,6 +165,46 @@ mod tests {
         assert!(json.contains("\"method\":\"dom\""));
         let back: ControlRequest = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, req);
+    }
+
+    #[test]
+    fn clamp_client_timeout_ms_uses_default_and_caps() {
+        assert_eq!(clamp_client_timeout_ms(None), DEFAULT_NAV_TIMEOUT_MS);
+        assert_eq!(clamp_client_timeout_ms(Some(5_000)), 5_000);
+        assert_eq!(
+            clamp_client_timeout_ms(Some(999_000)),
+            MAX_CLIENT_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn tool_input_schemas_use_plain_descriptions() {
+        for schema in [
+            schemars::schema_for!(NavigateParams),
+            schemars::schema_for!(DomParams),
+            schemars::schema_for!(QueryParams),
+        ] {
+            let json = serde_json::to_string(&schema).expect("schema json");
+            assert!(
+                !json.contains("[`"),
+                "schema must not expose Rust doc links: {json}"
+            );
+        }
+        let nav = serde_json::to_string(&schemars::schema_for!(NavigateParams)).expect("nav");
+        let dom = serde_json::to_string(&schemars::schema_for!(DomParams)).expect("dom");
+        let query = serde_json::to_string(&schemars::schema_for!(QueryParams)).expect("query");
+        assert!(
+            nav.contains("12000"),
+            "navigate timeout default in schema: {nav}"
+        );
+        assert!(
+            dom.contains("20000"),
+            "dom max_chars default in schema: {dom}"
+        );
+        assert!(
+            query.contains("50"),
+            "query limit default in schema: {query}"
+        );
     }
 
     #[test]

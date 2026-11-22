@@ -39,7 +39,8 @@ enum WorkerMessage {
         page_epoch: u64,
     },
     RunScripts {
-        sources: Vec<(String, Option<u64>)>,
+        /// Source, element handle, and whether this is an ES module.
+        sources: Vec<(String, Option<u64>, bool)>,
         /// `classic`, `defer`, or `async`. Empty means not a parser script.
         kind: String,
     },
@@ -90,7 +91,7 @@ impl JsWorker {
         });
     }
 
-    pub fn run_scripts(&self, sources: Vec<(String, Option<u64>)>, kind: &str) {
+    pub fn run_scripts(&self, sources: Vec<(String, Option<u64>, bool)>, kind: &str) {
         let _ = self.tx.send(WorkerMessage::RunScripts {
             sources,
             kind: kind.to_string(),
@@ -207,18 +208,23 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
-                let kind_s = v8::String::new(scope, &kind).unwrap();
-                call_global_fn(scope, "__glide_set_script_kind", &[kind_s.into()]);
-                for (i, (src, script_id)) in sources.into_iter().enumerate() {
+                for (i, (src, script_id, module)) in sources.into_iter().enumerate() {
+                    let script_kind = if module { "module" } else { kind.as_str() };
+                    let kind_s = v8::String::new(scope, script_kind).unwrap();
+                    call_global_fn(scope, "__glide_set_script_kind", &[kind_s.into()]);
                     let script_name = format!("script-{i}");
-                    diagnostics::set_script(Some(&script_name), script_id, Some(&kind));
+                    diagnostics::set_script(Some(&script_name), script_id, Some(script_kind));
                     if let Some(id) = script_id {
                         let sid = v8::String::new(scope, &id.to_string()).unwrap();
                         call_global_fn(scope, "__glide_set_current_script", &[sid.into()]);
                     } else {
                         call_global_fn(scope, "__glide_set_current_script", &[]);
                     }
-                    run_script_with_timeout(scope, &src, &script_name);
+                    if module {
+                        run_module_with_timeout(scope, &src, &script_name);
+                    } else {
+                        run_script_with_timeout(scope, &src, &script_name);
+                    }
                     call_global_fn(scope, "__glide_set_current_script", &[]);
                     diagnostics::clear_script();
                     settle_task(scope);
@@ -319,6 +325,10 @@ fn install_bindings(scope: &mut v8::PinScope<'_, '_>, context: v8::Local<v8::Con
     let caps_fn = v8::Function::new(scope, caps_callback).expect("caps fn");
     let caps_key = v8::String::new(scope, "__glide_caps").unwrap();
     global.set(scope, caps_key.into(), caps_fn.into());
+
+    let exec_fn = v8::Function::new(scope, execute_script_callback).expect("exec fn");
+    let exec_key = v8::String::new(scope, "__glide_execute_script").unwrap();
+    global.set(scope, exec_key.into(), exec_fn.into());
 
     let platform = if cfg!(target_os = "macos") {
         "MacIntel"
@@ -843,6 +853,96 @@ fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
     }
 }
 
+/// Compile and evaluate one ES module. Modules whose graph has imports are
+/// reported as unsupported: the loader has no module resolver yet.
+fn run_module_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name: &str) {
+    let started = std::time::Instant::now();
+    let done = Arc::new(AtomicBool::new(false));
+    let done_flag = done.clone();
+    let handle = scope.thread_safe_handle();
+    thread::spawn(move || {
+        for _ in 0..50 {
+            if done_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !done_flag.load(Ordering::SeqCst) {
+            handle.terminate_execution();
+        }
+    });
+    let Some(code) = v8::String::new(scope, source) else {
+        logging::error(
+            "js.script",
+            "module source allocation failed",
+            &script_fields(name),
+        );
+        done.store(true, Ordering::SeqCst);
+        return;
+    };
+    let origin = script_origin_with_module(scope, name, true);
+    let bytes = source.len();
+    let mut compiled = v8::script_compiler::Source::new(code, origin.as_ref());
+    let Some(module) = v8::script_compiler::compile_module(scope, &mut compiled) else {
+        logging::error("js.script", "module compile failed", &script_fields(name));
+        done.store(true, Ordering::SeqCst);
+        return;
+    };
+    if !matches!(module.instantiate_module(scope, resolve_module), Some(true)) {
+        diagnostics::record_unsupported("module-import", "<import>");
+        done.store(true, Ordering::SeqCst);
+        return;
+    }
+    if module.evaluate(scope).is_none() {
+        logging::debug(
+            "js.script",
+            "module execution aborted",
+            &script_fields(name),
+        );
+    }
+    done.store(true, Ordering::SeqCst);
+    scope.cancel_terminate_execution();
+    let mut fields = script_fields(name);
+    fields.push(("bytes", bytes.to_string()));
+    fields.push(("seconds", format!("{:.3}", started.elapsed().as_secs_f64())));
+    logging::debug("js.script", "script executed", &fields);
+}
+
+/// Module resolver. The loader does not fetch module dependencies yet, so a
+/// graph with any import fails instantiation and is reported once.
+fn resolve_module<'s>(
+    _context: v8::Local<'s, v8::Context>,
+    _specifier: v8::Local<'s, v8::String>,
+    _import_attributes: v8::Local<'s, v8::FixedArray>,
+    _referrer: v8::Local<'s, v8::Module>,
+) -> Option<v8::Local<'s, v8::Module>> {
+    None
+}
+
+fn execute_script_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let source = args.get(0).to_rust_string_lossy(scope);
+    let kind = args.get(1).to_rust_string_lossy(scope);
+    let name = args.get(2).to_rust_string_lossy(scope);
+    let module = kind == "module";
+    let script_kind = if module { "module" } else { "dynamic" };
+    let kind_s = v8::String::new(scope, script_kind).unwrap();
+    call_global_fn(scope, "__glide_set_script_kind", &[kind_s.into()]);
+    diagnostics::set_script(Some(&name), None, Some(script_kind));
+    if module {
+        run_module_with_timeout(scope, &source, &name);
+    } else {
+        run_script_with_timeout(scope, &source, &name);
+    }
+    diagnostics::clear_script();
+    let cleared = v8::String::new(scope, "").unwrap();
+    call_global_fn(scope, "__glide_set_script_kind", &[cleared.into()]);
+    rv.set(v8::Boolean::new(scope, true).into());
+}
+
 fn run_script(scope: &mut v8::PinScope<'_, '_>, source: v8::Local<v8::String>, name: &str) {
     let Some(script) = v8::Script::compile(scope, source, script_origin(scope, name).as_ref())
     else {
@@ -859,6 +959,14 @@ fn run_script(scope: &mut v8::PinScope<'_, '_>, source: v8::Local<v8::String>, n
 }
 
 fn script_origin<'s>(scope: &v8::PinScope<'s, '_>, name: &str) -> Option<v8::ScriptOrigin<'s>> {
+    script_origin_with_module(scope, name, false)
+}
+
+fn script_origin_with_module<'s>(
+    scope: &v8::PinScope<'s, '_>,
+    name: &str,
+    is_module: bool,
+) -> Option<v8::ScriptOrigin<'s>> {
     let resource_name: v8::Local<v8::Value> = v8::String::new(scope, name)?.into();
     Some(v8::ScriptOrigin::new(
         scope,
@@ -870,7 +978,7 @@ fn script_origin<'s>(scope: &v8::PinScope<'s, '_>, name: &str) -> Option<v8::Scr
         None,
         false,
         false,
-        false,
+        is_module,
         None,
     ))
 }

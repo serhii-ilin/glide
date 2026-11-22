@@ -305,3 +305,62 @@ fn page_script_navigation_is_followed() {
     assert!(text.contains("NAVIGATED ?from=source"), "{text}");
     assert!(!text.contains("start"), "{text}");
 }
+
+#[test]
+fn inline_module_script_runs() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-script.html"), true).expect("load");
+    assert!(text.contains("module ran"), "{text}");
+}
+
+#[test]
+fn external_module_script_runs() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-external.html"), true).expect("load");
+    assert!(text.contains("external module ran"), "{text}");
+}
+
+#[test]
+fn module_import_is_left_to_the_loader() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-import.html"), true).expect("load");
+    assert!(text.contains("before"), "{text}");
+    assert!(!text.contains("imported"), "{text}");
+}
+
+#[test]
+fn dynamically_inserted_script_runs() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("dynamic-script.html"), true).expect("load");
+    assert!(text.contains("dynamic"), "{text}");
+    assert!(!text.contains("after"), "{text}");
+}
+
+#[test]
+fn dynamically_inserted_external_script_runs_and_fires_load() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("dynamic-script-external.html"), true).expect("load");
+    assert!(text.contains("external dynamic loaded"), "{text}");
+}
+
+#[test]
+fn inner_html_scripts_do_not_run() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("innerhtml-script.html"), true).expect("load");
+    assert!(text.contains("before"), "{text}");
+    assert!(!text.contains("inner ran"), "{text}");
+}
+
+#[test]
+fn module_runs_between_parser_scripts_and_dom_content_loaded() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-order.html"), true).expect("load");
+    assert!(text.contains("classic,module,dom"), "{text}");
+}

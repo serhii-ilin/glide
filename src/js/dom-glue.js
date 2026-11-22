@@ -55,10 +55,17 @@
     } catch (_) { /* diagnostics must not break page scripts */ }
   }
 
-  // Scripts inserted by a script are mirrored but never fetched or executed,
-  // except inline scripts written by `document.write` (those run below).
-  function reportInsertedScripts(root) {
-    if (!root) return;
+  // Scripts inserted by a script run once, after the inserting task mirrors its
+  // DOM. Parser-inserted nodes (document markup, innerHTML fragments, and
+  // document.write markup, which runs its own inline scripts) are marked by
+  // domino and never re-run. External sources are fetched through the same
+  // synchronous host channel as fetch().
+  const pendingDynamicScripts = [];
+  const executedScripts = new WeakSet();
+  let dynamicScriptsRunning = false;
+
+  function queueInsertedScripts(root) {
+    if (!root || writingDocument) return;
     if (root.nodeType !== 1 && root.nodeType !== 11) return;
     const stack = [root];
     let checked = 0;
@@ -66,17 +73,84 @@
       const node = stack.pop();
       checked += 1;
       if (node.nodeType === 1 && String(node.localName || '').toLowerCase() === 'script') {
-        const attr = (name) => (node.getAttribute ? node.getAttribute(name) : null);
-        const src = attr('src');
-        if (src) {
-          diagUnsupported('dynamic-script', String(src));
-        } else if (!writingDocument) {
-          const isModule = String(attr('type') || '').toLowerCase() === 'module';
-          diagUnsupported(isModule ? 'module-script' : 'dynamic-script', '<inline>');
-        }
+        if (node._parser_inserted || node._already_started) continue;
+        if (executedScripts.has(node)) continue;
+        if (!rooted(node)) continue;
+        executedScripts.add(node);
+        pendingDynamicScripts.push(node);
         continue;
       }
       for (let c = node.firstChild; c; c = c.nextSibling) stack.push(c);
+    }
+  }
+
+  function scriptKindOf(node) {
+    const type = String((node.getAttribute && node.getAttribute('type')) || '')
+      .trim()
+      .toLowerCase();
+    if (!type) return 'classic';
+    if (type === 'module') return 'module';
+    if (type.indexOf('javascript') >= 0) return 'classic';
+    return null;
+  }
+
+  function dynamicScriptSource(node) {
+    const src = node.getAttribute && node.getAttribute('src');
+    if (!src) return { source: node.textContent || '', name: '<dynamic>' };
+    let resolved = String(src);
+    try {
+      const parsed = __glide_url_parse(String(src), currentPageUrl);
+      if (parsed && parsed.href) resolved = parsed.href;
+    } catch (_) { /* keep the raw src */ }
+    let raw;
+    try {
+      raw = rpc('fetch', resolved);
+    } catch (_) {
+      return null;
+    }
+    if (!raw || raw.__error) return null;
+    const status = Number(raw.status);
+    if (!(status >= 200 && status < 300)) return null;
+    return { source: String(raw.body || ''), name: resolved };
+  }
+
+  function runDynamicScript(node) {
+    if (!rooted(node)) return;
+    const kind = scriptKindOf(node);
+    if (kind == null) return;
+    const fetched = dynamicScriptSource(node);
+    if (fetched == null) {
+      diagUnsupported('dynamic-script', String((node.getAttribute && node.getAttribute('src')) || '<inline>'));
+      notifyScriptElement(node, false);
+      return;
+    }
+    flushMutations();
+    const id = blitzId(node);
+    const setCurrent = global.__glide_set_current_script;
+    if (id != null && typeof setCurrent === 'function') setCurrent(String(id));
+    try {
+      if (typeof global.__glide_execute_script === 'function') {
+        global.__glide_execute_script(fetched.source, kind, fetched.name);
+      }
+    } catch (_) {
+      // Compilation and runtime errors are reported by the worker.
+    }
+    if (id != null && typeof setCurrent === 'function') setCurrent('');
+    flushMutations();
+    notifyScriptElement(node, true);
+  }
+
+  function runDynamicScripts() {
+    if (dynamicScriptsRunning) return;
+    dynamicScriptsRunning = true;
+    let ran = 0;
+    try {
+      while (pendingDynamicScripts.length && ran < 64) {
+        ran += 1;
+        runDynamicScript(pendingDynamicScripts.shift());
+      }
+    } finally {
+      dynamicScriptsRunning = false;
     }
   }
 
@@ -475,6 +549,7 @@
   function endTask() {
     layoutCache.clear();
     flushMutations();
+    runDynamicScripts();
     openedThisTask = false;
     writeCursor = null;
   }
@@ -567,7 +642,7 @@
     switch (rec.type) {
       case MUTATE.INSERT: {
         if (!rec.node || nodeToBlitz.get(rec.node) != null) return;
-        reportInsertedScripts(rec.node);
+        queueInsertedScripts(rec.node);
         assignFormOwners(rec.node, false);
         subtreeOps(rec.target, followingRef(rec.node), rec.node, pendingBatch);
         break;
@@ -1183,6 +1258,8 @@
     global.MouseEvent = impl.MouseEvent;
     patchLayout(global.Element.prototype);
     patchDataset(global.HTMLElement.prototype);
+    installEventHandlerProperties(impl.HTMLElement.prototype);
+    installScriptElementExtras(impl.HTMLScriptElement);
     installFormSubmission();
     const gcsImpl = function (el) {
       flushMutations();
@@ -1216,6 +1293,61 @@
         get: () => pageLocation,
       });
     } catch (_) { /* domino defines these as readonly */ }
+  }
+
+  const EVENT_HANDLER_TYPES = [
+    'load', 'error', 'click', 'change', 'input', 'reset', 'focus', 'blur',
+    'keydown', 'keyup', 'keypress', 'scroll', 'resize', 'select', 'toggle',
+    'readystatechange', 'message', 'popstate', 'hashchange',
+  ];
+
+  // Domino only maps on* properties for elements that declare `events`; most
+  // elements keep `el.onload = fn` as a plain property that dispatch never
+  // calls. Register the common ones as real listeners.
+  function installEventHandlerProperties(proto) {
+    if (!proto) return;
+    for (const type of EVENT_HANDLER_TYPES) {
+      const prop = 'on' + type;
+      if (Object.prototype.hasOwnProperty.call(proto, prop)) continue;
+      const key = '__glide_handler_' + type;
+      Object.defineProperty(proto, prop, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return this[key] || null;
+        },
+        set(fn) {
+          const previous = this[key];
+          if (previous) this.removeEventListener(type, previous);
+          const handler = typeof fn === 'function' ? fn : null;
+          if (handler) this.addEventListener(type, handler);
+          this[key] = handler;
+        },
+      });
+    }
+  }
+
+  function installScriptElementExtras(Script) {
+    if (!Script || !Script.prototype) return;
+    if (!Object.prototype.hasOwnProperty.call(Script.prototype, 'noModule')) {
+      Object.defineProperty(Script.prototype, 'noModule', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return !!this.hasAttribute('nomodule');
+        },
+        set(value) {
+          if (value) this.setAttribute('nomodule', '');
+          else this.removeAttribute('nomodule');
+        },
+      });
+    }
+  }
+
+  function notifyScriptElement(node, ok) {
+    try {
+      node.dispatchEvent(new domino.impl.Event(ok ? 'load' : 'error', { bubbles: false }));
+    } catch (_) { /* a handler error must not break the queue */ }
   }
 
   // Form submission (HTML Living Standard, form submission algorithm).

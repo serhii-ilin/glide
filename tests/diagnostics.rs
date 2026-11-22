@@ -69,18 +69,33 @@ fn run_fixture(name: &str, log: &str) -> (String, String) {
 }
 
 #[test]
-fn dynamically_inserted_script_is_reported_as_unsupported() {
+fn dynamically_inserted_script_runs() {
     let (stdout, stderr) = run_fixture("dynamic-script.html", "debug");
 
     assert!(
-        stderr.contains("target=\"js.unsupported\""),
-        "expected an unsupported-feature record: {stderr}"
+        stderr.contains("script_kind=\"dynamic\"") && stderr.contains("msg=\"script executed\""),
+        "expected a record for the executed dynamic script: {stderr}"
     );
-    assert!(stderr.contains("feature=\"dynamic-script\""), "{stderr}");
-    assert!(stderr.contains("detail=\"<inline>\""), "{stderr}");
     assert!(
-        stderr.contains("target=\"js.page\"") && stderr.contains("msg=\"page scripts discovered\""),
-        "expected the discovery record: {stderr}"
+        !stderr.contains("feature=\"dynamic-script\""),
+        "a runnable dynamic script is not an unsupported feature: {stderr}"
+    );
+    assert!(
+        stderr.contains("msg=\"page scripts settled\"") && stderr.contains("status=\"clean\""),
+        "expected a clean per-page summary: {stderr}"
+    );
+    assert!(stdout.contains("dynamic"), "dump: {stdout}");
+}
+
+#[test]
+fn dynamic_script_fetch_failure_is_reported() {
+    let (stdout, stderr) = run_fixture("dynamic-script-missing.html", "debug");
+
+    assert!(
+        stderr.contains("target=\"js.unsupported\"")
+            && stderr.contains("feature=\"dynamic-script\"")
+            && stderr.contains("detail=\"missing-script.js\""),
+        "expected an unsupported record for the failed fetch: {stderr}"
     );
     assert!(
         stderr.contains("msg=\"page scripts settled\"")
@@ -88,16 +103,8 @@ fn dynamically_inserted_script_is_reported_as_unsupported() {
             && stderr.contains("status=\"degraded\""),
         "expected the per-page summary with the unsupported count: {stderr}"
     );
-    assert!(
-        stderr.contains("target=\"js.script\"") && stderr.contains("msg=\"script executed\""),
-        "expected a debug record per executed script: {stderr}"
-    );
-    assert!(
-        stderr.contains("target=\"js.caps\"") && stderr.contains("missing=\""),
-        "expected one capability record listing missing globals: {stderr}"
-    );
-    // The parser script still ran; the injected one did not.
-    assert!(stdout.contains("after"), "dump: {stdout}");
+    // The element's error handler still runs, like a browser's script error.
+    assert!(stdout.contains("error fired"), "dump: {stdout}");
 }
 
 #[test]
@@ -114,20 +121,29 @@ fn blank_script_shell_is_reported_after_load() {
 }
 
 #[test]
-fn module_script_is_reported_as_skipped() {
+fn module_script_runs() {
     let (stdout, stderr) = run_fixture("module-script.html", "warn");
 
     assert!(
-        stderr.contains("target=\"js.unsupported\"")
-            && stderr.contains("msg=\"page feature is not implemented\""),
-        "expected a skipped-module record: {stderr}"
+        !stderr.contains("feature=\"module-script\""),
+        "module scripts execute: {stderr}"
     );
-    assert!(stderr.contains("feature=\"module-script\""), "{stderr}");
-    assert!(stderr.contains("detail=\"<inline>\""), "{stderr}");
-    assert!(stderr.contains("page_url=\"file://"), "{stderr}");
+    assert!(stdout.contains("module ran"), "dump: {stdout}");
+}
+
+#[test]
+fn module_import_is_reported_as_unsupported() {
+    let (stdout, stderr) = run_fixture("module-import.html", "debug");
+
     assert!(
-        !stdout.contains("module ran"),
-        "module scripts are not executed: {stdout}"
+        stderr.contains("target=\"js.unsupported\"")
+            && stderr.contains("feature=\"module-import\""),
+        "expected a module-import record: {stderr}"
+    );
+    assert!(
+        stderr.contains("msg=\"page scripts settled\"") && stderr.contains("status=\"degraded\""),
+        "expected a degraded summary: {stderr}"
     );
     assert!(stdout.contains("before"), "dump: {stdout}");
+    assert!(!stdout.contains("imported"), "dump: {stdout}");
 }

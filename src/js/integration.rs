@@ -1216,3 +1216,44 @@ fn handled_rejection_revokes_after_settimeout_catch() {
         tab.console.entries().collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn two_unhandled_rejections_revoking_one_leaves_one_row() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      var p1 = Promise.reject(new Error('one'));
+      var p2 = Promise.reject(new Error('two'));
+      p1.catch(function () {});
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_extra_settle(
+        html,
+        std::time::Duration::from_millis(250),
+        8,
+    );
+    let mut tabs = crate::tabs::TabManager::new();
+    let id = tabs.add("https://example.test/");
+    assert_eq!(tabs.tab_mut(id).map(|t| t.console_epoch), Some(1));
+    crate::devtools::console::apply_console_wire(&mut tabs, &result.console_wire);
+    let tab = tabs.active().expect("tab");
+    let rejections: Vec<_> = tab
+        .console
+        .entries()
+        .filter(|e| {
+            matches!(
+                e.level,
+                crate::devtools::console::ConsoleLevel::UnhandledRejection
+            )
+        })
+        .collect();
+    assert_eq!(
+        rejections.len(),
+        1,
+        "{:?}",
+        tab.console.entries().collect::<Vec<_>>()
+    );
+    assert!(
+        rejections[0].message.contains("two"),
+        "{:?}",
+        rejections[0].message
+    );
+}

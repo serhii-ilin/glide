@@ -128,6 +128,7 @@ pub struct DevToolsSession {
     focus_restore: Option<DevToolsFocusRestore>,
     console_render_generation: u64,
     console_rendered_len: usize,
+    console_rendered_total: u64,
     console_last_tab: Option<crate::tabs::TabId>,
 }
 
@@ -188,9 +189,11 @@ impl DevToolsSession {
         journal: &console::ConsoleJournal,
         tab_id: crate::tabs::TabId,
     ) -> bool {
-        if self.console_last_tab != Some(tab_id) {
-            self.console_render_generation = 0;
+        let tab_changed = self.console_last_tab != Some(tab_id);
+        if tab_changed {
+            self.console_render_generation = u64::MAX;
             self.console_rendered_len = 0;
+            self.console_rendered_total = 0;
             self.console_last_tab = Some(tab_id);
         }
         if self.state.open && self.state.tab == DevToolsTab::Console {
@@ -199,6 +202,8 @@ impl DevToolsSession {
                 journal,
                 &mut self.console_render_generation,
                 &mut self.console_rendered_len,
+                &mut self.console_rendered_total,
+                tab_changed,
             )
         } else {
             false

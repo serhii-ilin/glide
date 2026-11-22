@@ -53,7 +53,7 @@ fn run_inline_page_with_runtime(
         js_tap: tap.clone(),
     };
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
-    js_host.set_console_route(1, 1);
+    js_host.set_console_route(0, 1);
     let config = DocumentConfig {
         base_url: Some("https://example.test/".into()),
         net_provider: Some(net.clone()),

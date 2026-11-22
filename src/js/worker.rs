@@ -158,6 +158,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
             } => {
                 diagnostics::set_page_url(page_url.clone());
                 super::console_feed::set_worker_route(tab_id, page_epoch);
+                super::promise_console::clear_promise_rows();
                 scripts_run = 0;
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
@@ -381,17 +382,17 @@ extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {
     use v8::PromiseRejectEvent;
     v8::callback_scope!(unsafe scope, &msg);
     let promise = msg.get_promise();
-    let promise_id = promise.get_identity_hash().get() as u64;
     match msg.get_event() {
         PromiseRejectEvent::PromiseRejectWithNoHandler => {
+            v8::scope!(let scope, scope);
+            let row_id = super::promise_console::register_unhandled(scope, promise);
             let Some(value) = msg.get_value() else {
                 super::console_feed::publish_unhandled_rejection(
                     "Unhandled rejection: <no reason>",
-                    promise_id,
+                    row_id,
                 );
                 return;
             };
-            v8::scope!(let scope, scope);
             let message = if value.is_undefined() {
                 "<undefined>".to_string()
             } else if value.is_null() {
@@ -401,11 +402,14 @@ extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {
             };
             super::console_feed::publish_unhandled_rejection(
                 &format!("Unhandled rejection: {message}"),
-                promise_id,
+                row_id,
             );
         }
         PromiseRejectEvent::PromiseHandlerAddedAfterReject => {
-            super::console_feed::publish_rejection_revoke(promise_id);
+            v8::scope!(let scope, scope);
+            if let Some(row_id) = super::promise_console::revoke_handled(scope, promise) {
+                super::console_feed::publish_rejection_revoke(row_id);
+            }
         }
         _ => {}
     }

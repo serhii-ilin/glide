@@ -7,6 +7,7 @@ pub mod console_feed;
 pub mod diagnostics;
 mod host;
 mod paint_prune;
+mod promise_console;
 pub mod scripts;
 mod snapshot;
 mod tap;

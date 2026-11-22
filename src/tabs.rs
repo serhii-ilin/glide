@@ -125,6 +125,8 @@ impl TabManager {
         let id = self.next_id;
         self.next_id += 1;
         tab.id = id;
+        tab.console = ConsoleJournal::default();
+        tab.console_epoch = 1;
         self.tabs.push(tab);
         self.active = Some(self.tabs.len() - 1);
         id

@@ -1,5 +1,6 @@
 //! Cross-thread console events from the V8 worker to the UI thread (DevTools Console).
 
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -23,7 +24,7 @@ pub struct ConsoleWireEvent {
     pub promise_id: Option<u64>,
 }
 
-static QUEUE: Mutex<Vec<ConsoleWireEvent>> = Mutex::new(Vec::new());
+static QUEUE: Mutex<VecDeque<ConsoleWireEvent>> = Mutex::new(VecDeque::new());
 
 #[cfg(test)]
 static TEST_CONSOLE_SERIAL: Mutex<()> = Mutex::new(());
@@ -56,7 +57,7 @@ fn truncate_field(value: &str, max_len: usize) -> String {
     format!("{}…", &value[..end])
 }
 
-fn lock_queue_mut() -> std::sync::MutexGuard<'static, Vec<ConsoleWireEvent>> {
+fn lock_queue_mut() -> std::sync::MutexGuard<'static, VecDeque<ConsoleWireEvent>> {
     match QUEUE.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -66,9 +67,9 @@ fn lock_queue_mut() -> std::sync::MutexGuard<'static, Vec<ConsoleWireEvent>> {
 fn enqueue(event: ConsoleWireEvent) {
     let mut q = lock_queue_mut();
     if q.len() >= QUEUE_CAPACITY {
-        q.remove(0);
+        q.pop_front();
     }
-    q.push(event);
+    q.push_back(event);
 }
 
 pub fn set_worker_route(tab_id: TabId, page_epoch: u64) {
@@ -154,7 +155,7 @@ pub fn discard_pending_for_tab(tab_id: TabId) {
 
 /// Non-blocking drain for the UI host pump, headless settle, and tests.
 pub fn drain_pending() -> Vec<ConsoleWireEvent> {
-    std::mem::take(&mut *lock_queue_mut())
+    lock_queue_mut().drain(..).collect()
 }
 
 #[cfg(test)]
@@ -186,6 +187,19 @@ mod tests {
         let batch = drain_pending();
         assert_eq!(batch.len(), QUEUE_CAPACITY);
         assert_eq!(batch[0].message, "m5");
+    }
+
+    #[test]
+    fn publish_truncates_long_messages() {
+        let _lock = test_console_serial_lock();
+        drain_pending();
+        set_worker_route(1, 1);
+        let long = "x".repeat(MAX_MESSAGE_LEN + 64);
+        publish("log", &long, None, None);
+        let batch = drain_pending();
+        assert_eq!(batch.len(), 1);
+        assert!(batch[0].message.len() <= MAX_MESSAGE_LEN + 4);
+        assert!(batch[0].message.ends_with('…'));
     }
 
     #[test]

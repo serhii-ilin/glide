@@ -7,7 +7,8 @@ Feature: F-060 DevTools Console output
   # Registry: docs/features.md -> F-060
   # Tests: devtools::console::tests::*, js::console_feed::tests::*, js::integration::console_*,
   #        js::integration::{uncaught_exception_reaches_console_feed,unhandled_rejection_reaches_console_feed,
-  #        handled_rejection_revokes_console_row_same_turn,handled_rejection_revokes_after_settimeout_catch},
+  #        handled_rejection_revokes_console_row_same_turn,handled_rejection_revokes_after_settimeout_catch,
+  #        two_unhandled_rejections_revoking_one_leaves_one_row},
   #        chrome::tests::classifies_devtools_commands, manual M-044
 
   Background:

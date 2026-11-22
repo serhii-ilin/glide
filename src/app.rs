@@ -433,6 +433,7 @@ fn capture_active_tab(
     bookmarks: &mut BookmarksState,
     load_state: &LoadState,
     committed: &mut Option<(ObserveEffect, String, String)>,
+    js: &mut JsHost,
 ) {
     let Some(actual) = page_url(doc) else {
         return;
@@ -455,6 +456,12 @@ fn capture_active_tab(
         {
             tab.find.close_bar(doc);
         }
+        crate::devtools::console::observe_navigation_console_effect(
+            effect,
+            tab,
+            js,
+            &mut reset_tab_console_for_navigation,
+        );
         effect
     };
     bookmarks.sync_star(doc, &actual);
@@ -501,12 +508,13 @@ fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &m
         tab.zoom.apply_to_chrome(doc);
     }
     if observed.as_deref() != Some(url.as_str()) {
-        if let Some(tab) = tabs.active_mut() {
-            reset_tab_console_for_navigation(tab, js);
-        }
         js.on_navigation(doc, &url);
         load_iframe(doc, &url);
     }
+}
+
+fn bump_tab_console_epoch_for_switch(tab: &mut Tab, js: &mut JsHost) {
+    crate::devtools::console::bump_tab_console_epoch_for_switch(tab, js);
 }
 
 impl Glide {
@@ -642,6 +650,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let target = {
                             let Some(tab) = self.tabs.active_mut() else {
@@ -683,6 +692,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let new = !js_enabled;
                         set_js_runtime_mode(&self.html_provider, &mut self.js, &doc, new);
@@ -720,6 +730,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let url = resolve_location(raw);
                         if let Some(tab) = self.tabs.active_mut() {
@@ -797,6 +808,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         self.tabs.add("about:blank");
                         if let Some(tab) = self.tabs.active_mut() {
@@ -813,6 +825,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         if let Some(tab) = self.tabs.active().cloned() {
                             self.tabs.insert(tab);
@@ -832,6 +845,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         if self.tabs.active_id() == Some(id) {
                             self.tabs.close_active();
@@ -858,6 +872,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let selected = match &command {
                             NavCommand::SelectTab(id) => self.tabs.select(*id),
@@ -865,6 +880,9 @@ impl Glide {
                             _ => false,
                         };
                         if selected {
+                            if let Some(tab) = self.tabs.active_mut() {
+                                bump_tab_console_epoch_for_switch(tab, &mut self.js);
+                            }
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
                             sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
@@ -877,6 +895,7 @@ impl Glide {
                             &mut self.bookmarks,
                             &self.load_state,
                             &mut committed,
+                            &mut self.js,
                         );
                         let moved = if matches!(&command, NavCommand::NextTab) {
                             self.tabs.select_next()
@@ -884,6 +903,9 @@ impl Glide {
                             self.tabs.select_previous()
                         };
                         if moved {
+                            if let Some(tab) = self.tabs.active_mut() {
+                                bump_tab_console_epoch_for_switch(tab, &mut self.js);
+                            }
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
                             sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
@@ -915,6 +937,7 @@ impl Glide {
                 &mut self.bookmarks,
                 &self.load_state,
                 &mut committed,
+                &mut self.js,
             );
 
             if titles_changed(&self.tabs, &titles_before) {

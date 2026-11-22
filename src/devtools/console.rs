@@ -83,6 +83,7 @@ impl ConsoleEntry {
 pub struct ConsoleJournal {
     entries: VecDeque<ConsoleEntry>,
     generation: u64,
+    total_pushed: u64,
 }
 
 impl ConsoleJournal {
@@ -91,18 +92,25 @@ impl ConsoleJournal {
             self.entries.pop_front();
         }
         self.entries.push_back(entry);
+        self.total_pushed = self.total_pushed.saturating_add(1);
         self.generation = self.generation.saturating_add(1);
     }
 
     pub fn revoke_rejection(&mut self, promise_id: u64) -> bool {
-        let before = self.entries.len();
-        self.entries.retain(|e| e.promise_id != Some(promise_id));
-        if before != self.entries.len() {
-            self.generation = self.generation.saturating_add(1);
-            true
-        } else {
-            false
-        }
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|e| e.promise_id == Some(promise_id))
+        else {
+            return false;
+        };
+        self.entries.remove(index);
+        self.generation = self.generation.saturating_add(1);
+        true
+    }
+
+    pub fn total_pushed(&self) -> u64 {
+        self.total_pushed
     }
 
     pub fn clear(&mut self) {
@@ -173,6 +181,77 @@ fn escape_console_text(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
+pub(crate) fn observe_navigation_console_effect(
+    effect: crate::nav::ObserveEffect,
+    tab: &mut crate::tabs::Tab,
+    js: &mut crate::js::JsHost,
+    reset: &mut impl FnMut(&mut crate::tabs::Tab, &mut crate::js::JsHost),
+) {
+    if matches!(
+        effect,
+        crate::nav::ObserveEffect::LinkNavigation | crate::nav::ObserveEffect::Redirect
+    ) {
+        reset(tab, js);
+    }
+}
+
+pub(crate) fn bump_tab_console_epoch_for_switch(
+    tab: &mut crate::tabs::Tab,
+    js: &mut crate::js::JsHost,
+) {
+    tab.console_epoch = tab.console_epoch.saturating_add(1);
+    crate::js::console_feed::discard_pending_for_tab(tab.id);
+    js.set_console_route(tab.id, tab.console_epoch);
+}
+
+fn full_render_log(
+    doc: &mut BaseDocument,
+    log_id: blitz_traits::node_id::NodeId,
+    entries: &[&ConsoleEntry],
+) {
+    let mut m = doc.mutate();
+    let children: Vec<_> = m.child_ids(log_id).into_iter().collect();
+    for child in children {
+        m.remove_and_drop_node(child);
+    }
+    if entries.is_empty() {
+        let placeholder = m.create_text_node("No messages");
+        m.append_children(log_id, &[placeholder]);
+        return;
+    }
+    let mut lines = String::new();
+    for entry in entries {
+        lines.push_str(&entry_line_html(entry));
+    }
+    crate::parse::parse_inner_html_into_mutator(&mut m, log_id, &lines, false);
+}
+
+fn append_render_log(
+    doc: &mut BaseDocument,
+    log_id: blitz_traits::node_id::NodeId,
+    entries: &[&ConsoleEntry],
+) {
+    let mut m = doc.mutate();
+    let mut lines = String::new();
+    for entry in entries {
+        lines.push_str(&entry_line_html(entry));
+    }
+    crate::parse::parse_inner_html_into_mutator(&mut m, log_id, &lines, false);
+}
+
+fn pure_append(
+    journal: &ConsoleJournal,
+    entries_len: usize,
+    last_len: usize,
+    last_total_pushed: u64,
+) -> bool {
+    if last_len == 0 || entries_len <= last_len {
+        return false;
+    }
+    let added = entries_len - last_len;
+    journal.total_pushed().saturating_sub(last_total_pushed) == added as u64
+}
+
 fn entry_line_html(entry: &ConsoleEntry) -> String {
     let level = entry.level.label();
     let class = entry.level.css_class();
@@ -208,49 +287,49 @@ pub fn render_devtools_console(
     journal: &ConsoleJournal,
     last_generation: &mut u64,
     last_rendered_len: &mut usize,
+    last_rendered_total: &mut u64,
+    force_full: bool,
 ) -> bool {
     let generation = journal.generation();
-    if generation == *last_generation {
+    if generation == *last_generation && !force_full {
         return false;
     }
     let Some(log_id) = doc.get_element_by_id("devtools-console-log") else {
         return false;
     };
-    let entries: Vec<_> = journal.entries().collect();
-    if entries.is_empty() {
-        let mut m = doc.mutate();
-        let children: Vec<_> = m.child_ids(log_id).into_iter().collect();
-        for child in children {
-            m.remove_and_drop_node(child);
-        }
-        let placeholder = m.create_text_node("No messages");
-        m.append_children(log_id, &[placeholder]);
+    let entries: Vec<_> = journal.entries().cloned().collect();
+    let entries_refs: Vec<_> = entries.iter().collect();
+
+    if force_full {
+        full_render_log(doc, log_id, &entries_refs);
         *last_generation = generation;
-        *last_rendered_len = 0;
+        *last_rendered_len = entries.len();
+        *last_rendered_total = journal.total_pushed();
         return true;
     }
 
-    let mut m = doc.mutate();
-    if *last_rendered_len > entries.len() || generation < *last_generation {
-        let children: Vec<_> = m.child_ids(log_id).into_iter().collect();
-        for child in children {
-            m.remove_and_drop_node(child);
-        }
-        let mut lines = String::new();
-        for entry in &entries {
-            lines.push_str(&entry_line_html(entry));
-        }
-        crate::parse::parse_inner_html_into_mutator(&mut m, log_id, &lines, false);
-        *last_rendered_len = entries.len();
-    } else if entries.len() > *last_rendered_len {
-        let mut lines = String::new();
-        for entry in entries.iter().skip(*last_rendered_len) {
-            lines.push_str(&entry_line_html(entry));
-        }
-        crate::parse::parse_inner_html_into_mutator(&mut m, log_id, &lines, false);
-        *last_rendered_len = entries.len();
+    if entries.is_empty() {
+        full_render_log(doc, log_id, &[]);
+        *last_generation = generation;
+        *last_rendered_len = 0;
+        *last_rendered_total = journal.total_pushed();
+        return true;
+    }
+
+    let append_only = pure_append(
+        journal,
+        entries.len(),
+        *last_rendered_len,
+        *last_rendered_total,
+    );
+    if append_only {
+        append_render_log(doc, log_id, &entries_refs[*last_rendered_len..]);
+    } else {
+        full_render_log(doc, log_id, &entries_refs);
     }
     *last_generation = generation;
+    *last_rendered_len = entries.len();
+    *last_rendered_total = journal.total_pushed();
     true
 }
 
@@ -365,7 +444,15 @@ mod tests {
         doc.resolve(0.0);
         let mut last_gen = 0;
         let mut last_len = 0;
-        render_devtools_console(&mut doc, &journal, &mut last_gen, &mut last_len);
+        let mut last_total = 0;
+        render_devtools_console(
+            &mut doc,
+            &journal,
+            &mut last_gen,
+            &mut last_len,
+            &mut last_total,
+            true,
+        );
         let log_id = doc.get_element_by_id("devtools-console-log").expect("log");
         let text = doc
             .get_node(log_id)
@@ -397,7 +484,15 @@ mod tests {
         doc.resolve(0.0);
         let mut last_gen = 0;
         let mut last_len = 0;
-        render_devtools_console(&mut doc, &journal, &mut last_gen, &mut last_len);
+        let mut last_total = 0;
+        render_devtools_console(
+            &mut doc,
+            &journal,
+            &mut last_gen,
+            &mut last_len,
+            &mut last_total,
+            true,
+        );
         let log_id = doc.get_element_by_id("devtools-console-log").expect("log");
         let text = doc
             .get_node(log_id)
@@ -422,5 +517,245 @@ mod tests {
             promise_id: Some(9),
         });
         assert_eq!(entry.level, ConsoleLevel::UnhandledRejection);
+    }
+
+    fn sample_doc() -> BaseDocument {
+        let html = chrome_document("about:blank", true, false);
+        let config = DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(GlideHtmlProvider::default())),
+            ..DocumentConfig::default()
+        };
+        let mut doc = parse::document_from_html(&html, config, false);
+        doc.resolve(0.0);
+        doc
+    }
+
+    fn log_text(doc: &BaseDocument) -> String {
+        let log_id = doc.get_element_by_id("devtools-console-log").expect("log");
+        doc.get_node(log_id)
+            .map(|n| n.text_content())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn render_after_501_pushes_shows_ring_tail() {
+        let mut journal = ConsoleJournal::default();
+        let mut doc = sample_doc();
+        let mut last_gen = 0;
+        let mut last_len = 0;
+        let mut last_total = 0;
+        for i in 0..=CONSOLE_CAPACITY {
+            journal.push(ConsoleEntry {
+                level: ConsoleLevel::Log,
+                message: format!("m{i}"),
+                source: None,
+                line: None,
+                timestamp_ms: i as u64,
+                promise_id: None,
+            });
+            render_devtools_console(
+                &mut doc,
+                &journal,
+                &mut last_gen,
+                &mut last_len,
+                &mut last_total,
+                false,
+            );
+        }
+        let text = log_text(&doc);
+        assert!(text.contains("m1"), "{text}");
+        assert!(text.contains(&format!("m{CONSOLE_CAPACITY}")), "{text}");
+        assert!(!text.contains("m0"), "{text}");
+        assert_eq!(journal.len(), CONSOLE_CAPACITY);
+    }
+
+    #[test]
+    fn clear_then_one_line_drops_no_messages_placeholder() {
+        let mut journal = ConsoleJournal::default();
+        journal.push(ConsoleEntry {
+            level: ConsoleLevel::Log,
+            message: "before".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 1,
+            promise_id: None,
+        });
+        let mut doc = sample_doc();
+        let mut last_gen = 0;
+        let mut last_len = 0;
+        let mut last_total = 0;
+        render_devtools_console(
+            &mut doc,
+            &journal,
+            &mut last_gen,
+            &mut last_len,
+            &mut last_total,
+            true,
+        );
+        journal.clear();
+        render_devtools_console(
+            &mut doc,
+            &journal,
+            &mut last_gen,
+            &mut last_len,
+            &mut last_total,
+            false,
+        );
+        journal.push(ConsoleEntry {
+            level: ConsoleLevel::Log,
+            message: "after".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 2,
+            promise_id: None,
+        });
+        render_devtools_console(
+            &mut doc,
+            &journal,
+            &mut last_gen,
+            &mut last_len,
+            &mut last_total,
+            false,
+        );
+        let text = log_text(&doc);
+        assert!(!text.contains("No messages"), "{text}");
+        assert!(text.contains("after"), "{text}");
+        assert!(!text.contains("before"), "{text}");
+    }
+
+    #[test]
+    fn tab_switch_full_render_shows_only_new_journal() {
+        let mut journal_a = ConsoleJournal::default();
+        journal_a.push(ConsoleEntry {
+            level: ConsoleLevel::Log,
+            message: "tab-a".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 0,
+            promise_id: None,
+        });
+        let mut journal_b = ConsoleJournal::default();
+        journal_b.push(ConsoleEntry {
+            level: ConsoleLevel::Log,
+            message: "tab-b".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 0,
+            promise_id: None,
+        });
+        let mut doc = sample_doc();
+        let mut last_gen = u64::MAX;
+        let mut last_len = 0;
+        let mut last_total = 0;
+        render_devtools_console(
+            &mut doc,
+            &journal_a,
+            &mut last_gen,
+            &mut last_len,
+            &mut last_total,
+            true,
+        );
+        assert!(log_text(&doc).contains("tab-a"));
+        render_devtools_console(
+            &mut doc,
+            &journal_b,
+            &mut last_gen,
+            &mut last_len,
+            &mut last_total,
+            true,
+        );
+        let text = log_text(&doc);
+        assert!(text.contains("tab-b"), "{text}");
+        assert!(!text.contains("tab-a"), "{text}");
+    }
+
+    #[test]
+    fn tab_switch_epoch_drop_keeps_journal_rows() {
+        let mut tabs = crate::tabs::TabManager::new();
+        let id = tabs.add("https://a.test/");
+        let tab = tabs.tab_mut(id).expect("tab");
+        tab.console.push(ConsoleEntry {
+            level: ConsoleLevel::Log,
+            message: "kept".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 0,
+            promise_id: None,
+        });
+        let old_epoch = tab.console_epoch;
+        tab.console_epoch = old_epoch.saturating_add(1);
+        let stale = ConsoleWireEvent {
+            tab_id: id,
+            page_epoch: old_epoch,
+            timestamp_ms: 1,
+            level: "log".into(),
+            message: "stale".into(),
+            source: None,
+            line: None,
+            promise_id: None,
+        };
+        let fresh = ConsoleWireEvent {
+            tab_id: id,
+            page_epoch: tab.console_epoch,
+            timestamp_ms: 2,
+            level: "log".into(),
+            message: "fresh".into(),
+            source: None,
+            line: None,
+            promise_id: None,
+        };
+        apply_console_wire(&mut tabs, &[stale, fresh]);
+        let tab = tabs.tab_mut(id).expect("tab");
+        assert_eq!(tab.console.len(), 2);
+        let messages: Vec<_> = tab.console.entries().map(|e| e.message.as_str()).collect();
+        assert!(messages.contains(&"kept"));
+        assert!(messages.contains(&"fresh"));
+        assert!(!messages.contains(&"stale"));
+    }
+
+    #[test]
+    fn link_navigation_observation_clears_journal() {
+        let mut tab = crate::tabs::Tab::new(3, "https://ex.test".into());
+        tab.console.push(ConsoleEntry {
+            level: ConsoleLevel::Log,
+            message: "gone".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 0,
+            promise_id: None,
+        });
+        let mut js = crate::js::JsHost::new(false, crate::js::JsTap::new_disabled(), None);
+        observe_navigation_console_effect(
+            crate::nav::ObserveEffect::LinkNavigation,
+            &mut tab,
+            &mut js,
+            &mut |t, host| {
+                t.console.clear();
+                t.console_epoch = t.console_epoch.saturating_add(1);
+                host.set_console_route(t.id, t.console_epoch);
+            },
+        );
+        assert!(tab.console.is_empty());
+        assert_eq!(tab.console_epoch, 2);
+    }
+
+    #[test]
+    fn revoke_removes_only_one_matching_rejection() {
+        let mut journal = ConsoleJournal::default();
+        for id in [1_u64, 2] {
+            journal.push(ConsoleEntry {
+                level: ConsoleLevel::UnhandledRejection,
+                message: format!("r{id}"),
+                source: None,
+                line: None,
+                timestamp_ms: id,
+                promise_id: Some(id),
+            });
+        }
+        assert!(journal.revoke_rejection(1));
+        assert_eq!(journal.len(), 1);
+        let left = journal.entries().next().expect("entry");
+        assert_eq!(left.promise_id, Some(2));
     }
 }

@@ -37,7 +37,6 @@
         return performance.getEntriesByName('gap', 'measure').length === 1;
       });
       check('history-push', function () {
-        var base = location.pathname;
         history.pushState({ n: 1 }, '', '/a');
         history.pushState({ n: 2 }, '', '/b');
         return location.pathname === '/b' && history.state.n === 2 && history.length >= 2;

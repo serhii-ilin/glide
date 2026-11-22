@@ -725,6 +725,193 @@ fn crypto_get_random_values_and_uuid_work() {
 }
 
 #[test]
+fn performance_timing_snapshot_is_stable() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var origUrl = location.href;
+      var t0 = performance.timing;
+      var same = performance.timing === t0;
+      var spread0 = t0.loadEventEnd - t0.navigationStart;
+      var navName = performance.getEntriesByType('navigation')[0].name;
+      history.pushState({ x: 1 }, '', '/moved');
+      var navAfter = performance.getEntriesByType('navigation')[0].name;
+      setTimeout(function () {
+        var spread1 = performance.timing.loadEventEnd - performance.timing.navigationStart;
+        var stillSame = performance.timing === t0;
+        document.getElementById('t').textContent = [
+          same, stillSame, spread0 === spread1,
+          navName === origUrl, navAfter === origUrl
+        ].join('|');
+      }, 40);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(350));
+    assert_eq!(result.final_text, "true|true|true|true|true");
+}
+
+#[test]
+fn history_back_restores_initial_url() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var rootPath = location.pathname;
+      history.pushState({ n: 1 }, '', '/one');
+      history.back();
+      var ok = location.pathname === rootPath
+        && document.URL.indexOf(rootPath) >= 0
+        && history.state === null;
+      document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn history_go_coercion_and_bounds() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      history.pushState({ n: 1 }, '', '/a');
+      history.pushState({ n: 2 }, '', '/b');
+      var parts = [];
+      history.go();
+      parts.push('na', history.state && history.state.n);
+      history.go('x');
+      parts.push('str', history.state && history.state.n);
+      history.go(0.5);
+      parts.push('frac', history.state && history.state.n);
+      history.go(-1);
+      parts.push('back', location.pathname, history.state && history.state.n);
+      history.go(1);
+      parts.push('fwd', location.pathname, history.state && history.state.n);
+      history.go(999);
+      parts.push('oor', location.pathname);
+      history.pushState({ n: 9 }, '', '/x');
+      parts.push('still', typeof history.length);
+      document.getElementById('t').textContent = parts.join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert_eq!(
+        result.final_text,
+        "na|2|str|2|frac|2|back|/a|1|fwd|/b|2|oor|/b|still|number"
+    );
+}
+
+#[test]
+fn history_onpopstate_property_fires() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var hits = [];
+      window.onpopstate = function (e) {
+        hits.push('on:' + (e.state === null ? 'null' : e.state.v));
+      };
+      history.pushState({ v: 1 }, '', '/p');
+      history.back();
+      document.getElementById('t').textContent = hits.join(',');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "on:null");
+}
+
+#[test]
+fn history_forward_and_push_truncates_forward_stack() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      history.pushState({ n: 1 }, '', '/a');
+      history.pushState({ n: 2 }, '', '/b');
+      history.back();
+      history.pushState({ n: 3 }, '', '/c');
+      var fwd = false;
+      try { history.forward(); fwd = location.pathname === '/b'; } catch (_) { fwd = false; }
+      var ok = location.pathname === '/c'
+        && history.state.n === 3
+        && !fwd
+        && history.length === 3;
+      document.getElementById('t').textContent = ok ? 'ok' : 'bad:' + location.pathname;
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn history_location_aliases_match_after_push_state() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      history.pushState({ n: 1 }, '', '/alias');
+      var ok = location.pathname === '/alias'
+        && window.location === location
+        && document.location === location
+        && document.location.pathname === '/alias';
+      document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn history_push_state_invalid_url_throws_syntax_error() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var pathBefore = location.pathname;
+      var ok = false;
+      try {
+        history.pushState({}, '', 'http://exam ple.com/x');
+      } catch (e) {
+        ok = e.name === 'SyntaxError' && location.pathname === pathBefore;
+      }
+      document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn history_and_performance_buffers_are_bounded() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      for (var i = 0; i < 200; i += 1) {
+        history.pushState({ i: i }, '', '/p' + i);
+      }
+      for (var j = 0; j < 300; j += 1) {
+        performance.mark('m' + j);
+      }
+      var ok = history.length <= 100
+        && performance.getEntriesByType('mark').length <= 250;
+      document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn crypto_rejects_non_integer_views() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var bi = new BigUint64Array(2);
+      var out = crypto.getRandomValues(bi) === bi && bi[0] !== 0n;
+      var dv = false;
+      var f32 = false;
+      try { crypto.getRandomValues(new DataView(new ArrayBuffer(8))); } catch (e) { dv = e instanceof TypeError; }
+      try { crypto.getRandomValues(new Float32Array(4)); } catch (e) { f32 = e instanceof TypeError; }
+      document.getElementById('t').textContent = [out, dv, f32].join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "true|true|true");
+}
+
+#[test]
+fn navigator_host_hints_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var langsOk = navigator.languages[0] === 'en-US'
+        && Object.isFrozen(navigator.languages);
+      var platOk = typeof navigator.platform === 'string' && navigator.platform.length > 0;
+      var coresOk = navigator.hardwareConcurrency >= 1;
+      document.getElementById('t').textContent =
+        [langsOk, platOk, coresOk].join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "true|true|true");
+}
+
+#[test]
 fn failed_external_script_does_not_panic() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

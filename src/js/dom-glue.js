@@ -1062,6 +1062,9 @@
     if (typeof global.__glide_reset_page_history === 'function') {
       global.__glide_reset_page_history();
     }
+    if (typeof global.__glide_capture_performance_navigation === 'function') {
+      global.__glide_capture_performance_navigation();
+    }
     installDocumentWrite(pageDocument);
     patchEventPath();
     for (const [node, name, val] of pendingOnHandlers) applyOnAttribute(node, name, val);

@@ -259,6 +259,24 @@ fn install_bindings(scope: &mut v8::PinScope<'_, '_>, context: v8::Local<v8::Con
     let caps_key = v8::String::new(scope, "__glide_caps").unwrap();
     global.set(scope, caps_key.into(), caps_fn.into());
 
+    let platform = if cfg!(target_os = "macos") {
+        "MacIntel"
+    } else if cfg!(target_os = "windows") {
+        "Win32"
+    } else {
+        "Linux x86_64"
+    };
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let host_nav = format!(
+        "globalThis.__glide_platform='{}';globalThis.__glide_hardware_concurrency={};",
+        platform.replace('\\', "\\\\").replace('\'', "\\'"),
+        cores
+    );
+    let host_nav_src = v8::String::new(scope, &host_nav).expect("host nav script");
+    run_script(scope, host_nav_src, "<host-nav>");
+
     // Debug builds only. Release `map_dom_op` rejects `testResize` and `nodeCount`.
     #[cfg(debug_assertions)]
     {

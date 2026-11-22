@@ -260,6 +260,7 @@ fn navigator_languages_work() {
     let rt = tokio_runtime();
     let _guard = rt.enter();
     let text = dump_text(&fixture_url("navigator-languages.html"), true).expect("load");
+    assert!(text.contains("NAV-OK"), "{text}");
     assert!(text.contains("en-US|en-US,en"), "{text}");
 }
 

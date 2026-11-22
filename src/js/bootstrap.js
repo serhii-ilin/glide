@@ -94,11 +94,16 @@
   const performanceTimeOrigin = Date.now() - nowMs;
   const perfEntries = [];
   const perfMarks = new Map();
+  const PERF_ENTRY_MAX = 250;
+  const PERF_MARK_MAX = 250;
+  let cachedTiming = null;
+  let cachedNavigationEntry = null;
 
-  function performanceTiming() {
+  function capturePerformanceSnapshot() {
+    if (cachedTiming) return;
     const nav = performanceTimeOrigin;
     const stamp = nav + Math.max(0, nowMs);
-    return {
+    cachedTiming = Object.freeze({
       navigationStart: nav,
       unloadEventStart: nav,
       unloadEventEnd: nav,
@@ -120,30 +125,50 @@
       domComplete: stamp,
       loadEventStart: stamp,
       loadEventEnd: stamp,
-    };
-  }
-
-  function navigationPerformanceEntry() {
-    const href = (global.location && global.location.href) || '';
-    return {
+    });
+    const href = pageHref();
+    cachedNavigationEntry = Object.freeze({
       name: href,
       entryType: 'navigation',
       startTime: 0,
       duration: nowMs,
-    };
+    });
   }
+
+  global.__glide_capture_performance_navigation = capturePerformanceSnapshot;
 
   function pushPerfEntry(entry) {
     perfEntries.push(entry);
+    while (perfEntries.length > PERF_ENTRY_MAX) perfEntries.shift();
+  }
+
+  function capPerfMarks() {
+    while (perfMarks.size > PERF_MARK_MAX) {
+      const oldest = perfMarks.keys().next().value;
+      if (oldest === undefined) break;
+      perfMarks.delete(oldest);
+      for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+        const e = perfEntries[i];
+        if (e.entryType === 'mark' && e.name === oldest) {
+          perfEntries.splice(i, 1);
+          break;
+        }
+      }
+    }
   }
 
   global.performance = {
     get timeOrigin() { return performanceTimeOrigin; },
-    get timing() { return performanceTiming(); },
+    get timing() {
+      capturePerformanceSnapshot();
+      return cachedTiming;
+    },
     navigation: { type: 0, redirectCount: 0 },
     now: () => nowMs,
     getEntries() {
-      return [navigationPerformanceEntry(), ...perfEntries.slice()];
+      capturePerformanceSnapshot();
+      const nav = cachedNavigationEntry;
+      return nav ? [nav, ...perfEntries.slice()] : perfEntries.slice();
     },
     getEntriesByType(type) {
       const want = String(type);
@@ -161,6 +186,7 @@
     mark(name) {
       const label = String(name);
       perfMarks.set(label, nowMs);
+      capPerfMarks();
       pushPerfEntry({ name: label, entryType: 'mark', startTime: nowMs, duration: 0 });
     },
     measure(name, startMark, endMark) {
@@ -932,9 +958,18 @@
     const raw = String(url);
     const base = pageHref();
     const parsed = __glide_url_parse(raw, base);
-    if (!parsed) return null;
+    if (!parsed) {
+      const err = new Error('The string did not match the expected pattern.');
+      err.name = 'SyntaxError';
+      throw err;
+    }
     const current = __glide_url_parse(base);
-    if (current && parsed.origin !== current.origin) {
+    if (!current) {
+      const err = new Error('The operation is insecure.');
+      err.name = 'SecurityError';
+      throw err;
+    }
+    if (parsed.origin !== current.origin) {
       const err = new Error('The operation is insecure.');
       err.name = 'SecurityError';
       throw err;
@@ -942,13 +977,26 @@
     return parsed.href;
   }
 
-  const historyEntries = [{ url: null, state: null }];
+  function coerceHistoryUrl(url) {
+    if (url == null || url === '') return null;
+    return resolvePageUrl(url);
+  }
+
+  const HISTORY_ENTRY_MAX = 100;
+  const historyEntries = [];
   let historyIndex = 0;
 
   function activeHistoryUrl() {
     const entry = historyEntries[historyIndex];
-    if (entry && entry.url != null) return entry.url;
-    return pageHref();
+    return (entry && entry.url) || pageHref();
+  }
+
+  function trimHistoryEntries() {
+    while (historyEntries.length > HISTORY_ENTRY_MAX) {
+      historyEntries.shift();
+      historyIndex -= 1;
+    }
+    if (historyIndex < 0) historyIndex = 0;
   }
 
   function applyHistoryUrl(href) {
@@ -962,20 +1010,26 @@
     const ev = new EventCtor('popstate');
     ev.state = state;
     global.dispatchEvent(ev);
+    if (typeof global.onpopstate === 'function') {
+      try {
+        global.onpopstate.call(global, ev);
+      } catch (e) {
+        console.error(e);
+      }
+    }
   }
 
   function historyGo(target) {
-    if (target < 0 || target >= historyEntries.length) return;
+    if (!Number.isInteger(target) || target < 0 || target >= historyEntries.length) return;
     historyIndex = target;
     const entry = historyEntries[historyIndex];
-    const href = entry.url != null ? entry.url : pageHref();
-    applyHistoryUrl(href);
+    applyHistoryUrl(entry.url);
     firePopState(cloneHistoryState(entry.state));
   }
 
   global.__glide_reset_page_history = function () {
     historyEntries.length = 0;
-    historyEntries.push({ url: null, state: null });
+    historyEntries.push({ url: pageHref(), state: null });
     historyIndex = 0;
   };
 
@@ -989,16 +1043,17 @@
     },
     scrollRestoration: 'auto',
     pushState(state, _unused, url) {
-      const resolved = url ? resolvePageUrl(url) : null;
+      const resolved = coerceHistoryUrl(url);
       const clone = cloneHistoryState(state);
       historyEntries.length = historyIndex + 1;
       const href = resolved || activeHistoryUrl();
       historyEntries.push({ url: href, state: clone });
       historyIndex = historyEntries.length - 1;
+      trimHistoryEntries();
       if (resolved) applyHistoryUrl(href);
     },
     replaceState(state, _unused, url) {
-      const resolved = url ? resolvePageUrl(url) : null;
+      const resolved = coerceHistoryUrl(url);
       const clone = cloneHistoryState(state);
       const entry = historyEntries[historyIndex];
       if (resolved) {
@@ -1010,8 +1065,10 @@
     back() { historyGo(historyIndex - 1); },
     forward() { historyGo(historyIndex + 1); },
     go(delta) {
-      if (delta === 0) return;
-      historyGo(historyIndex + Number(delta));
+      const n = Number(delta);
+      const step = Number.isFinite(n) ? Math.trunc(n) : 0;
+      if (step === 0) return;
+      historyGo(historyIndex + step);
     },
   };
 
@@ -1075,11 +1132,18 @@
   }
   const navigatorShim = ensureNavigator();
   if (navigatorShim.userAgent == null) navigatorShim.userAgent = 'Glide';
-  if (navigatorShim.languages == null) navigatorShim.languages = ['en-US', 'en'];
+  if (navigatorShim.languages == null) {
+    navigatorShim.languages = Object.freeze(['en-US', 'en']);
+  }
   if (navigatorShim.language == null) navigatorShim.language = 'en-US';
-  if (navigatorShim.platform == null) navigatorShim.platform = '';
+  if (navigatorShim.platform == null) {
+    navigatorShim.platform = global.__glide_platform || '';
+  }
   if (navigatorShim.onLine == null) navigatorShim.onLine = true;
-  if (navigatorShim.hardwareConcurrency == null) navigatorShim.hardwareConcurrency = 1;
+  if (navigatorShim.hardwareConcurrency == null) {
+    const cores = global.__glide_hardware_concurrency;
+    navigatorShim.hardwareConcurrency = typeof cores === 'number' && cores >= 1 ? cores : 1;
+  }
   navigatorShim.sendBeacon = function (url, data) {
     const body = data == null ? '' : (typeof data === 'string' ? data : String(data));
     setTimeout(() => {

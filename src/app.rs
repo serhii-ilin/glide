@@ -543,6 +543,16 @@ fn titles_changed(tabs: &TabManager, before: &[String]) -> bool {
             .any(|(tab, title)| tab.title != *title)
 }
 
+fn sync_tab_network_epoch_from_route(tabs: &mut TabManager, route: &network_feed::NetworkRoute) {
+    let (route_tab, route_epoch) = route.pair();
+    let Some(tab) = tabs.tab_mut(route_tab) else {
+        return;
+    };
+    if route_epoch > tab.network_epoch {
+        tab.network_epoch = route_epoch;
+    }
+}
+
 fn capture_active_tab(
     tabs: &mut TabManager,
     doc: &mut BaseDocument,
@@ -555,6 +565,8 @@ fn capture_active_tab(
     let Some(actual) = page_url(doc) else {
         return;
     };
+    let network_wire = network_feed::drain_pending();
+    let _ = crate::devtools::network::apply_network_wire(tabs, &network_wire);
     let title = page_title(doc).unwrap_or_default();
     let effect = {
         let Some(tab) = tabs.active_mut() else {
@@ -579,7 +591,7 @@ fn capture_active_tab(
             js,
             &mut reset_tab_console_for_navigation,
         );
-        crate::devtools::network::observe_navigation_network_effect(effect, tab);
+        crate::devtools::network::observe_navigation_network_effect(effect, tab, &actual);
         effect
     };
     bookmarks.sync_star(doc, &actual);
@@ -1267,6 +1279,7 @@ impl Glide {
             let chrome = view.doc.inner();
             page_url(&chrome)
         };
+        sync_tab_network_epoch_from_route(&mut self.tabs, &self.network_route);
         if let Some(tab) = self.tabs.active() {
             self.js.set_console_route(tab.id, tab.console_epoch);
             self.js.set_network_route(tab.id, tab.network_epoch);

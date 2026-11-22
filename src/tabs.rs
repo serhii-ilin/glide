@@ -144,6 +144,9 @@ impl TabManager {
         tab.console = ConsoleJournal::default();
         tab.console_repl_history = ConsoleReplHistory::default();
         tab.console_epoch = 1;
+        tab.network = NetworkJournal::default();
+        tab.network_panel = NetworkPanelState::default();
+        tab.network_epoch = 1;
         tab.elements = ElementsPanelState::default();
         tab.elements_epoch = 1;
         self.tabs.push(tab);

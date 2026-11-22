@@ -32,4 +32,5 @@ Feature: F-065 DevTools Network tab
 
   Scenario: Navigation clears the log for a new document
   # Automated: devtools::network::tests::clear_on_navigation_epoch,
-  #            devtools::console::tests (pattern): observe_navigation resets
+  #            devtools::network::tests::link_navigation_prune_keeps_document_drops_subresources,
+  #            devtools::network::tests::completed_observation_leaves_journal_unchanged

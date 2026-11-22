@@ -67,7 +67,7 @@ pub fn fetch_page(
             Request::get(parsed),
             js_enabled,
         )) {
-            crate::http::DocumentFetch::Page { url, body } => Ok((url, body.to_vec())),
+            crate::http::DocumentFetch::Page { url, body, .. } => Ok((url, body.to_vec())),
             crate::http::DocumentFetch::Failed { url, reason } => {
                 Err(format!("fetch {url}: {reason}"))
             }

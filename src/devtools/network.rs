@@ -2,10 +2,8 @@
 
 use std::collections::VecDeque;
 
-use blitz_dom::BaseDocument;
-use blitz_dom::qual_name;
-
 use crate::tabs::TabId;
+use blitz_dom::BaseDocument;
 
 pub const NETWORK_CAPACITY: usize = 200;
 
@@ -135,6 +133,16 @@ impl NetworkJournal {
         self.generation = self.generation.saturating_add(1);
     }
 
+    /// After in-document navigation: drop prior page loads, keep the committed document row.
+    pub fn prune_for_link_navigation(&mut self, committed_url: &str) {
+        let had = self.entries.len();
+        self.entries
+            .retain(|e| e.initiator == NetworkInitiator::Document && e.url == committed_url);
+        if had != self.entries.len() {
+            self.generation = self.generation.saturating_add(1);
+        }
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -170,7 +178,9 @@ pub fn apply_network_wire(tabs: &mut crate::tabs::TabManager, events: &[NetworkW
         let Some(tab) = tabs.tab_mut(ev.tab_id) else {
             continue;
         };
-        if tab.network_epoch != ev.network_epoch {
+        if ev.network_epoch > tab.network_epoch {
+            tab.network_epoch = ev.network_epoch;
+        } else if ev.network_epoch < tab.network_epoch {
             continue;
         }
         let kind = NetworkResourceKind::from_url_and_initiator(&ev.url, ev.initiator);
@@ -202,14 +212,14 @@ pub(crate) fn bump_tab_network_epoch_for_navigation(tab: &mut crate::tabs::Tab) 
 pub(crate) fn observe_navigation_network_effect(
     effect: crate::nav::ObserveEffect,
     tab: &mut crate::tabs::Tab,
+    committed_url: &str,
 ) {
-    // Match console: clear on link navigations and redirects, not on every
-    // Completed observation (Go/reload already reset via `reset_tab_console_for_navigation`).
-    if matches!(
-        effect,
-        crate::nav::ObserveEffect::LinkNavigation | crate::nav::ObserveEffect::Redirect
-    ) {
-        bump_tab_network_epoch_for_navigation(tab);
+    match effect {
+        crate::nav::ObserveEffect::Completed | crate::nav::ObserveEffect::Unchanged => {}
+        crate::nav::ObserveEffect::LinkNavigation | crate::nav::ObserveEffect::Redirect => {
+            tab.network.prune_for_link_navigation(committed_url);
+            crate::network_feed::discard_pending_below_epoch(tab.id, tab.network_epoch);
+        }
     }
 }
 
@@ -316,7 +326,8 @@ fn detail_for_entry(entry: &NetworkEntry) -> String {
         status = entry
             .status
             .map(|s| s.to_string())
-            .unwrap_or_else(|| entry.error.as_deref().unwrap_or("—").to_string()),
+            .or_else(|| entry.error.as_ref().map(|e| escape_html(e)))
+            .unwrap_or_else(|| "—".to_string()),
         kind = entry.kind.label(),
         size = format_size(entry.size_bytes),
         time = format_duration(entry.duration_ms),
@@ -358,17 +369,25 @@ pub fn sync_network_filter_input(doc: &mut BaseDocument, filter: &str) -> bool {
     let Some(input) = doc.get_element_by_id("devtools-network-filter") else {
         return false;
     };
-    doc.mutate()
-        .set_attribute(input, qual_name!("value"), filter);
+    doc.with_text_input(input, |mut driver| {
+        driver.editor.set_text(filter);
+        driver.refresh_layout();
+    });
     true
 }
 
 pub fn read_network_filter_input(doc: &BaseDocument) -> String {
-    doc.get_element_by_id("devtools-network-filter")
-        .and_then(|id| doc.get_node(id))
-        .and_then(|n| n.attr(blitz_dom::local_name!("value")))
-        .map(|v| v.to_string())
-        .unwrap_or_default()
+    let Some(id) = doc.get_element_by_id("devtools-network-filter") else {
+        return String::new();
+    };
+    let Some(input) = doc
+        .get_node(id)
+        .and_then(|n| n.element_data())
+        .and_then(|e| e.text_input_data())
+    else {
+        return String::new();
+    };
+    input.editor.text().to_string()
 }
 
 pub fn render_devtools_network(
@@ -380,17 +399,9 @@ pub fn render_devtools_network(
     last_detail_html: &mut String,
     tab_changed: bool,
 ) -> bool {
-    if !(tab_changed || journal.generation() != *last_generation) {
-        let filter = read_network_filter_input(doc);
-        if filter == panel.filter {
-            return false;
-        }
+    let filter = read_network_filter_input(doc);
+    if filter != panel.filter {
         panel.filter = filter;
-    } else {
-        let filter = read_network_filter_input(doc);
-        if !filter.is_empty() {
-            panel.filter = filter;
-        }
     }
     let Some(plan) = prepare_network_render(journal, panel, tab_changed) else {
         return false;
@@ -489,11 +500,166 @@ mod tests {
 
     #[test]
     fn detail_html_includes_headers() {
-        let entry = sample_entry(0, "file://x", 200);
+        let mut entry = sample_entry(0, "file://x", 200);
+        entry.response_headers = vec![("x-demo".into(), "Tom&Jerry".into())];
         let html = detail_for_entry(&entry);
-        assert!(html.contains("content-type"));
-        assert!(html.contains("text/html"));
+        assert!(html.contains("Tom&amp;Jerry"));
         assert!(!html.contains("&amp;amp;"));
+        assert!(!html.contains("Tom&Jerry"));
+    }
+
+    #[test]
+    fn detail_html_escapes_error_payload() {
+        let entry = NetworkEntry {
+            id: 0,
+            method: "GET".into(),
+            url: "file://x".into(),
+            kind: NetworkResourceKind::Document,
+            status: None,
+            error: Some(r#"<a href="glide://devtools-network-clear">"#.into()),
+            started_ms: 0,
+            duration_ms: 1,
+            size_bytes: None,
+            initiator: NetworkInitiator::Document,
+            response_headers: Vec::new(),
+        };
+        let html = detail_for_entry(&entry);
+        assert!(html.contains("&lt;a href="));
+        assert!(!html.contains(r#"<a href="glide://"#));
+    }
+
+    #[test]
+    fn filter_editor_text_hides_non_matching_rows() {
+        let html = crate::chrome::chrome_document("file://page", true, false);
+        let mut doc =
+            crate::parse::document_from_html(&html, blitz_dom::DocumentConfig::default(), false);
+        doc.resolve(1.0);
+        crate::chrome::apply_devtools_state(
+            &mut doc,
+            &crate::devtools::DevToolsState {
+                open: true,
+                tab: crate::devtools::DevToolsTab::Network,
+                size_px: 240,
+                ..Default::default()
+            },
+        );
+        doc.resolve(1.0);
+        let mut journal = NetworkJournal::default();
+        journal.push_completed(NetworkEntry {
+            id: 0,
+            method: "GET".into(),
+            url: "file://a/page.css".into(),
+            kind: NetworkResourceKind::Stylesheet,
+            status: Some(200),
+            error: None,
+            started_ms: 0,
+            duration_ms: 1,
+            size_bytes: Some(10),
+            initiator: NetworkInitiator::Subresource,
+            response_headers: Vec::new(),
+        });
+        journal.push_completed(NetworkEntry {
+            id: 0,
+            method: "GET".into(),
+            url: "file://a/app.js".into(),
+            kind: NetworkResourceKind::Script,
+            status: Some(200),
+            error: None,
+            started_ms: 0,
+            duration_ms: 1,
+            size_bytes: Some(10),
+            initiator: NetworkInitiator::Subresource,
+            response_headers: Vec::new(),
+        });
+        let Some(input) = doc.get_element_by_id("devtools-network-filter") else {
+            panic!("network filter");
+        };
+        doc.with_text_input(input, |mut driver| {
+            driver.editor.set_text("css");
+            driver.refresh_layout();
+        });
+        assert_eq!(read_network_filter_input(&doc), "css");
+        let mut panel = NetworkPanelState {
+            filter: read_network_filter_input(&doc),
+            ..Default::default()
+        };
+        let plan = prepare_network_render(&journal, &panel, false).expect("plan");
+        assert!(plan.table_html.contains("page.css"));
+        assert!(!plan.table_html.contains("app.js"));
+        doc.with_text_input(input, |mut driver| {
+            driver.editor.set_text("");
+            driver.refresh_layout();
+        });
+        assert!(read_network_filter_input(&doc).is_empty());
+        panel.filter.clear();
+        journal.push_completed(NetworkEntry {
+            id: 0,
+            method: "GET".into(),
+            url: "file://b/extra.js".into(),
+            kind: NetworkResourceKind::Script,
+            status: Some(200),
+            error: None,
+            started_ms: 0,
+            duration_ms: 1,
+            size_bytes: Some(10),
+            initiator: NetworkInitiator::Subresource,
+            response_headers: Vec::new(),
+        });
+        let plan = prepare_network_render(&journal, &panel, false).expect("plan");
+        assert!(plan.table_html.contains("app.js"));
+    }
+
+    #[test]
+    fn completed_observation_leaves_journal_unchanged() {
+        let mut tab = crate::tabs::Tab::new(1, "https://a.test/".into());
+        tab.network
+            .push_completed(sample_entry(0, "file://old.css", 200));
+        let count = tab.network.entries().count();
+        observe_navigation_network_effect(
+            crate::nav::ObserveEffect::Completed,
+            &mut tab,
+            "https://b.test/",
+        );
+        assert_eq!(tab.network.entries().count(), count);
+    }
+
+    #[test]
+    fn link_navigation_prune_keeps_document_drops_subresources() {
+        let mut tab = crate::tabs::Tab::new(1, "https://a.test/".into());
+        let new_doc = "https://b.test/".to_string();
+        tab.network.push_completed(NetworkEntry {
+            id: 0,
+            method: "GET".into(),
+            url: "file://old.css".into(),
+            kind: NetworkResourceKind::Stylesheet,
+            status: Some(200),
+            error: None,
+            started_ms: 0,
+            duration_ms: 1,
+            size_bytes: Some(1),
+            initiator: NetworkInitiator::Subresource,
+            response_headers: Vec::new(),
+        });
+        tab.network.push_completed(NetworkEntry {
+            id: 0,
+            method: "GET".into(),
+            url: new_doc.clone(),
+            kind: NetworkResourceKind::Document,
+            status: Some(200),
+            error: None,
+            started_ms: 0,
+            duration_ms: 1,
+            size_bytes: Some(100),
+            initiator: NetworkInitiator::Document,
+            response_headers: Vec::new(),
+        });
+        observe_navigation_network_effect(
+            crate::nav::ObserveEffect::LinkNavigation,
+            &mut tab,
+            &new_doc,
+        );
+        let urls: Vec<_> = tab.network.entries().map(|e| e.url.as_str()).collect();
+        assert_eq!(urls, [new_doc.as_str()]);
     }
 
     #[test]

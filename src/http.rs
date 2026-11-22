@@ -33,7 +33,12 @@ pub struct Followed {
 #[derive(Debug)]
 pub enum DocumentFetch {
     /// Render `body` as the document at `url` (the URL after redirects).
-    Page { url: String, body: Bytes },
+    Page {
+        url: String,
+        body: Bytes,
+        status: u16,
+        headers: Vec<(String, String)>,
+    },
     /// Show Glide's error page. `url` is the URL the user asked for.
     Failed { url: String, reason: String },
 }
@@ -229,6 +234,8 @@ pub async fn fetch_document(request: Request, scripting_enabled: bool) -> Docume
                 return DocumentFetch::Page {
                     url: resp.url,
                     body: resp.body,
+                    status: resp.status,
+                    headers: resp.headers,
                 };
             }
             Ok(resp) => {
@@ -842,7 +849,7 @@ mod tests {
 
         let start = Url::parse(&format!("http://127.0.0.1:{port}/start")).unwrap();
         match rt.block_on(fetch_document(Request::get(start), false)) {
-            DocumentFetch::Page { url, body } => {
+            DocumentFetch::Page { url, body, .. } => {
                 assert!(url.ends_with("/land"), "{url}");
                 assert!(String::from_utf8_lossy(&body).contains("landed"));
             }
@@ -861,7 +868,14 @@ mod tests {
 
         let missing = Url::parse(&format!("http://127.0.0.1:{port}/missing")).unwrap();
         match rt.block_on(fetch_document(Request::get(missing), false)) {
-            DocumentFetch::Page { body, .. } => {
+            DocumentFetch::Page {
+                body,
+                status,
+                headers,
+                ..
+            } => {
+                assert_eq!(status, 404);
+                assert!(!headers.is_empty());
                 assert!(String::from_utf8_lossy(&body).contains("custom-404"));
             }
             DocumentFetch::Failed { reason, .. } => panic!("404 body should render: {reason}"),
@@ -869,7 +883,7 @@ mod tests {
 
         let meta = Url::parse(&format!("http://127.0.0.1:{port}/meta")).unwrap();
         match rt.block_on(fetch_document(Request::get(meta), false)) {
-            DocumentFetch::Page { url, body } => {
+            DocumentFetch::Page { url, body, .. } => {
                 assert!(url.ends_with("/land"), "{url}");
                 assert!(String::from_utf8_lossy(&body).contains("landed"));
             }

@@ -24,6 +24,7 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Alt+Left / Alt+Right (Option on macOS) | Back / forward |
 | Cmd/Ctrl+[ / Cmd/Ctrl+] | Back / forward |
 | Ctrl+R or F5 (Cmd+R on macOS) | Reload |
+| Esc (menu open) | Close the open menu |
 | Esc (when no text field is focused) | Stop the in-flight page load |
 | Cmd/Ctrl+Shift+J | Turn page JavaScript on or off (reloads the page) |
 | Ctrl+L or Cmd+L | Focus the address bar |

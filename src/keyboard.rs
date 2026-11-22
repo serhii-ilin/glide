@@ -51,6 +51,7 @@ pub enum BrowserShortcut {
     DevToolsElementsDown,
     DevToolsElementsExpand,
     DevToolsElementsCollapse,
+    MenuClose,
     Scroll(ScrollAction),
 }
 
@@ -146,6 +147,23 @@ pub fn browser_shortcut(
             return Some(BrowserShortcut::Scroll(ScrollAction::Down));
         }
         _ => {}
+    }
+    None
+}
+
+/// Escape closes an open menu before Escape is treated as Stop.
+pub fn menu_shortcut(
+    code: KeyCode,
+    modifiers: ModifiersState,
+    text_input_focused: bool,
+    menu_open: bool,
+) -> Option<BrowserShortcut> {
+    if !menu_open || text_input_focused {
+        return None;
+    }
+    let primary = modifiers.control_key() || modifiers.meta_key();
+    if code == KeyCode::Escape && !primary && !modifiers.alt_key() {
+        return Some(BrowserShortcut::MenuClose);
     }
     None
 }
@@ -580,6 +598,7 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         BrowserShortcut::Forward => Some(NavCommand::Forward),
         BrowserShortcut::Reload => Some(NavCommand::Reload),
         BrowserShortcut::Stop => Some(NavCommand::Stop),
+        BrowserShortcut::MenuClose => Some(NavCommand::MenuClose),
         BrowserShortcut::ToggleJs => Some(NavCommand::ToggleJs),
         BrowserShortcut::ToggleBookmark => Some(NavCommand::ToggleBookmark),
         BrowserShortcut::FocusAddressBar
@@ -612,6 +631,7 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
 pub fn try_browser_shortcut(
     view: &mut View<impl WindowRenderer>,
     event: &WindowEvent,
+    menu_open: bool,
 ) -> Option<BrowserShortcut> {
     let WindowEvent::KeyboardInput { event, .. } = event else {
         return None;
@@ -625,12 +645,11 @@ pub fn try_browser_shortcut(
     let chrome = view.doc.inner();
     let text_focused = text_input_focused(&chrome);
     let find_open = crate::chrome::find_bar_open(&chrome);
-    browser_shortcut(
-        code,
-        view.keyboard_modifiers.state(),
-        text_focused,
-        find_open,
-    )
+    let modifiers = view.keyboard_modifiers.state();
+    if let Some(shortcut) = menu_shortcut(code, modifiers, text_focused, menu_open) {
+        return Some(shortcut);
+    }
+    browser_shortcut(code, modifiers, text_focused, find_open)
 }
 
 /// Find-field keys (Enter, Shift+Enter, Esc) before Blitz handles them.
@@ -1238,6 +1257,27 @@ mod tests {
             Some(NavCommand::ToggleBookmark)
         );
         assert!(nav_from_shortcut(BrowserShortcut::FocusAddressBar).is_none());
+        assert_eq!(
+            nav_from_shortcut(BrowserShortcut::MenuClose),
+            Some(NavCommand::MenuClose)
+        );
+    }
+
+    #[test]
+    fn escape_closes_menu_before_stop() {
+        let none = ModifiersState::empty();
+        let cmd = ModifiersState::META;
+        assert_eq!(
+            menu_shortcut(KeyCode::Escape, none, false, true),
+            Some(BrowserShortcut::MenuClose)
+        );
+        assert!(menu_shortcut(KeyCode::Escape, none, false, false).is_none());
+        assert!(menu_shortcut(KeyCode::Escape, none, true, true).is_none());
+        assert!(menu_shortcut(KeyCode::Escape, cmd, false, true).is_none());
+        assert_eq!(
+            browser_shortcut(KeyCode::Escape, none, false, false),
+            Some(BrowserShortcut::Stop)
+        );
     }
 
     #[test]

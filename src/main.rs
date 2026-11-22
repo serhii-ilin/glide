@@ -1,7 +1,10 @@
 //! `glide` binary entry: parse CLI args and run the window, headless screenshot, or --dump-text.
 
+use std::sync::Arc;
+
 use glide::args::{RunMode, parse, usage};
-use glide::{headless, run_window, shot, tokio_runtime};
+use glide::control::session::{SessionOptions, spawn_session};
+use glide::{headless, mcp, run_window, shot, tokio_runtime};
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -27,6 +30,25 @@ fn main() {
                     eprintln!("screenshot failed: {err}");
                     std::process::exit(1);
                 }
+            }
+        }
+        Ok(RunMode::Mcp { js_enabled, attach }) => {
+            if attach.is_some() {
+                eprintln!("glide --mcp --attach is not supported yet (planned F-069)");
+                std::process::exit(2);
+            }
+            let runtime = tokio_runtime();
+            let backend = spawn_session(SessionOptions { js_enabled }, runtime.handle().clone());
+            let backend = match backend {
+                Ok(b) => Arc::new(b) as Arc<dyn glide::control::ControlBackend>,
+                Err(err) => {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(err) = runtime.block_on(mcp::serve_stdio(backend, js_enabled)) {
+                eprintln!("{err}");
+                std::process::exit(1);
             }
         }
         Ok(RunMode::DumpText { url, js_enabled }) => {

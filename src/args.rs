@@ -1,8 +1,18 @@
 //! Command-line parsing for the `glide` binary (no external CLI crate).
 
+use std::path::PathBuf;
+
 use crate::location::resolve_location;
 
-const KNOWN_FLAGS: &[&str] = &["--no-js", "--screenshot", "--dump-text", "--help", "-h"];
+const KNOWN_FLAGS: &[&str] = &[
+    "--no-js",
+    "--screenshot",
+    "--dump-text",
+    "--mcp",
+    "--attach",
+    "--help",
+    "-h",
+];
 
 /// Parsed subcommand for [`parse`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +33,10 @@ pub enum RunMode {
         url: String,
         js_enabled: bool,
     },
+    Mcp {
+        js_enabled: bool,
+        attach: Option<Option<PathBuf>>,
+    },
 }
 
 pub fn usage() -> &'static str {
@@ -31,6 +45,7 @@ pub fn usage() -> &'static str {
        glide [url]                    open a window (default https://example.com/)\n  \
        glide --screenshot [url] [png] headless PNG (default url / glide-screenshot.png)\n  \
        glide --dump-text [url]        print page text after scripts settle\n  \
+       glide --mcp                    MCP server on stdio (headless session)\n  \
        glide --no-js ...              disable page JavaScript\n\n\
      Options:\n  \
        -h, --help                     print this help\n"
@@ -54,6 +69,31 @@ where
 
     let cli_no_js = raw.iter().any(|a| a == "--no-js");
     let js_enabled = !cli_no_js;
+
+    if raw.first().is_some_and(|a| a == "--mcp") {
+        let mut attach = None;
+        let mut i = 1;
+        while i < raw.len() {
+            match raw[i].as_str() {
+                "--no-js" => {}
+                "--attach" => {
+                    attach = Some(None);
+                    if let Some(next) = raw.get(i + 1)
+                        && !next.starts_with("--")
+                    {
+                        attach = Some(Some(PathBuf::from(next)));
+                        i += 1;
+                    }
+                }
+                other if other.starts_with("--") => {
+                    return Err(format!("unknown flag: {other}"));
+                }
+                other => return Err(format!("unexpected argument for --mcp: {other}")),
+            }
+            i += 1;
+        }
+        return Ok(RunMode::Mcp { js_enabled, attach });
+    }
 
     if raw.first().is_some_and(|a| a == "--dump-text") {
         let rest: Vec<String> = raw
@@ -245,6 +285,50 @@ mod tests {
             RunMode::DumpText {
                 url: "https://x.test/".into(),
                 js_enabled: false,
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_flag_parses_headless() {
+        let mode = parse(["--mcp".into()]).unwrap();
+        assert_eq!(
+            mode,
+            RunMode::Mcp {
+                js_enabled: true,
+                attach: None,
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_no_js_flag() {
+        let mode = parse(["--mcp".into(), "--no-js".into()]).unwrap();
+        assert_eq!(
+            mode,
+            RunMode::Mcp {
+                js_enabled: false,
+                attach: None,
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_attach_with_and_without_path() {
+        let mode = parse(["--mcp".into(), "--attach".into()]).unwrap();
+        assert_eq!(
+            mode,
+            RunMode::Mcp {
+                js_enabled: true,
+                attach: Some(None),
+            }
+        );
+        let mode = parse(["--mcp".into(), "--attach".into(), "/tmp/glide.sock".into()]).unwrap();
+        assert_eq!(
+            mode,
+            RunMode::Mcp {
+                js_enabled: true,
+                attach: Some(Some(PathBuf::from("/tmp/glide.sock"))),
             }
         );
     }

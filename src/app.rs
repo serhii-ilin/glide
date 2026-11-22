@@ -108,7 +108,15 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
     let bookmarks_state = BookmarksState::load(profile.clone());
     let bookmark_list = Arc::new(std::sync::RwLock::new(bookmarks_state.entries().to_vec()));
     let bookmarks = BookmarksState::shared(bookmark_list.clone());
-    let net = GlideNet::new(net_impl.clone(), load_state.clone(), waker, bookmarks);
+    // Shared by the network layer (noscript meta refresh) and the HTML provider.
+    let scripting_enabled = Arc::new(AtomicBool::new(js_enabled));
+    let net = GlideNet::with_scripting(
+        net_impl.clone(),
+        load_state.clone(),
+        waker,
+        bookmarks,
+        scripting_enabled.clone(),
+    );
     let bus = NavBus::default();
 
     let js_tap = if js_enabled {
@@ -117,7 +125,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         JsTap::new_disabled()
     };
     let html_provider = GlideHtmlProvider {
-        scripting_enabled: Arc::new(AtomicBool::new(js_enabled)),
+        scripting_enabled: Arc::clone(&scripting_enabled),
         js_tap: js_tap.clone(),
     };
     let js_host = JsHost::new(js_enabled, js_tap, Some(net_impl));

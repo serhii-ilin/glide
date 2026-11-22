@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -149,20 +149,43 @@ pub struct GlideNet {
     state: Arc<LoadState>,
     waker: Arc<dyn NetWaker>,
     bookmarks: Arc<dyn Fn() -> String + Send + Sync>,
+    /// Live scripting mode, shared with the HTML provider. It decides whether a
+    /// `<noscript>` meta refresh may redirect the first navigation.
+    scripting_enabled: Arc<AtomicBool>,
 }
 
 impl GlideNet {
+    /// Provider with scripting treated as enabled, for tests and callers that do
+    /// not care about the toggle.
     pub fn new(
         inner: Arc<Provider>,
         state: Arc<LoadState>,
         waker: Arc<dyn NetWaker>,
         bookmarks: Arc<dyn Fn() -> String + Send + Sync>,
     ) -> Arc<Self> {
+        Self::with_scripting(
+            inner,
+            state,
+            waker,
+            bookmarks,
+            Arc::new(AtomicBool::new(true)),
+        )
+    }
+
+    /// Provider that follows the live scripting mode for navigation decisions.
+    pub fn with_scripting(
+        inner: Arc<Provider>,
+        state: Arc<LoadState>,
+        waker: Arc<dyn NetWaker>,
+        bookmarks: Arc<dyn Fn() -> String + Send + Sync>,
+        scripting_enabled: Arc<AtomicBool>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             inner,
             state,
             waker,
             bookmarks,
+            scripting_enabled,
         })
     }
 
@@ -230,6 +253,7 @@ impl GlideNet {
         let generation = token.generation;
         let glide_signal = token.glide_signal;
         let cancel_notify = token.notify;
+        let scripting_enabled = self.scripting_enabled.load(Ordering::Relaxed);
         #[cfg(test)]
         let test_delay_ms = state.test_page_delay_ms.load(Ordering::Relaxed);
         #[cfg(not(test))]
@@ -250,6 +274,7 @@ impl GlideNet {
                 &glide_signal,
                 &cancel_notify,
                 test_delay_ms,
+                scripting_enabled,
             )
             .await;
 
@@ -386,8 +411,9 @@ async fn fetch_racing_aborts(
     glide_signal: &AbortSignal,
     cancel_notify: &Notify,
     test_delay_ms: usize,
+    scripting_enabled: bool,
 ) -> Result<(String, Bytes), LoadFail> {
-    let fetch_fut = page_fetch(provider, request, test_delay_ms);
+    let fetch_fut = page_fetch(provider, request, test_delay_ms, scripting_enabled);
     tokio::pin!(fetch_fut);
     tokio::select! {
         res = &mut fetch_fut => res,
@@ -399,12 +425,13 @@ async fn page_fetch(
     provider: &Provider,
     request: Request,
     test_delay_ms: usize,
+    scripting_enabled: bool,
 ) -> Result<(String, Bytes), LoadFail> {
     if test_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
     }
     if crate::http::is_navigable_http(&request) {
-        return match crate::http::fetch_document(request).await {
+        return match crate::http::fetch_document(request, scripting_enabled).await {
             crate::http::DocumentFetch::Page { url, body } => Ok((url, body)),
             crate::http::DocumentFetch::Failed { reason, .. } => Err(LoadFail::Failed(reason)),
         };

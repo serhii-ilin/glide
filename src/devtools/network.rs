@@ -203,11 +203,11 @@ pub(crate) fn observe_navigation_network_effect(
     effect: crate::nav::ObserveEffect,
     tab: &mut crate::tabs::Tab,
 ) {
+    // Match console: clear on link navigations and redirects, not on every
+    // Completed observation (Go/reload already reset via `reset_tab_console_for_navigation`).
     if matches!(
         effect,
-        crate::nav::ObserveEffect::Completed
-            | crate::nav::ObserveEffect::LinkNavigation
-            | crate::nav::ObserveEffect::Redirect
+        crate::nav::ObserveEffect::LinkNavigation | crate::nav::ObserveEffect::Redirect
     ) {
         bump_tab_network_epoch_for_navigation(tab);
     }

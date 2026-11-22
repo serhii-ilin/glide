@@ -8,6 +8,12 @@ Feature: F-055 Network and binary Web APIs
   # Registry: docs/features.md -> F-055
   # Tests: js::integration::xhr_sync_and_async_requests_work,
   #        js::integration::fetch_request_and_response_objects_work,
+  #        js::integration::fetch_and_xhr_base64_data_urls_work,
+  #        js::integration::xhr_abort_stops_callbacks,
+  #        js::integration::xhr_headers_available_at_headers_received,
+  #        js::integration::fetch_binary_body_round_trips,
+  #        js::integration::fetch_request_init_overrides_input,
+  #        js::integration::send_beacon_returns_true_without_throwing,
   #        js::integration::text_and_blob_helpers_work,
   #        headless_js::network_apis_work
 
@@ -17,10 +23,24 @@ Feature: F-055 Network and binary Web APIs
   Scenario: XMLHttpRequest reports status and body for data URLs
     When a script performs sync and async GET requests to a data URL
     Then readyState reaches DONE with status 200 and the payload as responseText
+    And readyState progresses through HEADERS_RECEIVED, LOADING, and DONE
 
   Scenario: fetch exposes Request, Response, and Headers
     When a script calls fetch with method, headers, and body
     Then the Response resolves with status, headers, and body accessors
+
+  Scenario: base64 data URLs decode for fetch and XHR
+    When a script loads data:text/plain;base64 payloads
+    Then fetch and XMLHttpRequest return the decoded bytes as text
+    And malformed base64 fails the request
+
+  Scenario: abort stops queued XMLHttpRequest callbacks
+    When a script aborts an async XMLHttpRequest before completion
+    Then load and loadstart do not run after abort
+
+  Scenario: binary bodies round-trip through arrayBuffer
+    When a script reads a binary data URL through fetch and XHR
+    Then every byte matches the original octets
 
   Scenario: Blob and encoding helpers round-trip text
     When a script uses Blob, FileReader, TextEncoder, and TextDecoder
@@ -28,4 +48,4 @@ Feature: F-055 Network and binary Web APIs
 
   Scenario: sendBeacon queues a POST without blocking
     When a script calls navigator.sendBeacon with a data URL and payload
-    Then the call returns true immediately
+    Then the call returns true immediately without throwing

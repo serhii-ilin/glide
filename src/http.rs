@@ -24,7 +24,8 @@ pub struct Followed {
     pub redirected: bool,
     /// `Content-Type` header value, without parameters. Empty when the server omitted it.
     pub content_type: String,
-    /// Response header names and values (no cookie or auth values are logged).
+    /// Response header names and values from the transport (including `Set-Cookie`;
+    /// stripped before exposure to page `fetch` / XHR).
     pub headers: Vec<(String, String)>,
 }
 

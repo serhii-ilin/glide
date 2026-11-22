@@ -5,7 +5,7 @@ Feature: F-066 MCP headless session navigation and page inspection
 
   # Source / basis: Model Context Protocol specification (tools); HTML Living Standard (history traversal)
   # Registry: docs/features.md -> F-066
-  # Tests: control_session::*; control::protocol::tests::*; control::page_ops::tests::*; control::session::tests::*; headless::tests::fetch_page_decodes_percent_encoded_file_path; js::console_feed::tests::drain_for_tab_keeps_other_tabs; shot::tests::encode_png_roundtrip
+  # Tests: control_session::*; control::protocol::tests::*; control::page_ops::tests::*; control::session::tests::*; headless::tests::fetch_page_decodes_percent_encoded_file_path; js::console_feed::tests::drain_for_tab_keeps_other_tabs; shot::tests::encode_png_roundtrip; mcp_stdio::*; mcp::tests::*; mcp::tools::tests::*; args::tests::mcp_*
   # MCP: glide_navigate, glide_back, glide_forward, glide_reload, glide_page_info, glide_snapshot_text, glide_dom, glide_query, glide_screenshot
 
   Background:

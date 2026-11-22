@@ -10,7 +10,7 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use once_cell::sync::OnceCell;
 
-use super::bridge::{DomRequest, DomValue};
+use super::bridge::{DomRequest, DomValue, FetchRequest};
 use super::diagnostics;
 use super::host::DomRpc;
 use crate::logging::{self, Level};
@@ -546,13 +546,13 @@ fn map_dom_op(
                 headers,
                 body,
             } = fetch_options(scope, args, 3)?;
-            DomRequest::Fetch {
+            DomRequest::Fetch(FetchRequest {
                 url,
                 method,
                 headers,
                 body,
                 reply,
-            }
+            })
         }
         "listen" => {
             let node = arg_handle(scope, args, 2)?;

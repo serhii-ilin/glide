@@ -320,8 +320,7 @@ impl JsHost {
             self.try_finish_pending_sources();
             match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(rpc) => {
-                    let response = self.apply_dom_rpc(chrome, rpc.request);
-                    let _ = rpc.reply.send(response);
+                    self.handle_dom_rpc(chrome, rpc);
                     redraw = true;
                 }
                 Err(RecvTimeoutError::Timeout) => {
@@ -352,8 +351,7 @@ impl JsHost {
             self.try_finish_pending_sources();
             match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(rpc) => {
-                    let response = self.apply_dom_rpc(chrome, rpc.request);
-                    let _ = rpc.reply.send(response);
+                    self.handle_dom_rpc(chrome, rpc);
                     redraw = true;
                     last_rpc = Instant::now();
                 }
@@ -374,8 +372,7 @@ impl JsHost {
     fn drain_dom_rpc(&mut self, chrome: &mut BaseDocument) -> bool {
         let mut redraw = false;
         while let Ok(rpc) = self.dom_rx.try_recv() {
-            let response = self.apply_dom_rpc(chrome, rpc.request);
-            let _ = rpc.reply.send(response);
+            self.handle_dom_rpc(chrome, rpc);
             redraw = true;
         }
         redraw
@@ -383,9 +380,23 @@ impl JsHost {
 
     fn apply_dom_rpc(&self, chrome: &mut BaseDocument, request: DomRequest) -> DomResponse {
         if let Some(page) = page_subdoc_mut(chrome) {
-            apply_request(page, self.net.as_ref(), &self.base_url, request)
+            apply_request(page, &self.base_url, request)
         } else {
-            apply_request(chrome, self.net.as_ref(), &self.base_url, request)
+            apply_request(chrome, &self.base_url, request)
+        }
+    }
+
+    /// Dispatch one DOM request. `Fetch` goes to tokio and replies later, so a
+    /// slow page request never stops the UI thread (or the winit event loop).
+    fn handle_dom_rpc(&self, chrome: &mut BaseDocument, rpc: DomRpc) {
+        match rpc.request {
+            DomRequest::Fetch(fetch) => {
+                super::apply::start_fetch(self.net.clone(), &self.base_url, fetch, rpc.reply);
+            }
+            request => {
+                let response = self.apply_dom_rpc(chrome, request);
+                let _ = rpc.reply.send(response);
+            }
         }
     }
 

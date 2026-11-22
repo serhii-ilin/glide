@@ -10,13 +10,7 @@ use blitz_traits::node_id::NodeId;
 /// are intentionally absent so page code cannot bypass domino and desync the trees.
 #[derive(Debug, Clone)]
 pub enum DomRequest {
-    Fetch {
-        url: String,
-        method: String,
-        headers: Vec<(String, String)>,
-        body: String,
-        reply: u64,
-    },
+    Fetch(FetchRequest),
     SnapshotTree {
         reply: u64,
     },
@@ -76,6 +70,19 @@ pub enum DomRequest {
         height: u32,
         reply: u64,
     },
+}
+
+/// A page `fetch()` / dynamic script source as the JS worker sends it.
+///
+/// The host dispatches it on tokio rather than applying it synchronously, then
+/// sends the [`DomResponse`] back through the worker's reply channel.
+#[derive(Debug, Clone)]
+pub struct FetchRequest {
+    pub url: String,
+    pub method: String,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+    pub reply: u64,
 }
 
 #[derive(Debug, Clone)]

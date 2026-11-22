@@ -1,8 +1,10 @@
 //! Apply [`DomRequest`] values on the UI thread.
+//!
+//! [`DomRequest::Fetch`] is the exception: [`start_fetch`] dispatches it on tokio so
+//! the UI thread never waits for the network.
 
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -23,16 +25,11 @@ const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
     "origin",
 ];
 
-use super::bridge::{DomRequest, DomResponse, DomValue};
+use super::bridge::{DomRequest, DomResponse, DomValue, FetchRequest};
 
-pub fn apply_request(
-    doc: &mut BaseDocument,
-    net: Option<&Arc<Provider>>,
-    base_url: &str,
-    req: DomRequest,
-) -> DomResponse {
+pub fn apply_request(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomResponse {
     let reply = reply_id(&req);
-    let result = panic::catch_unwind(AssertUnwindSafe(|| apply_inner(doc, net, base_url, req)));
+    let result = panic::catch_unwind(AssertUnwindSafe(|| apply_inner(doc, base_url, req)));
     match result {
         Ok(resp) => resp,
         Err(_) => DomResponse::err(reply, "dom operation panicked"),
@@ -41,8 +38,8 @@ pub fn apply_request(
 
 fn reply_id(req: &DomRequest) -> u64 {
     match req {
-        DomRequest::Fetch { reply, .. }
-        | DomRequest::SnapshotTree { reply }
+        DomRequest::Fetch(req) => req.reply,
+        DomRequest::SnapshotTree { reply }
         | DomRequest::BatchMutate { reply, .. }
         | DomRequest::BoundingRect { reply, .. }
         | DomRequest::ComputedStyle { reply, .. }
@@ -58,12 +55,7 @@ fn reply_id(req: &DomRequest) -> u64 {
     }
 }
 
-fn apply_inner(
-    doc: &mut BaseDocument,
-    net: Option<&Arc<Provider>>,
-    base_url: &str,
-    req: DomRequest,
-) -> DomResponse {
+fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomResponse {
     match req {
         DomRequest::SnapshotTree { reply } => {
             let tree = super::snapshot::snapshot_tree(doc);
@@ -127,13 +119,12 @@ fn apply_inner(
             }
             DomResponse::ok(reply, DomValue::Null)
         }
-        DomRequest::Fetch {
-            url,
-            method,
-            headers,
-            body,
-            reply,
-        } => apply_fetch(net, base_url, &url, &method, &headers, &body, reply),
+        // `Fetch` never reaches this point: [`start_fetch`] dispatches it on tokio
+        // from [`JsHost`](super::host::JsHost) so the UI thread never waits for
+        // the network.
+        DomRequest::Fetch(req) => {
+            DomResponse::err(req.reply, "fetch must be dispatched off the UI thread")
+        }
     }
 }
 
@@ -172,59 +163,78 @@ fn apply_random_bytes(size: usize, reply: u64) -> DomResponse {
     DomResponse::ok(reply, DomValue::Json(serde_json::Value::Array(bytes)))
 }
 
-fn apply_fetch(
-    net: Option<&Arc<Provider>>,
+/// Bound a page fetch so a stalled connection cannot hold the JS thread past the
+/// worker's own DOM-RPC wait. It is deliberately shorter than the worker's 30 s
+/// `recv_timeout`, so the page sees "fetch timed out" instead of a generic RPC
+/// timeout.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Answer a page `fetch()` / dynamic script source without blocking the UI thread.
+///
+/// Data URLs are answered inline because they need no I/O. Every other scheme is
+/// fetched on tokio and replies through `reply` when it completes, so the winit
+/// event loop keeps pumping while the page waits. The caller (the JS worker) is
+/// still synchronous: it blocks in `__glide_dom_sync` until this reply arrives.
+pub fn start_fetch(
+    net: Option<Arc<Provider>>,
     base_url: &str,
-    url: &str,
-    method: &str,
-    headers: &[(String, String)],
-    body: &str,
-    reply: u64,
-) -> DomResponse {
-    if is_data_url(url) {
-        return match data_url_response_json(url) {
+    fetch: FetchRequest,
+    reply_tx: crossbeam_channel::Sender<DomResponse>,
+) {
+    let FetchRequest {
+        url,
+        method,
+        headers,
+        body,
+        reply,
+    } = fetch;
+    let send_now = |value: DomResponse| {
+        let _ = reply_tx.send(value);
+    };
+    if is_data_url(&url) {
+        send_now(match data_url_response_json(&url) {
             Ok(value) => DomResponse::ok(reply, DomValue::Json(value)),
             Err(reason) => DomResponse::err(reply, reason),
+        });
+        return;
+    }
+    let resolved = Url::parse(&url)
+        .or_else(|_| Url::parse(base_url).and_then(|b| b.join(&url)))
+        .map_err(|e| e.to_string());
+    let Ok(parsed) = resolved else {
+        send_now(DomResponse::err(reply, "invalid url"));
+        return;
+    };
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        send_now(DomResponse::err(reply, "no async runtime"));
+        return;
+    };
+    let request = match build_fetch_request(parsed, &method, &headers, &body) {
+        Ok(req) => req,
+        Err(err) => {
+            send_now(DomResponse::err(reply, err));
+            return;
+        }
+    };
+    handle.spawn(async move {
+        let response = fetch_response(net, request, reply).await;
+        let _ = reply_tx.send(response);
+    });
+}
+
+async fn fetch_response(net: Option<Arc<Provider>>, request: Request, reply: u64) -> DomResponse {
+    if request.url.scheme() == "http" || request.url.scheme() == "https" {
+        return match tokio::time::timeout(FETCH_TIMEOUT, crate::http::fetch_followed(request)).await
+        {
+            Ok(Ok(resp)) => DomResponse::ok(reply, fetch_json(&resp)),
+            Ok(Err(err)) => DomResponse::err(reply, format!("fetch failed: {err}")),
+            Err(_) => DomResponse::err(reply, "fetch timed out"),
         };
     }
     let Some(net) = net else {
         return DomResponse::err(reply, "no network provider");
     };
-    let resolved = Url::parse(url)
-        .or_else(|_| Url::parse(base_url).and_then(|b| b.join(url)))
-        .map_err(|e| e.to_string());
-    let Ok(parsed) = resolved else {
-        return DomResponse::err(reply, "invalid url");
-    };
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        return DomResponse::err(reply, "no async runtime");
-    };
-    let request = match build_fetch_request(parsed, method, headers, body) {
-        Ok(req) => req,
-        Err(err) => return DomResponse::err(reply, err),
-    };
-    if request.url.scheme() == "http" || request.url.scheme() == "https" {
-        let fetched = handle.block_on(crate::http::fetch_followed(request));
-        return match fetched {
-            Ok(resp) => DomResponse::ok(reply, fetch_json(&resp)),
-            Err(err) => DomResponse::err(reply, format!("fetch failed: {err}")),
-        };
-    }
-    let net = Arc::clone(net);
-    let (tx, rx) = mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("glide-fetch".into())
-        .spawn(move || {
-            let result = handle.block_on(async {
-                tokio::time::timeout(Duration::from_secs(30), net.fetch_async(request)).await
-            });
-            let _ = tx.send(result);
-        })
-        .ok();
-    let Ok(result) = rx.recv_timeout(Duration::from_secs(31)) else {
-        return DomResponse::err(reply, "fetch timeout");
-    };
-    match result {
+    match tokio::time::timeout(FETCH_TIMEOUT, net.fetch_async(request)).await {
         Ok(Ok((final_url, bytes))) => DomResponse::ok(
             reply,
             fetch_json(&crate::http::Followed {
@@ -673,7 +683,6 @@ mod tests {
         let form = doc.query_selector("form").expect("selector").expect("form");
         apply_request(
             &mut doc,
-            None,
             "https://example.test/",
             DomRequest::SubmitForm {
                 form: node_to_handle(form),
@@ -692,7 +701,6 @@ mod tests {
         let (mut doc, recorder) = page_with_recorder("<!DOCTYPE html><html><body></body></html>");
         apply_request(
             &mut doc,
-            None,
             "https://example.test/",
             DomRequest::Navigate {
                 url: "/next?x=1".into(),
@@ -700,5 +708,99 @@ mod tests {
             },
         );
         assert_eq!(recorded(&recorder), vec!["https://example.test/next?x=1"]);
+    }
+
+    #[test]
+    fn start_fetch_returns_before_the_network_completes() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (requested_tx, requested_rx) = mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut head = [0u8; 1024];
+            let _ = stream.read(&mut head).expect("read request");
+            requested_tx.send(()).expect("signal request");
+            release_rx.recv().expect("wait for release");
+            let body = "slow response";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write response");
+        });
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let _guard = rt.enter();
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        let started = Instant::now();
+        start_fetch(
+            None,
+            "http://127.0.0.1/",
+            FetchRequest {
+                url: format!("http://{addr}/slow.js"),
+                method: "GET".into(),
+                headers: Vec::new(),
+                body: String::new(),
+                reply: 1,
+            },
+            reply_tx,
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "start_fetch waited for the network: {:?}",
+            started.elapsed()
+        );
+        requested_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server received the request");
+        assert!(
+            reply_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the reply arrived before the server answered"
+        );
+        release_tx.send(()).expect("release server");
+        let response = reply_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("fetch reply");
+        match response.value {
+            DomValue::Json(value) => {
+                assert_eq!(value["status"], 200);
+                assert_eq!(value["body"], "slow response");
+            }
+            other => panic!("unexpected fetch reply: {other:?}"),
+        }
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn start_fetch_answers_data_urls_inline() {
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        start_fetch(
+            None,
+            "https://example.test/",
+            FetchRequest {
+                url: "data:text/plain,inline".into(),
+                method: "GET".into(),
+                headers: Vec::new(),
+                body: String::new(),
+                reply: 2,
+            },
+            reply_tx,
+        );
+        let response = reply_rx.try_recv().expect("data URL reply is immediate");
+        match response.value {
+            DomValue::Json(value) => assert_eq!(value["body"], "inline"),
+            other => panic!("unexpected fetch reply: {other:?}"),
+        }
     }
 }

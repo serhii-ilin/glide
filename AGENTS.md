@@ -30,7 +30,7 @@ src/headless.rs       headless load/settle and --dump-text text extraction
 src/shot.rs           paint a loaded page to PNG
 src/remote_socket.rs  user-only NDJSON socket for opt-in live-window control (F-069)
 src/control/          agent control: request/result protocol, headless session (window backend planned F-069)
-src/mcp/              MCP stdio server (`glide --mcp`) mapping tools onto src/control (planned F-066)
+src/mcp/              MCP stdio server (`glide --mcp`) mapping tools onto src/control
 docs/features.md      requirements + feature registry + spec links (keep current)
 tests/features/       Gherkin acceptance specs, one F-xxx-<slug>.feature per feature
 tests/fixtures/       local HTML used by tests

@@ -84,21 +84,39 @@ cargo run --release -- --screenshot --no-js https://example.com example-nojs.png
 
 This fetches the page, waits for stylesheets and images, runs page scripts unless `--no-js` is set, and writes a PNG with Vello's CPU rasterizer.
 
-### Agent control (MCP) — planned
+### Agent control (MCP)
 
-Glide will serve the [Model Context Protocol](https://modelcontextprotocol.io) so another
-agent can drive it (milestone M5, F-066–F-071 in `docs/features.md`):
+`glide --mcp` serves the [Model Context Protocol](https://modelcontextprotocol.io) on stdio
+with a dedicated headless session (never opens your profile). Build a release binary, then wire
+it into your MCP client:
 
 ```sh
-glide --mcp                         # headless session on stdio
-glide --remote-control [url]        # open a window that accepts agent control
-glide --mcp --attach [socket]       # MCP on stdio, driving that window
+cargo build --release
+claude mcp add glide -- /absolute/path/to/target/release/glide --mcp
 ```
 
-Planned tools: `glide_navigate`, `glide_back`, `glide_forward`, `glide_reload`,
-`glide_page_info`, `glide_snapshot_text`, `glide_dom`, `glide_query`, `glide_screenshot`,
-`glide_console_messages`, `glide_eval`, `glide_click`, `glide_type`, `glide_tabs_*`,
-`glide_devtools_state`, `glide_set_js`, `glide_network_requests`.
+Generic `mcpServers` snippet:
+
+```json
+{
+  "mcpServers": {
+    "glide": {
+      "command": "/absolute/path/to/target/release/glide",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Add `--no-js` to the args array to disable page JavaScript for that server. Page text, HTML, and
+other tool output are **untrusted input** for the calling agent. Local `file://` paths the
+process can read are loadable.
+
+**Shipped tools:** `glide_navigate`, `glide_back`, `glide_forward`, `glide_reload`,
+`glide_page_info`, `glide_snapshot_text`, `glide_dom`, `glide_query`, `glide_screenshot`.
+
+**Planned:** `glide_console_messages`, `glide_eval`, click/type tools, tab helpers,
+`glide --mcp --attach` to drive a live window (`glide --remote-control`, F-069).
 
 ### Compatibility report
 

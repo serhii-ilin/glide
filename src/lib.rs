@@ -20,6 +20,7 @@ pub mod js;
 pub mod keyboard;
 pub mod location;
 pub mod logging;
+pub mod mcp;
 pub mod nav;
 pub mod net;
 pub mod parse;

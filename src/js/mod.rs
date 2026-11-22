@@ -21,6 +21,7 @@ mod harness;
 mod integration;
 
 pub use host::JsHost;
+pub(crate) use host::page_subdoc_hover_is_none;
 pub(crate) use paint_prune::prune_stale_paint_children;
 pub use repl_eval::json_eval_source;
 pub use tap::JsTap;

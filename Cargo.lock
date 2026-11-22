@@ -1354,6 +1354,7 @@ version = "0.1.0"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
+ "atomic_refcell",
  "base64",
  "blitz-dom",
  "blitz-html",

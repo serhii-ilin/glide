@@ -22,4 +22,6 @@ mod integration;
 
 pub use host::JsHost;
 pub(crate) use paint_prune::prune_stale_paint_children;
+pub use repl_eval::json_eval_source;
 pub use tap::JsTap;
+pub use worker::EvalReply;

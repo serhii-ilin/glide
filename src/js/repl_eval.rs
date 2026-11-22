@@ -79,22 +79,35 @@ pub fn quote_js_string(value: &str) -> String {
     out
 }
 
+/// Wrap an expression so indirect eval returns its JSON serialization.
+///
+/// The reply channel reports the DevTools preview of the resulting string, so a
+/// caller parses that string literal to recover the JSON text.
+pub fn json_eval_source(expression: &str) -> String {
+    format!("JSON.stringify((0,eval)({}))", quote_js_string(expression))
+}
+
 pub fn eval_console_expression<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     source: &str,
     tab_id: u64,
     page_epoch: u64,
-) {
+) -> Result<String, String> {
     let (route_tab, route_epoch) = console_feed::worker_route();
     if tab_id != route_tab || page_epoch != route_epoch {
-        console_feed::publish_repl_error(
-            "Expression ignored: active tab or page changed before evaluation.",
-        );
-        return;
+        let message = "Expression ignored: active tab or page changed before evaluation.";
+        console_feed::publish_repl_error(message);
+        return Err(message.to_string());
     }
     match eval_expression_value(scope, source) {
-        Ok(preview) => console_feed::publish_repl_result(&preview),
-        Err(msg) => console_feed::publish_repl_error(&msg),
+        Ok(preview) => {
+            console_feed::publish_repl_result(&preview);
+            Ok(preview)
+        }
+        Err(msg) => {
+            console_feed::publish_repl_error(&msg);
+            Err(msg)
+        }
     }
 }
 
@@ -469,5 +482,17 @@ mod tests {
     fn quote_js_string_escapes_controls() {
         assert_eq!(quote_js_string("a\nb"), "\"a\\nb\"");
         assert_eq!(quote_js_string(r#"say "hi""#), r#""say \"hi\"""#);
+    }
+
+    #[test]
+    fn json_eval_source_wraps_with_stringify() {
+        assert_eq!(
+            json_eval_source("1 + 1"),
+            r#"JSON.stringify((0,eval)("1 + 1"))"#
+        );
+        assert_eq!(
+            json_eval_source(r#"say "hi""#),
+            r#"JSON.stringify((0,eval)("say \"hi\""))"#
+        );
     }
 }

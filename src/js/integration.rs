@@ -1392,3 +1392,101 @@ fn repl_eval_global_var_visible_on_next_eval() {
         "{wire:?}"
     );
 }
+
+const EMPTY_PAGE: &str = r#"<!DOCTYPE html><html><body></body></html>"#;
+
+#[test]
+fn repl_eval_reply_receives_result() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let outcome = harness
+        .submit_reply("2 + 2", std::time::Duration::from_secs(3))
+        .expect("reply");
+    assert_eq!(outcome, Ok("4".to_string()));
+}
+
+#[test]
+fn repl_eval_reply_receives_error() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let outcome = harness
+        .submit_reply(
+            "throw new Error('repl-fail')",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("reply");
+    assert!(
+        matches!(outcome, Err(ref message) if message.contains("repl-fail")),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn repl_eval_reply_on_watchdog_timeout() {
+    // Use the real default watchdog: overriding the process-wide duration here races
+    // with `repl_eval_respects_watchdog`, which sets it outside the console test lock.
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let outcome = harness
+        .submit_reply("while (true) {}", std::time::Duration::from_secs(8))
+        .expect("reply");
+    assert!(
+        matches!(outcome, Err(ref message) if message.to_lowercase().contains("timed out")),
+        "{outcome:?}"
+    );
+    // The watchdog must cancel termination cleanly so the next eval still runs.
+    let after = harness
+        .submit_reply("1 + 1", std::time::Duration::from_secs(5))
+        .expect("reply");
+    assert_eq!(after, Ok("2".to_string()));
+}
+
+#[test]
+fn eval_blocking_returns_value() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    assert_eq!(harness.eval_blocking("1 + 1").expect("eval"), "2");
+}
+
+#[test]
+fn eval_blocking_dom_mutation_is_mirrored() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let result = harness
+        .eval_blocking(
+            "(function () {\
+               var p = document.createElement('p');\
+               p.id = 'added';\
+               p.textContent = 'mirrored';\
+               document.body.appendChild(p);\
+               return 'ok';\
+             })()",
+        )
+        .expect("eval");
+    assert_eq!(result, "\"ok\"");
+    assert_eq!(
+        harness.element_text("added").as_deref(),
+        Some("mirrored"),
+        "the Blitz document should mirror the eval mutation"
+    );
+}
+
+#[test]
+fn eval_blocking_with_js_disabled_is_error() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, false, std::time::Duration::from_millis(50));
+    let error = harness.eval_blocking("1 + 1").expect_err("disabled");
+    assert!(error.contains("JavaScript is disabled"), "{error}");
+}
+
+#[test]
+fn json_eval_returns_json_text() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let source = super::repl_eval::json_eval_source("({ a: 1 })");
+    let raw = harness.eval_blocking(&source).expect("eval");
+    // The reply is the DevTools preview of a string, so parse the JS/JSON string
+    // literal to recover the JSON text `JSON.stringify` produced.
+    let json_text: String = serde_json::from_str(&raw).expect("string preview parses as JSON");
+    assert_eq!(json_text, r#"{"a":1}"#);
+}

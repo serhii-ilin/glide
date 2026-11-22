@@ -22,6 +22,9 @@ thread_local! {
     static DOM_TX: std::cell::RefCell<Option<Sender<DomRpc>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Reply channel for one eval request; the worker sends the preview or the error text.
+pub type EvalReply = crossbeam_channel::Sender<Result<String, String>>;
+
 pub struct JsWorker {
     tx: Sender<WorkerMessage>,
     _join: Option<thread::JoinHandle<()>>,
@@ -59,6 +62,7 @@ enum WorkerMessage {
         source: String,
         tab_id: u64,
         page_epoch: u64,
+        reply: Option<EvalReply>,
     },
     Shutdown,
 }
@@ -122,11 +126,18 @@ impl JsWorker {
             .send(WorkerMessage::SetConsoleRoute { tab_id, page_epoch });
     }
 
-    pub fn eval_console(&self, source: String, tab_id: u64, page_epoch: u64) {
+    pub fn eval_console(
+        &self,
+        source: String,
+        tab_id: u64,
+        page_epoch: u64,
+        reply: Option<EvalReply>,
+    ) {
         let _ = self.tx.send(WorkerMessage::Eval {
             source,
             tab_id,
             page_epoch,
+            reply,
         });
     }
 }
@@ -245,11 +256,19 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 source,
                 tab_id,
                 page_epoch,
+                reply,
             } => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
-                super::repl_eval::eval_console_expression(scope, &source, tab_id, page_epoch);
+                let outcome =
+                    super::repl_eval::eval_console_expression(scope, &source, tab_id, page_epoch);
+                // Flush queued DOM mutations before replying so a blocking caller sees
+                // the page after the eval, and drain the DOM RPC on the host side.
+                settle_task(scope);
+                if let Some(reply) = reply {
+                    let _ = reply.send(outcome);
+                }
             }
             WorkerMessage::DispatchBubble { path, event_type } => {
                 v8::scope!(let hs, isolate);

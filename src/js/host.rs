@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use blitz_dom::BaseDocument;
 use blitz_net::Provider;
 use blitz_traits::events::{BlitzImeEvent, UiEvent};
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded, unbounded};
 
 use super::apply::apply_request;
 use super::bridge::{DomRequest, DomResponse, bubble_handles};
@@ -19,7 +19,7 @@ use super::scripts::{
 };
 use super::snapshot;
 use super::tap::JsTap;
-use super::worker::JsWorker;
+use super::worker::{EvalReply, JsWorker};
 use crate::logging;
 use crate::tabs::TabId;
 
@@ -84,6 +84,11 @@ impl JsHost {
     }
 
     pub fn submit_console_eval(&self, source: &str) -> Result<(), String> {
+        self.submit_eval(source, None)
+    }
+
+    /// Submit an eval, optionally asking the worker to reply on `reply`.
+    pub fn submit_eval(&self, source: &str, reply: Option<EvalReply>) -> Result<(), String> {
         if !self.is_enabled() {
             return Err("Console REPL unavailable: JavaScript is disabled.".to_string());
         }
@@ -94,8 +99,47 @@ impl JsHost {
             source.to_string(),
             self.console_tab_id,
             self.console_page_epoch,
+            reply,
         );
         Ok(())
+    }
+
+    /// Default timeout for [`JsHost::eval_blocking`]: the REPL watchdog plus two seconds.
+    pub fn default_eval_timeout() -> Duration {
+        Duration::from_millis(super::repl_eval::watchdog_duration_ms().saturating_add(2_000))
+    }
+
+    /// Evaluate on the worker and pump the host until the reply arrives or `timeout` passes.
+    ///
+    /// Pumping is mandatory: an eval that touches the DOM blocks in the worker's DOM
+    /// sync RPC until this host drains it.
+    pub fn eval_blocking(
+        &mut self,
+        doc: &mut BaseDocument,
+        source: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        let (tx, rx) = bounded(1);
+        self.submit_eval(source, Some(tx))?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match rx.try_recv() {
+                Ok(outcome) => return outcome,
+                Err(TryRecvError::Disconnected) => {
+                    return Err("Eval reply channel closed before the worker answered.".to_string());
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "eval timed out after {:.1}s waiting for the reply",
+                    timeout.as_secs_f64()
+                ));
+            }
+            self.pump(doc, Instant::now());
+            doc.resolve(0.0);
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     pub fn is_enabled(&self) -> bool {

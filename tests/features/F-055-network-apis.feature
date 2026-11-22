@@ -15,6 +15,8 @@ Feature: F-055 Network and binary Web APIs
   #        js::integration::fetch_request_init_overrides_input,
   #        js::integration::send_beacon_returns_true_without_throwing,
   #        js::integration::text_and_blob_helpers_work,
+  #        js::apply::tests::start_fetch_returns_before_the_network_completes,
+  #        js::apply::tests::start_fetch_answers_data_urls_inline,
   #        headless_js::network_apis_work
 
   Background:
@@ -49,3 +51,12 @@ Feature: F-055 Network and binary Web APIs
   Scenario: sendBeacon queues a POST without blocking
     When a script calls navigator.sendBeacon with a data URL and payload
     Then the call returns true immediately without throwing
+
+  # Source / basis: Fetch Living Standard (fetch is asynchronous; the networking
+  #                task delivers the response); product decision: the UI thread
+  #                never performs network I/O.
+  Scenario: a slow fetch does not freeze the window
+    Given a page script fetches a URL whose response is delayed
+    When the host dispatches the request
+    Then control returns to the browser before the server answers
+    And the Response resolves when the server answers

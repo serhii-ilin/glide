@@ -105,12 +105,14 @@
     let raw;
     try {
       raw = rpc('fetch', resolved);
-    } catch (_) {
-      return null;
+    } catch (err) {
+      return { error: String((err && err.message) || err || 'fetch failed') };
     }
-    if (!raw || raw.__error) return null;
+    if (!raw || raw.__error) {
+      return { error: String((raw && raw.__error) || 'fetch failed') };
+    }
     const status = Number(raw.status);
-    if (!(status >= 200 && status < 300)) return null;
+    if (!(status >= 200 && status < 300)) return { error: 'HTTP ' + status };
     return { source: String(raw.body || ''), name: resolved };
   }
 
@@ -118,9 +120,10 @@
     if (!rooted(node)) return;
     const kind = scriptKindOf(node);
     if (kind == null) return;
+    const src = String((node.getAttribute && node.getAttribute('src')) || '<inline>');
     const fetched = dynamicScriptSource(node);
-    if (fetched == null) {
-      diagUnsupported('dynamic-script', String((node.getAttribute && node.getAttribute('src')) || '<inline>'));
+    if (fetched.error) {
+      diagUnsupported('dynamic-script', src + ' (' + fetched.error + ')');
       notifyScriptElement(node, false);
       return;
     }

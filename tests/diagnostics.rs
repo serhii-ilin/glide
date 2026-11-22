@@ -94,8 +94,10 @@ fn dynamic_script_fetch_failure_is_reported() {
     assert!(
         stderr.contains("target=\"js.unsupported\"")
             && stderr.contains("feature=\"dynamic-script\"")
-            && stderr.contains("detail=\"missing-script.js\""),
-        "expected an unsupported record for the failed fetch: {stderr}"
+            // The detail names the URL and then the fetch failure reason, so a
+            // transport error is distinguishable from an unimplemented feature.
+            && stderr.contains("detail=\"missing-script.js ("),
+        "expected an unsupported record with the fetch reason: {stderr}"
     );
     assert!(
         stderr.contains("msg=\"page scripts settled\"")

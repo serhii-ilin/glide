@@ -88,7 +88,9 @@ impl ConsoleEntry {
 
 #[derive(Debug, Clone, Default)]
 pub struct ConsoleJournal {
-    entries: VecDeque<ConsoleEntry>,
+    /// `(sequence, entry)`; the sequence is assigned once at push time so revoking a
+    /// row never renumbers the rows that follow it.
+    entries: VecDeque<(u64, ConsoleEntry)>,
     generation: u64,
     total_pushed: u64,
 }
@@ -108,7 +110,7 @@ impl ConsoleJournal {
         if self.entries.len() >= CONSOLE_CAPACITY {
             self.entries.pop_front();
         }
-        self.entries.push_back(entry);
+        self.entries.push_back((self.total_pushed, entry));
         self.total_pushed = self.total_pushed.saturating_add(1);
         self.generation = self.generation.saturating_add(1);
     }
@@ -117,7 +119,7 @@ impl ConsoleJournal {
         let Some(index) = self
             .entries
             .iter()
-            .position(|e| e.promise_id == Some(promise_id))
+            .position(|(_, entry)| entry.promise_id == Some(promise_id))
         else {
             return false;
         };
@@ -137,38 +139,37 @@ impl ConsoleJournal {
 
     /// Entries with sequence `>= cursor`, oldest first, at most `limit` of them.
     ///
-    /// An entry's sequence is its 0-based position in the stream of all pushes
-    /// (`total_pushed - len + index`). `next_cursor` is the sequence after the last
-    /// returned entry, so polling with it never repeats a row. `dropped` counts entries
-    /// that were evicted from the ring before the caller could read them.
+    /// An entry's sequence is its 0-based position in the stream of all pushes; it is
+    /// stored at push time, so revoking an unhandled-rejection row does not renumber
+    /// later rows. `next_cursor` is the sequence after the last returned entry, so
+    /// polling with it never repeats a row. `dropped` counts entries that left the ring
+    /// before the caller could read them.
     ///
     /// `clear()` empties the ring but leaves `total_pushed` alone, so the next pushed
-    /// entry continues the sequence. A cursor beyond `total_pushed` (a stale reader, or
-    /// one that outlived a clear) is not an error: it restarts at the oldest retained
-    /// entry instead of panicking or waiting forever.
+    /// entry continues the sequence: navigation Clear reports the unread rows as
+    /// `dropped`. A cursor beyond `total_pushed` (a stale reader, or one that outlived a
+    /// clear) is not an error: it restarts at the oldest retained entry instead of
+    /// panicking or waiting forever.
     pub fn since(&self, cursor: u64, limit: usize) -> ConsoleSince {
         let total = self.total_pushed;
-        let first_seq = total.saturating_sub(self.entries.len() as u64);
-        let effective = if cursor < first_seq || cursor > total {
+        let first_seq = self.entries.front().map(|(seq, _)| *seq).unwrap_or(total);
+        let dropped = first_seq.saturating_sub(cursor);
+        let start = if cursor < first_seq || cursor > total {
             first_seq
         } else {
             cursor
         };
-        let dropped = first_seq.saturating_sub(cursor);
-        let skip = (effective - first_seq) as usize;
-        let take = limit.min(self.entries.len().saturating_sub(skip));
         let entries: Vec<(u64, ConsoleEntry)> = self
             .entries
             .iter()
-            .enumerate()
-            .skip(skip)
-            .take(take)
-            .map(|(index, entry)| (first_seq + index as u64, entry.clone()))
+            .filter(|(seq, _)| *seq >= start)
+            .take(limit)
+            .map(|(seq, entry)| (*seq, entry.clone()))
             .collect();
         let next_cursor = entries
             .last()
             .map(|(seq, _)| seq.saturating_add(1))
-            .unwrap_or_else(|| effective.max(first_seq));
+            .unwrap_or_else(|| start.max(first_seq));
         ConsoleSince {
             entries,
             next_cursor,
@@ -177,7 +178,7 @@ impl ConsoleJournal {
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &ConsoleEntry> {
-        self.entries.iter()
+        self.entries.iter().map(|(_, entry)| entry)
     }
 
     pub fn len(&self) -> usize {
@@ -469,15 +470,56 @@ mod tests {
     }
 
     #[test]
-    fn since_cursor_past_end_after_clear() {
+    fn since_stable_after_revoke_rejection() {
+        let mut journal = ConsoleJournal::default();
+        journal.push(log_entry("a", 0));
+        journal.push(ConsoleEntry {
+            level: ConsoleLevel::UnhandledRejection,
+            message: "rejection".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 1,
+            promise_id: Some(7),
+        });
+        journal.push(log_entry("b", 2));
+
+        let first = journal.since(0, 1);
+        let first_rows: Vec<(u64, &str)> = first
+            .entries
+            .iter()
+            .map(|(seq, entry)| (*seq, entry.message.as_str()))
+            .collect();
+        assert_eq!(first_rows, vec![(0, "a")]);
+        assert_eq!(first.next_cursor, 1);
+        assert_eq!(first.dropped, 0);
+
+        // Removing a middle row must not renumber the rows that follow it.
+        assert!(journal.revoke_rejection(7));
+        let second = journal.since(first.next_cursor, 10);
+        let second_rows: Vec<(u64, &str)> = second
+            .entries
+            .iter()
+            .map(|(seq, entry)| (*seq, entry.message.as_str()))
+            .collect();
+        assert_eq!(second_rows, vec![(2, "b")]);
+        assert_eq!(second.next_cursor, 3);
+        assert_eq!(second.dropped, 0);
+    }
+
+    #[test]
+    fn since_foreign_cursor_past_end_starts_at_oldest() {
         let mut journal = ConsoleJournal::default();
         for (index, message) in ["a", "b", "c"].iter().enumerate() {
             journal.push(log_entry(message, index as u64));
         }
         journal.clear();
         journal.push(log_entry("after", 4));
+        // Clear drops the three unread rows; a cursor from before it sees them as dropped.
+        let dropped = journal.since(0, 10);
+        assert_eq!(dropped.dropped, 3);
+        assert_eq!(dropped.entries.len(), 1);
         // `clear` keeps `total_pushed`, so the retained row is sequence 3 and a
-        // cursor from a stale reader must fall back to the oldest retained row.
+        // foreign cursor past the end must fall back to the oldest retained row.
         let batch = journal.since(999, 10);
         assert_eq!(batch.dropped, 0);
         assert_eq!(batch.next_cursor, 4);

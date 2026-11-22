@@ -43,7 +43,16 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "native-tls",
     "system-proxy",
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-std", "io-util", "sync"] }
+# Official MCP SDK: stdio server with tool macros for glide --mcp (F-066).
+rmcp = { version = "3.11", default-features = false, features = [
+    "server",
+    "macros",
+    "transport-io",
+    "schemars",
+] }
+# JSON Schema for MCP tool input/output alongside rmcp.
+schemars = "1.1"
 url = "2"
 winit = "=0.31.0-beta.3"
 keyboard-types = "0.8"

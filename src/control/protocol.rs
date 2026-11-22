@@ -1,5 +1,6 @@
 //! Serialized control request and result types shared by session and MCP layers.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_MAX_CHARS: usize = 20_000;
@@ -20,38 +21,52 @@ pub enum ControlRequest {
     Screenshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Arguments for `glide_navigate`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NavigateParams {
+    /// Absolute `http(s):`, `file:`, or `data:` URL to load.
     pub url: String,
+    /// Optional navigation settle timeout in milliseconds (default [`DEFAULT_NAV_TIMEOUT_MS`]).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Optional wait timeout for history navigation tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub struct WaitParams {
+    /// Optional settle timeout in milliseconds (default [`DEFAULT_NAV_TIMEOUT_MS`]).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Arguments for `glide_snapshot_text`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TextParams {
+    /// Maximum Unicode scalar values to return (default [`DEFAULT_MAX_CHARS`], currently 20000).
     #[serde(default)]
     pub max_chars: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Arguments for `glide_dom`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DomParams {
+    /// CSS selector for the subtree to serialize; omit for the full document.
     #[serde(default)]
     pub selector: Option<String>,
+    /// When true and `selector` matches multiple nodes, return all matches.
     #[serde(default)]
     pub all: bool,
+    /// Maximum Unicode scalar values of HTML to return (default [`DEFAULT_MAX_CHARS`]).
     #[serde(default)]
     pub max_chars: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Arguments for `glide_query`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueryParams {
+    /// CSS selector to match elements.
     pub selector: String,
+    /// Maximum number of elements (default [`DEFAULT_QUERY_LIMIT`], currently 50).
     #[serde(default)]
     pub limit: Option<usize>,
 }

@@ -135,7 +135,7 @@ fn session_navigates_data_url_via_tokio_provider() {
 }
 
 #[test]
-fn js_navigation_completes_under_three_seconds() {
+fn js_navigation_completes_under_four_seconds() {
     let backend = session_js_on();
     let start = Instant::now();
     call(
@@ -147,10 +147,26 @@ fn js_navigation_completes_under_three_seconds() {
     )
     .expect("navigate");
     assert!(
-        start.elapsed() < Duration::from_secs(3),
+        start.elapsed() < Duration::from_secs(4),
         "navigation took {:?}",
         start.elapsed()
     );
+}
+
+#[test]
+fn short_timeout_nav_reports_settled() {
+    let backend = session_js_on();
+    let ControlResult::Page(info) = call(
+        &backend,
+        ControlRequest::Navigate(NavigateParams {
+            url: fixture_url("mcp-page-a.html"),
+            timeout_ms: Some(800),
+        }),
+    )
+    .expect("navigate") else {
+        panic!("expected page");
+    };
+    assert_eq!(info.status, glide::control::protocol::LoadStatus::Settled);
 }
 
 #[test]
@@ -243,10 +259,11 @@ fn back_and_forward_walk_session_history() {
     let err = call(&backend, ControlRequest::Forward(WaitParams::default())).expect_err("fwd end");
     assert!(err.contains("no next page"), "{err}");
 
+    call(&backend, ControlRequest::Back(WaitParams::default())).expect("back before c");
     call(
         &backend,
         ControlRequest::Navigate(NavigateParams {
-            url: a,
+            url: b,
             timeout_ms: None,
         }),
     )

@@ -7,33 +7,33 @@ These rules apply to humans, Claude and Cursor agents alike.
 ## Project map
 
 ```
-src/lib.rs        crate modules and library entry points
-src/main.rs       CLI dispatch (window, screenshot, --dump-text, help)
-src/app.rs        window, history sync, keyboard shortcuts, JS pump
-src/history.rs    back/forward stack
-src/args.rs       CLI parsing
-src/chrome.rs     chrome markup (HTML) and navigation commands
-src/net.rs        loading state, stop, and error pages for failed loads
-src/http.rs       HTTP redirects, Refresh, and non-2xx document bodies
-src/nav.rs        navigation pending vs. iframe URL observations
-src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
-src/find.rs       find-in-page text search and chrome find UI state
-src/zoom.rs       page zoom level and chrome toolbar counter-scale
-src/profile.rs  profile dir, settings, session, history log, bookmarks
-src/js/           V8 worker, domino glue, Blitz mirror RPC, script loading
-third_party/      vendored JS (domino 2.1.9)
-src/js/vendor/    generated domino embed (scripts/vendor-domino.mjs)
-scripts/          vendor-domino.mjs regenerates the embed
-src/parse.rs      html5ever with configurable scripting flag
-src/location.rs   URL vs. search
-src/headless.rs   headless load/settle and --dump-text text extraction
-src/shot.rs       paint a loaded page to PNG
+src/lib.rs            crate modules and library entry points
+src/main.rs           CLI dispatch (window, screenshot, --dump-text, help)
+src/app.rs            window, history sync, keyboard shortcuts, JS pump
+src/history.rs        back/forward stack
+src/args.rs           CLI parsing
+src/chrome.rs         chrome markup (HTML) and navigation commands
+src/net.rs            loading state, stop, and error pages for failed loads
+src/http.rs           HTTP redirects, Refresh, and non-2xx document bodies
+src/nav.rs            navigation pending vs. iframe URL observations
+src/keyboard.rs       shortcuts, macOS keybindings, iframe key forward
+src/find.rs           find-in-page text search and chrome find UI state
+src/zoom.rs           page zoom level and chrome toolbar counter-scale
+src/profile.rs        profile dir, settings, session, history log, bookmarks
+src/js/               V8 worker, domino glue, Blitz mirror RPC, script loading
+third_party/          vendored JS (domino 2.1.9)
+src/js/vendor/        generated domino embed (scripts/vendor-domino.mjs)
+scripts/              vendor-domino.mjs regenerates the embed
+src/parse.rs          html5ever with configurable scripting flag
+src/location.rs       URL vs. search
+src/headless.rs       headless load/settle and --dump-text text extraction
+src/shot.rs           paint a loaded page to PNG
 src/remote_socket.rs  user-only NDJSON socket for opt-in live-window control (F-069)
-src/control/      agent control: request/result protocol, headless session, window socket (planned F-066/F-069)
-src/mcp/          MCP stdio server (`glide --mcp`) mapping tools onto src/control (planned F-066)
-docs/features.md  requirements + feature registry + spec links (keep current)
-tests/features/   Gherkin acceptance specs, one F-xxx-<slug>.feature per feature
-tests/fixtures/   local HTML used by tests
+src/control/          agent control: request/result protocol, headless session, window socket (planned F-066/F-069)
+src/mcp/              MCP stdio server (`glide --mcp`) mapping tools onto src/control (planned F-066)
+docs/features.md      requirements + feature registry + spec links (keep current)
+tests/features/       Gherkin acceptance specs, one F-xxx-<slug>.feature per feature
+tests/fixtures/       local HTML used by tests
 ```
 
 ## Rust

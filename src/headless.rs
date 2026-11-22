@@ -75,6 +75,7 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     };
     let mut document = HtmlPageDocument(parse::document_from_html(&html, config, js_enabled));
 
+    js_host.set_console_route(1, 1);
     let start = Instant::now();
     js_host.maybe_start_page(&document.0, &final_url, &handle);
     let mut js_quiet_ticks = 0_u32;
@@ -98,12 +99,14 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
             || start.elapsed() > Duration::from_secs(12)
         {
             document.0.resolve(0.0);
+            let _ = crate::js::console_feed::drain_pending();
             break;
         }
         thread::sleep(Duration::from_millis(30));
     }
 
     if js_enabled {
+        let _ = js_host.drain_console_wire();
         js_host.flush_dom_rpc(&mut document.0, Duration::from_secs(4));
         document.0.resolve(0.0);
         if !html.trim().is_empty() && !has_visible_content(&document.0) {

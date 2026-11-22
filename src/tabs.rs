@@ -24,6 +24,8 @@ pub struct Tab {
     pub find: FindSession,
     pub zoom: PageZoom,
     pub console: ConsoleJournal,
+    /// Bumped on each navigation so stale console wire events are ignored.
+    pub console_epoch: u64,
     /// Last URL written into the address field, so a focused field is left alone.
     pub address_written: String,
 }
@@ -38,6 +40,7 @@ impl Tab {
             find: FindSession::default(),
             zoom: PageZoom::new(),
             console: ConsoleJournal::default(),
+            console_epoch: 1,
             address_written: url,
         }
     }
@@ -193,6 +196,10 @@ impl TabManager {
     pub fn active_mut(&mut self) -> Option<&mut Tab> {
         let index = self.active?;
         self.tabs.get_mut(index)
+    }
+
+    pub fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|tab| tab.id == id)
     }
 
     pub fn active_index(&self) -> Option<usize> {

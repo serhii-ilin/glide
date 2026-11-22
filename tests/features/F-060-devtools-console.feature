@@ -6,7 +6,8 @@ Feature: F-060 DevTools Console output
   # Source / basis: Chrome DevTools Console UX; product decision (R-029)
   # Registry: docs/features.md -> F-060
   # Tests: devtools::console::tests::*, js::console_feed::tests::*, js::integration::console_*,
-  #        js::integration::uncaught_* , js::integration::unhandled_*,
+  #        js::integration::{uncaught_exception_reaches_console_feed,unhandled_rejection_reaches_console_feed,
+  #        handled_rejection_revokes_console_row_same_turn,handled_rejection_revokes_after_settimeout_catch},
   #        chrome::tests::classifies_devtools_commands, manual M-044
 
   Background:

@@ -1,13 +1,8 @@
 //! Helpers for V8 integration tests (run on the test thread with a real worker).
 
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-
-#[cfg(test)]
-static HARNESS_CONSOLE_LOCK: Mutex<()> = Mutex::new(());
 
 use blitz_dom::DocumentConfig;
 use blitz_net::Provider;
@@ -27,12 +22,28 @@ pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    run_inline_page_with_runtime(html, pump_for, rt.handle())
+    run_inline_page_with_runtime(html, pump_for, rt.handle(), 0)
 }
 
-fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> JsRunResult {
-    #[cfg(test)]
-    let _console_test_lock = HARNESS_CONSOLE_LOCK.lock().expect("harness console lock");
+pub fn run_inline_page_with_extra_settle(
+    html: &str,
+    pump_for: Duration,
+    extra_settle: u32,
+) -> JsRunResult {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    run_inline_page_with_runtime(html, pump_for, rt.handle(), extra_settle)
+}
+
+fn run_inline_page_with_runtime(
+    html: &str,
+    pump_for: Duration,
+    rt: &Handle,
+    extra_settle: u32,
+) -> JsRunResult {
+    let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
     let _ = crate::js::console_feed::drain_pending();
 
     let net = Arc::new(Provider::new(None));
@@ -42,6 +53,7 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
         js_tap: tap.clone(),
     };
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.set_console_route(1, 1);
     let config = DocumentConfig {
         base_url: Some("https://example.test/".into()),
         net_provider: Some(net.clone()),
@@ -60,7 +72,7 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
     }
     js_host.flush_dom_rpc(&mut document.0, Duration::from_millis(200));
     document.0.resolve(0.0);
-    for _ in 0..8 {
+    for _ in 0..extra_settle {
         js_host.pump(&mut document.0, Instant::now());
         thread::sleep(Duration::from_millis(5));
     }

@@ -126,6 +126,9 @@ pub fn panel_size_from_drag(
 pub struct DevToolsSession {
     pub state: DevToolsState,
     focus_restore: Option<DevToolsFocusRestore>,
+    console_render_generation: u64,
+    console_rendered_len: usize,
+    console_last_tab: Option<crate::tabs::TabId>,
 }
 
 impl DevToolsSession {
@@ -133,6 +136,7 @@ impl DevToolsSession {
         Self {
             state: DevToolsState::from_settings(settings.devtools_dock, settings.devtools_size_px),
             focus_restore: None,
+            ..Default::default()
         }
     }
 
@@ -178,9 +182,26 @@ impl DevToolsSession {
         }
     }
 
-    pub fn sync_console_pane(&self, doc: &mut BaseDocument, journal: &console::ConsoleJournal) {
+    pub fn sync_console_pane(
+        &mut self,
+        doc: &mut BaseDocument,
+        journal: &console::ConsoleJournal,
+        tab_id: crate::tabs::TabId,
+    ) -> bool {
+        if self.console_last_tab != Some(tab_id) {
+            self.console_render_generation = 0;
+            self.console_rendered_len = 0;
+            self.console_last_tab = Some(tab_id);
+        }
         if self.state.open && self.state.tab == DevToolsTab::Console {
-            console::render_devtools_console(doc, journal);
+            console::render_devtools_console(
+                doc,
+                journal,
+                &mut self.console_render_generation,
+                &mut self.console_rendered_len,
+            )
+        } else {
+            false
         }
     }
 

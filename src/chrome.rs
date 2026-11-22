@@ -710,9 +710,10 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: calc(11px * var(--ui));
     line-height: 1.4;
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     padding: calc(4px * var(--ui)) 0;
-    height: 100%;
     box-sizing: border-box;
   }}
   #devtools-pane-console {{

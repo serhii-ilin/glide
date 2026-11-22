@@ -15,8 +15,9 @@ use winit::event::{ButtonSource, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
 
-use crate::devtools::console::ConsoleEntry;
+use crate::devtools::console::apply_console_wire;
 use crate::devtools::{DevToolsDock, DevToolsSession, DevToolsTab};
+use crate::js::console_feed;
 
 use std::sync::atomic::Ordering;
 
@@ -465,11 +466,22 @@ fn capture_active_tab(
     }
 }
 
-fn sync_active_tab_console(devtools: &DevToolsSession, tabs: &TabManager, doc: &mut BaseDocument) {
+fn reset_tab_console_for_navigation(tab: &mut Tab, js: &mut JsHost) {
+    tab.console.clear();
+    tab.console_epoch = tab.console_epoch.saturating_add(1);
+    console_feed::discard_pending_for_tab(tab.id);
+    js.set_console_route(tab.id, tab.console_epoch);
+}
+
+fn sync_active_tab_console(
+    devtools: &mut DevToolsSession,
+    tabs: &TabManager,
+    doc: &mut BaseDocument,
+) -> bool {
     let Some(tab) = tabs.active() else {
-        return;
+        return false;
     };
-    devtools.sync_console_pane(doc, &tab.console);
+    devtools.sync_console_pane(doc, &tab.console, tab.id)
 }
 
 fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &mut JsHost) {
@@ -489,6 +501,9 @@ fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &m
         tab.zoom.apply_to_chrome(doc);
     }
     if observed.as_deref() != Some(url.as_str()) {
+        if let Some(tab) = tabs.active_mut() {
+            reset_tab_console_for_navigation(tab, js);
+        }
         js.on_navigation(doc, &url);
         load_iframe(doc, &url);
     }
@@ -638,6 +653,9 @@ impl Glide {
                             tab.nav.navigate(kind, None)
                         };
                         if let Some(url) = target {
+                            if let Some(tab) = self.tabs.active_mut() {
+                                reset_tab_console_for_navigation(tab, &mut self.js);
+                            }
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             set_address(&mut doc, &url);
@@ -673,6 +691,9 @@ impl Glide {
                             .active_mut()
                             .and_then(|tab| tab.nav.navigate(NavKind::Reload, None));
                         if let Some(url) = target {
+                            if let Some(tab) = self.tabs.active_mut() {
+                                reset_tab_console_for_navigation(tab, &mut self.js);
+                            }
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             set_js_indicator(&mut doc, new);
@@ -701,6 +722,9 @@ impl Glide {
                             &mut committed,
                         );
                         let url = resolve_location(raw);
+                        if let Some(tab) = self.tabs.active_mut() {
+                            reset_tab_console_for_navigation(tab, &mut self.js);
+                        }
                         self.js.on_navigation(&doc, &url);
                         load_iframe(&mut doc, &url);
                         if let Some(tab) = self.tabs.active_mut() {
@@ -731,7 +755,7 @@ impl Glide {
                     }
                     NavCommand::DevToolsToggle => {
                         self.devtools.toggle(&mut doc);
-                        sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                        sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         save_settings_after = true;
                     }
                     NavCommand::DevToolsDockBottom => {
@@ -745,14 +769,15 @@ impl Glide {
                     NavCommand::DevToolsTab(tab) => {
                         self.devtools.set_tab(*tab, &mut doc);
                         if *tab == DevToolsTab::Console {
-                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         }
                     }
                     NavCommand::DevToolsConsoleClear => {
                         if let Some(tab) = self.tabs.active_mut() {
                             tab.console.clear();
+                            console_feed::discard_pending_for_tab(tab.id);
                         }
-                        sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                        sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                     }
                     NavCommand::ZoomIn | NavCommand::ZoomOut | NavCommand::ZoomReset => {
                         if let Some(tab) = self.tabs.active_mut() {
@@ -778,7 +803,7 @@ impl Glide {
                             tab.zoom = self.session.default_zoom;
                         }
                         apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
-                        sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                        sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         structure_changed = true;
                     }
                     NavCommand::DuplicateTab => {
@@ -792,7 +817,7 @@ impl Glide {
                         if let Some(tab) = self.tabs.active().cloned() {
                             self.tabs.insert(tab);
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
-                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -820,7 +845,7 @@ impl Glide {
                                 break;
                             }
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
-                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         } else {
                             self.tabs.close(id);
                         }
@@ -841,7 +866,7 @@ impl Glide {
                         };
                         if selected {
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
-                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -860,7 +885,7 @@ impl Glide {
                         };
                         if moved {
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
-                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                            sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -974,34 +999,33 @@ impl Glide {
             let chrome = view.doc.inner();
             page_url(&chrome)
         };
-        if let Some(url) = page_url_now {
+        if let Some(tab) = self.tabs.active() {
+            self.js.set_console_route(tab.id, tab.console_epoch);
+        }
+        if let Some(url) = &page_url_now {
             let handle = tokio::runtime::Handle::current();
-            {
-                let chrome = view.doc.inner();
-                self.js.maybe_start_page(&chrome, &url, &handle);
+            let chrome = view.doc.inner();
+            self.js.maybe_start_page(&chrome, url, &handle);
+        }
+        let mut js_redraw = if let Some(_url) = &page_url_now {
+            let mut chrome = view.doc.inner_mut();
+            self.js.pump(&mut chrome, Instant::now())
+        } else {
+            let _ = self.js.drain_console_wire();
+            false
+        };
+        let wire = self.js.drain_console_wire();
+        let had_console = apply_console_wire(&mut self.tabs, &wire);
+        if had_console {
+            let mut chrome = view.doc.inner_mut();
+            if sync_active_tab_console(&mut self.devtools, &self.tabs, &mut chrome) {
+                js_redraw = true;
             }
-            let wire = self.js.drain_console_wire();
-            let had_console = !wire.is_empty();
-            let js_redraw = {
-                let mut chrome = view.doc.inner_mut();
-                let redraw = self.js.pump(&mut chrome, Instant::now());
-                if had_console {
-                    if let Some(tab) = self.tabs.active_mut() {
-                        let ts = self.js.now_ms();
-                        for ev in wire {
-                            tab.console.push(ConsoleEntry::from_wire(ev, ts));
-                        }
-                    }
-                    sync_active_tab_console(&self.devtools, &self.tabs, &mut chrome);
-                }
-                redraw
-                    || (had_console
-                        && self.devtools.state.open
-                        && self.devtools.state.tab == DevToolsTab::Console)
-            };
-            if js_redraw {
-                view.request_redraw();
-            }
+            js_redraw = js_redraw
+                || (self.devtools.state.open && self.devtools.state.tab == DevToolsTab::Console);
+        }
+        if js_redraw {
+            view.request_redraw();
         }
     }
 

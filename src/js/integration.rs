@@ -1120,6 +1120,8 @@ fn console_log_reaches_console_feed() {
         "{messages:?}"
     );
     assert!(messages.iter().any(|m| m.contains("watch")), "{messages:?}");
+    assert!(events.iter().any(|e| e.level == "log"));
+    assert!(events.iter().any(|e| e.level == "warn"));
 }
 
 #[test]
@@ -1144,12 +1146,73 @@ fn unhandled_rejection_reaches_console_feed() {
     <script>
       Promise.reject(new Error('reject-console'));
     </script></body></html>"#;
-    let result = super::harness::run_inline_page(html, std::time::Duration::from_millis(200));
+    let result = super::harness::run_inline_page_with_extra_settle(
+        html,
+        std::time::Duration::from_millis(200),
+        8,
+    );
     let events = result.console_wire;
     assert!(
         events
             .iter()
             .any(|e| e.level == "rejection" && e.message.contains("reject-console")),
         "{events:?}"
+    );
+}
+
+#[test]
+fn handled_rejection_revokes_console_row_same_turn() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      Promise.reject(new Error('catch-me')).catch(function () {});
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_extra_settle(
+        html,
+        std::time::Duration::from_millis(200),
+        8,
+    );
+    let mut tabs = crate::tabs::TabManager::new();
+    let id = tabs.add("https://example.test/");
+    assert_eq!(tabs.tab_mut(id).map(|t| t.console_epoch), Some(1));
+    crate::devtools::console::apply_console_wire(&mut tabs, &result.console_wire);
+    let tab = tabs.active().expect("tab");
+    assert!(
+        tab.console.entries().all(|e| !matches!(
+            e.level,
+            crate::devtools::console::ConsoleLevel::UnhandledRejection
+        )),
+        "{:?}",
+        tab.console.entries().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn handled_rejection_revokes_after_settimeout_catch() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var p = Promise.reject(new Error('late-catch'));
+      setTimeout(function () {
+        p.catch(function () {});
+        document.getElementById('t').textContent = 'done';
+      }, 10);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_extra_settle(
+        html,
+        std::time::Duration::from_millis(300),
+        8,
+    );
+    assert_eq!(result.final_text, "done");
+    let mut tabs = crate::tabs::TabManager::new();
+    let id = tabs.add("https://example.test/");
+    assert_eq!(tabs.tab_mut(id).map(|t| t.console_epoch), Some(1));
+    crate::devtools::console::apply_console_wire(&mut tabs, &result.console_wire);
+    let tab = tabs.active().expect("tab");
+    assert!(
+        tab.console.entries().all(|e| !matches!(
+            e.level,
+            crate::devtools::console::ConsoleLevel::UnhandledRejection
+        )),
+        "{:?}",
+        tab.console.entries().collect::<Vec<_>>()
     );
 }

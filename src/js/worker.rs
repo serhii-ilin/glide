@@ -32,6 +32,8 @@ enum WorkerMessage {
     InitPage {
         snapshot_json: String,
         page_url: String,
+        tab_id: u64,
+        page_epoch: u64,
     },
     RunScripts {
         sources: Vec<(String, Option<u64>)>,
@@ -66,10 +68,12 @@ impl JsWorker {
         }
     }
 
-    pub fn init_page(&self, snapshot_json: String, page_url: String) {
+    pub fn init_page(&self, snapshot_json: String, page_url: String, tab_id: u64, page_epoch: u64) {
         let _ = self.tx.send(WorkerMessage::InitPage {
             snapshot_json,
             page_url,
+            tab_id,
+            page_epoch,
         });
     }
 
@@ -149,8 +153,11 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
             WorkerMessage::InitPage {
                 snapshot_json,
                 page_url,
+                tab_id,
+                page_epoch,
             } => {
                 diagnostics::set_page_url(page_url.clone());
+                super::console_feed::set_worker_route(tab_id, page_epoch);
                 scripts_run = 0;
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
@@ -370,28 +377,41 @@ fn console_callback(
     super::console_feed::publish_console_level(&level_str, &msg);
 }
 
-/// Capture uncaught V8 exceptions instead of letting V8 write raw `<unknown>:N:` lines.
 extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {
     use v8::PromiseRejectEvent;
-    if msg.get_event() != PromiseRejectEvent::PromiseRejectWithNoHandler {
-        return;
-    }
     v8::callback_scope!(unsafe scope, &msg);
-    let Some(value) = msg.get_value() else {
-        super::console_feed::publish_unhandled_rejection("Unhandled rejection: <no reason>");
-        return;
-    };
-    v8::scope!(let scope, scope);
-    let message = if value.is_undefined() {
-        "<undefined>".to_string()
-    } else if value.is_null() {
-        "null".to_string()
-    } else {
-        value.to_rust_string_lossy(scope)
-    };
-    super::console_feed::publish_unhandled_rejection(&format!("Unhandled rejection: {message}"));
+    let promise = msg.get_promise();
+    let promise_id = promise.get_identity_hash().get() as u64;
+    match msg.get_event() {
+        PromiseRejectEvent::PromiseRejectWithNoHandler => {
+            let Some(value) = msg.get_value() else {
+                super::console_feed::publish_unhandled_rejection(
+                    "Unhandled rejection: <no reason>",
+                    promise_id,
+                );
+                return;
+            };
+            v8::scope!(let scope, scope);
+            let message = if value.is_undefined() {
+                "<undefined>".to_string()
+            } else if value.is_null() {
+                "null".to_string()
+            } else {
+                value.to_rust_string_lossy(scope)
+            };
+            super::console_feed::publish_unhandled_rejection(
+                &format!("Unhandled rejection: {message}"),
+                promise_id,
+            );
+        }
+        PromiseRejectEvent::PromiseHandlerAddedAfterReject => {
+            super::console_feed::publish_rejection_revoke(promise_id);
+        }
+        _ => {}
+    }
 }
 
+/// Capture uncaught V8 exceptions instead of letting V8 write raw `<unknown>:N:` lines.
 extern "C" fn v8_message_listener(
     message: v8::Local<v8::Message>,
     _exception: v8::Local<v8::Value>,

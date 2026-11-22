@@ -24,6 +24,9 @@ pub struct Followed {
     pub redirected: bool,
     /// `Content-Type` header value, without parameters. Empty when the server omitted it.
     pub content_type: String,
+    /// Response header names and values from the transport (including `Set-Cookie`;
+    /// stripped before exposure to page `fetch` / XHR).
+    pub headers: Vec<(String, String)>,
 }
 
 /// What a top-level navigation should do with an HTTP result.
@@ -115,6 +118,18 @@ pub fn status_phrase(status: u16) -> &'static str {
         .unwrap_or("Error")
 }
 
+fn response_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.as_str().to_string(), v.to_string()))
+        })
+        .collect()
+}
+
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -167,6 +182,7 @@ pub async fn fetch_followed(request: Request) -> Result<Followed, String> {
             .unwrap_or("")
             .trim()
             .to_string();
+        let header_pairs = response_headers(&headers);
         let body = response
             .bytes()
             .await
@@ -177,6 +193,7 @@ pub async fn fetch_followed(request: Request) -> Result<Followed, String> {
             body,
             redirected,
             content_type,
+            headers: header_pairs,
         });
     }
 }

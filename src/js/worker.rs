@@ -394,10 +394,21 @@ fn map_dom_op(
     args: &v8::FunctionCallbackArguments,
 ) -> Result<DomRequest, String> {
     Ok(match op {
-        "fetch" => DomRequest::Fetch {
-            url: arg_string(scope, args, 2)?,
-            reply,
-        },
+        "fetch" => {
+            let url = arg_string(scope, args, 2)?;
+            let ParsedFetchOptions {
+                method,
+                headers,
+                body,
+            } = fetch_options(scope, args, 3)?;
+            DomRequest::Fetch {
+                url,
+                method,
+                headers,
+                body,
+                reply,
+            }
+        }
         "listen" => {
             let node = arg_handle(scope, args, 2)?;
             let event_type = arg_string(scope, args, 3)?;
@@ -460,6 +471,67 @@ fn arg_string(
     idx: i32,
 ) -> Result<String, String> {
     Ok(args.get(idx).to_rust_string_lossy(scope))
+}
+
+struct ParsedFetchOptions {
+    method: String,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+fn fetch_options(
+    scope: &v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    idx: i32,
+) -> Result<ParsedFetchOptions, String> {
+    if args.length() <= idx {
+        return Ok(ParsedFetchOptions {
+            method: String::from("GET"),
+            headers: Vec::new(),
+            body: String::new(),
+        });
+    }
+    let raw = args.get(idx);
+    if raw.is_undefined() || raw.is_null() {
+        return Ok(ParsedFetchOptions {
+            method: String::from("GET"),
+            headers: Vec::new(),
+            body: String::new(),
+        });
+    }
+    let json = raw.to_rust_string_lossy(scope);
+    if json.trim().is_empty() {
+        return Ok(ParsedFetchOptions {
+            method: String::from("GET"),
+            headers: Vec::new(),
+            body: String::new(),
+        });
+    }
+    let opts: serde_json::Value =
+        serde_json::from_str(&json).map_err(|_| "invalid fetch options json")?;
+    let method = opts
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("GET")
+        .to_string();
+    let mut headers = Vec::new();
+    if let Some(serde_json::Value::Object(map)) = opts.get("headers") {
+        for (k, v) in map {
+            if let Some(s) = v.as_str() {
+                headers.push((k.clone(), s.to_string()));
+            }
+        }
+    }
+    let body = opts
+        .get("body")
+        .and_then(|b| b.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(ParsedFetchOptions {
+        method,
+        headers,
+        body,
+    })
 }
 
 fn arg_handle(

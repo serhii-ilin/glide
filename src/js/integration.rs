@@ -30,6 +30,246 @@ fn click_listener_receives_bubbled_event() {
 }
 
 #[test]
+fn xhr_sync_and_async_requests_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var log = [];
+      var s = new XMLHttpRequest();
+      s.open('GET', 'data:,sync-body', false);
+      s.setRequestHeader('X-Test', 'echo');
+      s.send();
+      log.push('sync:' + s.readyState + ':' + s.status + ':' + s.responseText);
+      log.push('hdr:' + s.getResponseHeader('x-test'));
+      log.push('ctype:' + s.getResponseHeader('content-type'));
+      var a = new XMLHttpRequest();
+      var states = [];
+      a.onreadystatechange = function () {
+        if (a.readyState >= 2) states.push(a.readyState);
+      };
+      a.open('GET', 'data:,async-body', true);
+      a.onload = function () {
+        log.push('async:' + a.responseText);
+        log.push('states:' + states.join(','));
+        document.getElementById('t').textContent = log.join('|');
+      };
+      a.send();
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.contains("sync:4:200:sync-body"), "{text}");
+    assert!(text.contains("hdr:null"), "{text}");
+    assert!(text.contains("ctype:text/plain;charset=utf-8"), "{text}");
+    assert!(text.contains("async:async-body"), "{text}");
+    assert!(text.contains("states:2,3,4"), "{text}");
+}
+
+#[test]
+fn fetch_request_and_response_objects_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var h = new Headers([['X-A', 'b'], ['x-a', 'c']]);
+      var merged = h.get('X-A');
+      var replaced = new Request(new Request('data:,u', { headers: { 'H': 'old' } }), { headers: { 'H': 'new' } });
+      var req = new Request('data:,static', { method: 'POST', headers: h, body: 'posted' });
+      Promise.all([
+        fetch(req).then(function (r) { return r.text().then(function (t) { return 'post:' + t; }); }),
+        fetch('data:,{"n":1}', { method: 'GET' }).then(function (r) { return r.json().then(function (j) { return 'json:' + j.n; }); }),
+        fetch('data:,buf').then(function (r) { return r.arrayBuffer().then(function (b) {
+          var v = new Uint8Array(b);
+          return 'buf:' + v[0] + ',' + v[1] + ',' + v[2];
+        }); }),
+      ]).then(function (parts) {
+        document.getElementById('t').textContent =
+          [merged, req.method, replaced.headers.get('H'), parts.join(',')].join('|');
+      });
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.starts_with("b, c|POST|new|"), "{text}");
+    assert!(text.contains("post:static"), "{text}");
+    assert!(text.contains("json:1"), "{text}");
+    assert!(text.contains("buf:98,117,102"), "{text}");
+}
+
+#[test]
+fn text_and_blob_helpers_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var enc = new TextEncoder();
+      var dec = new TextDecoder();
+      var bytes = enc.encode('Glide \u263A');
+      var round = dec.decode(bytes);
+      var loneHi = enc.encode('\ud800');
+      var loneLo = enc.encode('\udc00');
+      var blob = new Blob(['hello', enc.encode('!')], { type: 'text/plain' });
+      var reader = new FileReader();
+      var fatal = 'no-throw';
+      try {
+        new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array([0xff]));
+        fatal = 'unexpected-ok';
+      } catch (e) {
+        fatal = e.name;
+      }
+      var bom = new TextDecoder().decode(new Uint8Array([0xef, 0xbb, 0xbf, 0x41]));
+      var overlong = new TextDecoder().decode(new Uint8Array([0xc0, 0x80]));
+      Promise.all([
+        blob.slice(1, 4).text(),
+        new Promise(function (resolve) {
+          reader.onloadend = function () { resolve(String(reader.result).slice(0, 30)); };
+          reader.readAsDataURL(blob);
+        }),
+      ]).then(function (parts2) {
+        var bad = dec.decode(new Uint8Array([0xff, 0xfe, 0xfd]));
+        document.getElementById('t').textContent =
+          [round, loneHi.length, loneHi[0], loneLo[0], fatal, bom, overlong, parts2[0], parts2[1], bad].join('|');
+      });
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.contains("Glide \u{263A}"), "{text}");
+    assert!(text.contains("|3|239|239|"), "{text}");
+    assert!(text.contains("TypeError"), "{text}");
+    assert!(text.contains("|A|"), "{text}");
+    assert!(text.contains("\u{FFFD}\u{FFFD}"), "{text}");
+    assert!(text.contains("ell"), "{text}");
+    assert!(text.contains("data:text/plain;base64,"), "{text}");
+}
+
+#[test]
+fn fetch_and_xhr_base64_data_urls_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var log = [];
+      Promise.all([
+        fetch('data:text/plain;base64,aGVsbG8=').then(function (r) { return r.text(); }),
+        new Promise(function (resolve) {
+          var x = new XMLHttpRequest();
+          x.open('GET', 'data:text/plain;base64,aGVsbG8=', false);
+          x.send();
+          resolve(x.responseText);
+        }),
+      ]).then(function (parts) {
+        log.push('fetch:' + parts[0]);
+        log.push('xhr:' + parts[1]);
+        return fetch('data:text/plain;base64,%%%').then(function () { return 'bad-ok'; }, function () { return 'bad-err'; });
+      }).then(function (bad) {
+        log.push(bad);
+        document.getElementById('t').textContent = log.join('|');
+      });
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.contains("fetch:hello"), "{text}");
+    assert!(text.contains("xhr:hello"), "{text}");
+    assert!(text.contains("bad-err"), "{text}");
+}
+
+#[test]
+fn xhr_abort_stops_callbacks() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var events = [];
+      var x = new XMLHttpRequest();
+      x.addEventListener('loadstart', function () { events.push('loadstart'); });
+      x.addEventListener('load', function () { events.push('load:' + x.status); });
+      x.addEventListener('abort', function () { events.push('abort'); });
+      x.addEventListener('loadend', function () { events.push('loadend'); });
+      x.open('GET', 'data:,late', true);
+      x.send();
+      x.abort();
+      var afterAbort = events.join(',');
+      x.open('GET', 'data:,reuse', false);
+      x.send();
+      setTimeout(function () {
+        document.getElementById('t').textContent =
+          afterAbort + '|reuse:' + x.responseText;
+      }, 50);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert_eq!(text, "abort,loadend|reuse:reuse", "{text}");
+}
+
+#[test]
+fn xhr_headers_available_at_headers_received() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var snap = '';
+      var states = [];
+      var x = new XMLHttpRequest();
+      x.onreadystatechange = function () {
+        states.push(x.readyState);
+        if (x.readyState === 2) {
+          snap = x.status + ':' + x.getResponseHeader('content-type');
+        }
+      };
+      x.open('GET', 'data:,h', true);
+      x.onload = function () {
+        document.getElementById('t').textContent = snap + '|' + states.join(',');
+      };
+      x.send();
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.starts_with("200:text/plain;charset=utf-8|"), "{text}");
+    assert!(text.ends_with("2,3,4"), "{text}");
+}
+
+#[test]
+fn fetch_binary_body_round_trips() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var binUrl = 'data:application/octet-stream;base64,AP8BAg==';
+      Promise.all([
+        fetch(binUrl).then(function (r) { return r.arrayBuffer(); }),
+        new Promise(function (resolve) {
+          var x = new XMLHttpRequest();
+          x.open('GET', binUrl, false);
+          x.responseType = 'arraybuffer';
+          x.send();
+          resolve(new Uint8Array(x.response));
+        }),
+      ]).then(function (parts) {
+        var f = new Uint8Array(parts[0]);
+        var x = parts[1];
+        document.getElementById('t').textContent =
+          [f[0], f[1], f[2], f[3], x[0], x[1], x[2], x[3]].join(',');
+      });
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    assert_eq!(result.final_text, "0,255,1,2,0,255,1,2");
+}
+
+#[test]
+fn fetch_request_init_overrides_input() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var base = new Request('data:,x', { method: 'GET', headers: { 'H': 'old' }, body: 'old-body' });
+      var merged = new Request(base, { method: 'POST', headers: { 'H': 'new' }, body: 'new-body' });
+      document.getElementById('t').textContent =
+        merged.method + '|' + merged.headers.get('H') + '|' + merged.body;
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "POST|new|new-body");
+}
+
+#[test]
+fn send_beacon_returns_true_without_throwing() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var ok = true;
+      try {
+        ok = navigator.sendBeacon('data:,b', 'x') === true;
+      } catch (e) {
+        ok = false;
+      }
+      document.getElementById('t').textContent = ok ? 'true' : 'false';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "true");
+}
+
+#[test]
 fn fetch_promise_resolves() {
     let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
     <script>

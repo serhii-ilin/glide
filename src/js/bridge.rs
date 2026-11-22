@@ -12,6 +12,9 @@ use blitz_traits::node_id::NodeId;
 pub enum DomRequest {
     Fetch {
         url: String,
+        method: String,
+        headers: Vec<(String, String)>,
+        body: String,
         reply: u64,
     },
     SnapshotTree {

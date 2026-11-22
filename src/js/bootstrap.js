@@ -62,6 +62,19 @@
     return id;
   };
 
+  global.__glide_next_wake = function (now) {
+    let earliest = 0;
+    timers.forEach((t) => {
+      if (!t) return;
+      if (earliest === 0 || t.at < earliest) earliest = t.at;
+    });
+    if (rafQueue.length) {
+      const rafAt = now + 16;
+      if (earliest === 0 || rafAt < earliest) earliest = rafAt;
+    }
+    return earliest;
+  };
+
   global.__glide_pump_timers = function (now) {
     nowMs = now;
     timers.forEach((t, id) => {

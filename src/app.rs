@@ -2,7 +2,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use blitz_dom::{BaseDocument, Document, DocumentConfig, qual_name};
 use blitz_net::Provider;
@@ -12,7 +12,7 @@ use blitz_shell::{
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use winit::application::ApplicationHandler;
 use winit::event::{ButtonSource, ElementState, MouseButton, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::devtools::console::apply_console_wire;
@@ -355,6 +355,20 @@ struct Glide {
     bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
     history_log: HistoryLogState,
     ime_composing: bool,
+    js_wake_armed_until: Option<std::time::Instant>,
+    js_last_seen_wake_epoch: u64,
+}
+
+const JS_IDLE_WAKE_CAP: Duration = Duration::from_millis(250);
+const JS_WAKE_REPORT_POLL: Duration = Duration::from_millis(16);
+
+/// How long the event loop may block before waking for a JS timer pump (`None` = wait indefinitely).
+pub(crate) fn pump_wait(wake: Option<Duration>, report_pending: bool) -> Option<Duration> {
+    if report_pending {
+        return Some(JS_WAKE_REPORT_POLL);
+    }
+    let wake = wake?;
+    Some(wake.min(JS_IDLE_WAKE_CAP))
 }
 
 fn chrome_view_state(
@@ -595,7 +609,33 @@ impl Glide {
             devtools: init.devtools,
             devtools_drag: None,
             ime_composing: false,
+            js_wake_armed_until: None,
+            js_last_seen_wake_epoch: 0,
         }
+    }
+
+    fn arm_js_pump(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if !self.js.page_js_active() {
+            self.js_wake_armed_until = None;
+            self.js_last_seen_wake_epoch = 0;
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+        let epoch = self.js.wake_epoch();
+        let report_pending = epoch == 0 || epoch != self.js_last_seen_wake_epoch;
+        let wait = pump_wait(self.js.next_wake_in(), report_pending);
+        match wait {
+            None => {
+                self.js_wake_armed_until = None;
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            Some(delay) => {
+                let until = Instant::now() + delay;
+                self.js_wake_armed_until = Some(until);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(until));
+            }
+        }
+        self.js_last_seen_wake_epoch = epoch;
     }
 
     fn save_settings(&self) -> Result<(), String> {
@@ -1562,11 +1602,24 @@ impl ApplicationHandler for Glide {
 
         self.inner.window_event(event_loop, window_id, event);
         self.sync();
+        self.arm_js_pump(event_loop);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.inner.about_to_wait(event_loop);
+        let wake_due = self
+            .js_wake_armed_until
+            .is_some_and(|until| Instant::now() >= until);
+        if wake_due {
+            self.sync();
+        }
+        self.arm_js_pump(event_loop);
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.inner.proxy_wake_up(event_loop);
         self.sync();
+        self.arm_js_pump(event_loop);
     }
 
     #[cfg(target_os = "macos")]
@@ -1710,5 +1763,31 @@ mod tests {
                     .map(|node| node.text_content())
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn pump_wait_no_work_returns_none() {
+        assert!(pump_wait(None, false).is_none());
+    }
+
+    #[test]
+    fn pump_wait_immediate_timer_returns_zero() {
+        assert_eq!(
+            pump_wait(Some(Duration::from_millis(0)), false),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn pump_wait_caps_at_250ms() {
+        assert_eq!(
+            pump_wait(Some(Duration::from_millis(300)), false),
+            Some(Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn pump_wait_report_pending_polls_16ms() {
+        assert_eq!(pump_wait(None, true), Some(JS_WAKE_REPORT_POLL));
     }
 }

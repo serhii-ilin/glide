@@ -173,19 +173,21 @@ fn xhr_abort_stops_callbacks() {
       x.addEventListener('loadstart', function () { events.push('loadstart'); });
       x.addEventListener('load', function () { events.push('load:' + x.status); });
       x.addEventListener('abort', function () { events.push('abort'); });
+      x.addEventListener('loadend', function () { events.push('loadend'); });
       x.open('GET', 'data:,late', true);
       x.send();
       x.abort();
+      var afterAbort = events.join(',');
+      x.open('GET', 'data:,reuse', false);
+      x.send();
       setTimeout(function () {
-        document.getElementById('t').textContent = events.join(',');
+        document.getElementById('t').textContent =
+          afterAbort + '|reuse:' + x.responseText;
       }, 50);
     </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(400));
     let text = result.final_text;
-    assert!(
-        text.contains("abort") && !text.contains("loadstart") && !text.contains("load:200"),
-        "{text}"
-    );
+    assert_eq!(text, "abort,loadend|reuse:reuse", "{text}");
 }
 
 #[test]

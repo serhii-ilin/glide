@@ -628,12 +628,16 @@
     }
     open(method, url, async, user, password) {
       const _ = user; const __ = password;
-      if (this.readyState === XHR_DONE) {
+      if (this.readyState === XHR_DONE || this._aborted) {
         this._reset();
       }
+      this._aborted = false;
+      this._sent = false;
+      this._dispatched = false;
       this._method = String(method || 'GET').toUpperCase();
       this._url = String(url);
       this._async = async !== false;
+      this.responseType = '';
       setXhrState(this, XHR_OPENED);
     }
     setRequestHeader(name, value) {
@@ -647,15 +651,12 @@
         this._sendTimerId = null;
       }
       this._aborted = true;
-      if (!this._sent || !this._dispatched) {
+      if (!this._sent || this.readyState === XHR_DONE) {
         this.readyState = XHR_UNSENT;
-        dispatchXhrEvent(this, 'abort');
         return;
       }
-      if (this.readyState !== XHR_DONE) {
-        this.readyState = XHR_DONE;
-        dispatchXhrEvent(this, 'readystatechange');
-      }
+      this.readyState = XHR_DONE;
+      dispatchXhrEvent(this, 'readystatechange');
       dispatchXhrEvent(this, 'abort');
       dispatchXhrEvent(this, 'loadend');
     }
@@ -667,7 +668,7 @@
       if (this.readyState < XHR_HEADERS_RECEIVED || !this._responseHeaders) return '';
       const lines = [];
       this._responseHeaders.forEach((v, k) => lines.push(`${k}: ${v}`));
-      return `${lines.join('\r\n')}\r\n`;
+      return lines.length ? `${lines.join('\r\n')}\r\n` : '';
     }
     send(body) {
       if (this.readyState !== XHR_OPENED) return;
@@ -726,9 +727,9 @@
     }
     _onNetworkError() {
       if (this._aborted) return;
-      dispatchXhrEvent(this, 'error');
       this.readyState = XHR_DONE;
       dispatchXhrEvent(this, 'readystatechange');
+      dispatchXhrEvent(this, 'error');
       dispatchXhrEvent(this, 'loadend');
     }
     _run(body) {

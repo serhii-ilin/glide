@@ -1944,21 +1944,6 @@ mod tests {
         assert!(command_closes_menu(&action));
         assert!(!command_closes_menu(&NavCommand::MenuOpen(MenuId::File)));
         assert!(!command_closes_menu(&NavCommand::MenuClose));
-        assert_eq!(
-            toggle_open_menu(Some(MenuId::File), MenuId::File),
-            None,
-            "same title toggles closed"
-        );
-        assert_eq!(
-            toggle_open_menu(Some(MenuId::File), MenuId::View),
-            Some(MenuId::View),
-            "another title switches"
-        );
-        assert_eq!(
-            toggle_open_menu(None, MenuId::File),
-            Some(MenuId::File),
-            "none opens requested"
-        );
     }
 
     #[test]

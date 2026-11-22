@@ -1377,6 +1377,13 @@ impl ApplicationHandler for Glide {
         if self.open_menu.is_some() && self.menu_dismissed_by(&window_id, &event) {
             self.bus.push(NavCommand::MenuClose);
             self.sync();
+            // The shell hit-tests the forwarded press/release before the next
+            // redraw. Lay out the rebuilt chrome now so an outside click still
+            // targets its live node instead of a stale, unlaid-out subtree.
+            if let Some(view) = self.inner.windows.get_mut(&window_id) {
+                view.doc.inner_mut().resolve(0.0);
+                view.request_redraw();
+            }
         }
 
         let chrome_shortcut = if let WindowEvent::KeyboardInput { event, .. } = &event {

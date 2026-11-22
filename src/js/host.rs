@@ -40,7 +40,11 @@ impl HostWake {
     }
 
     pub fn request(&self) {
-        self.requested.store(true, Ordering::Release);
+        // Coalesce: `sync` clears the flag, so only the first request per batch
+        // has to cross the thread boundary.
+        if self.requested.swap(true, Ordering::AcqRel) {
+            return;
+        }
         if let Ok(guard) = self.waker.lock()
             && let Some(waker) = guard.as_ref()
         {
@@ -141,7 +145,10 @@ impl JsHost {
             return None;
         }
         let now = self.now_ms();
-        let ms = deadline.saturating_sub(now);
+        // A page can schedule a very distant deadline; cap what we hand to winit
+        // (the loop re-arms on every event, so a later wake is harmless).
+        const MAX_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
+        let ms = deadline.saturating_sub(now).min(MAX_WAIT_MS);
         Some(Duration::from_millis(ms).max(Duration::from_millis(1)))
     }
 
@@ -228,6 +235,12 @@ impl JsHost {
         self.pending_sources = None;
         self.pending_indices = None;
         self.script_specs.clear();
+        // Answer anything the retired worker already queued so it is not left
+        // blocked in `recv_timeout`; the next drain would reject it anyway.
+        while let Ok(rpc) = self.dom_rx.try_recv() {
+            let reply = super::apply::reply_id(&rpc.request);
+            let _ = rpc.reply.send(DomResponse::err(reply, "page detached"));
+        }
     }
 
     fn mark_stale_page(&mut self, chrome: &BaseDocument) {
@@ -978,6 +991,31 @@ mod tests {
     }
 
     #[test]
+    fn settimeout_negative_delay_reports_immediate_wake() {
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<script>setTimeout(function(){}, -5);</script>",
+            "</body></html>"
+        );
+        let doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || {
+                host.worker
+                    .as_ref()
+                    .is_some_and(|w| w.wake_deadline_ms() == 0)
+            }),
+            "a negative setTimeout delay is due now, not idle"
+        );
+        assert!(host.next_wake_in().is_some());
+    }
+
+    #[test]
     fn worker_wake_on_dom_rpc_without_host_pump() {
         use std::sync::atomic::Ordering;
 
@@ -1004,15 +1042,17 @@ mod tests {
         host.submit_eval("document.title = 'wake';", None)
             .expect("eval");
         assert!(
-            poll_until(50, Duration::from_millis(2), || {
-                wake_count.load(Ordering::SeqCst) > 0 || host.take_wake_request()
+            poll_until(100, Duration::from_millis(2), || {
+                wake_count.load(Ordering::SeqCst) > 0
             }),
-            "expected worker to request a host wake"
+            "expected the injected waker to fire for a queued DOM RPC"
         );
     }
 
     #[test]
-    fn earlier_timer_shortens_next_wake() {
+    fn earlier_timer_shortens_next_wake_and_wakes_the_host() {
+        use std::sync::atomic::Ordering;
+
         let (_worker, _console) = worker_test_lock();
         let html = "<!DOCTYPE html><html><body><p id=\"t\">x</p></body></html>";
         let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
@@ -1026,16 +1066,35 @@ mod tests {
             "worker should start"
         );
         host.pump(&mut doc, Instant::now());
-        host.submit_eval(
-            "setTimeout(function(){}, 5000); setTimeout(function(){}, 80);",
-            None,
-        )
-        .expect("eval");
+        host.submit_eval("setTimeout(function(){}, 5000);", None)
+            .expect("eval");
         assert!(
-            poll_until(100, Duration::from_millis(2), || {
+            poll_until(200, Duration::from_millis(2), || {
                 host.next_wake_in()
-                    .is_some_and(|w| w < Duration::from_secs(2))
+                    .is_some_and(|w| w > Duration::from_secs(1))
             }),
+            "expected the long timer to be pending"
+        );
+
+        // Clear the coalesced request from the long timer, then prove a shorter
+        // timer wakes the host through the injected waker.
+        let _ = host.take_wake_request();
+        let wake_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let wake_probe = Arc::clone(&wake_count);
+        host.set_waker(Arc::new(move || {
+            wake_probe.fetch_add(1, Ordering::SeqCst);
+        }));
+        host.submit_eval("setTimeout(function(){}, 80);", None)
+            .expect("eval");
+        assert!(
+            poll_until(200, Duration::from_millis(2), || {
+                wake_count.load(Ordering::SeqCst) > 0
+            }),
+            "an earlier timer must wake the host"
+        );
+        assert!(
+            host.next_wake_in()
+                .is_some_and(|w| w < Duration::from_secs(2)),
             "expected the shorter timer to publish an earlier wake"
         );
     }

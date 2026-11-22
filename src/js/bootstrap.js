@@ -63,17 +63,24 @@
   };
 
   global.__glide_next_wake = function (now) {
+    // -1 means "no pending work". A timer deadline may legitimately be <= now
+    // (setTimeout with a negative delay, or a deadline computed as now - x);
+    // such work is due immediately and must not be confused with idle.
     let earliest = -1;
+    let hasWork = false;
     timers.forEach((t) => {
       if (!t) return;
-      if (earliest < 0 || t.at < earliest) earliest = t.at;
+      hasWork = true;
+      const at = Number.isFinite(t.at) ? t.at : 0;
+      if (earliest < 0 || at < earliest) earliest = at;
     });
     if (rafQueue.length) {
+      hasWork = true;
       const rafAt = now + 16;
       if (earliest < 0 || rafAt < earliest) earliest = rafAt;
     }
-    if (earliest < 0) return -1;
-    return Math.ceil(earliest);
+    if (!hasWork) return -1;
+    return Math.ceil(Math.max(0, earliest));
   };
 
   global.__glide_pump_timers = function (now) {

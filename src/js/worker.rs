@@ -40,6 +40,8 @@ pub struct JsWorker {
     retired: Arc<AtomicBool>,
     worker_stopped: Arc<AtomicBool>,
     wake_deadline_ms: Arc<AtomicU64>,
+    /// Report counter: lets tests tell "the worker has published a deadline"
+    /// apart from the initial `WAKE_NONE` state. Read only by tests.
     #[cfg_attr(not(test), allow(dead_code))]
     wake_epoch: Arc<AtomicU64>,
     _join: Option<thread::JoinHandle<()>>,
@@ -50,6 +52,7 @@ impl JsWorker {
         self.wake_deadline_ms.load(Ordering::Acquire)
     }
 
+    /// Report counter (see the field comment); tests only.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn wake_epoch(&self) -> u64 {
         self.wake_epoch.load(Ordering::Acquire)
@@ -216,6 +219,20 @@ fn init_v8() {
     });
 }
 
+/// Marks the worker stopped on every exit path, including a panic while running a
+/// page script, so the UI thread cannot keep re-arming a dead worker's deadline.
+struct WorkerExitGuard {
+    wake_deadline_ms: Arc<AtomicU64>,
+    worker_stopped: Arc<AtomicBool>,
+}
+
+impl Drop for WorkerExitGuard {
+    fn drop(&mut self) {
+        self.wake_deadline_ms.store(WAKE_NONE, Ordering::Release);
+        self.worker_stopped.store(true, Ordering::Release);
+    }
+}
+
 struct WorkerThreadState {
     dom_tx: Sender<DomRpc>,
     generation: u64,
@@ -238,6 +255,10 @@ fn worker_main(state: WorkerThreadState) {
         wake_epoch,
         host_wake,
     } = state;
+    let _exit = WorkerExitGuard {
+        wake_deadline_ms: Arc::clone(&wake_deadline_ms),
+        worker_stopped: Arc::clone(&worker_stopped),
+    };
     DOM_TX.with(|slot| *slot.borrow_mut() = Some(dom_tx));
     DOM_GENERATION.with(|g| g.set(generation));
     WORKER_RETIRED.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&retired)));
@@ -269,6 +290,11 @@ fn worker_main(state: WorkerThreadState) {
 
     let mut scripts_run = 0u64;
     while let Ok(msg) = cmd_rx.recv() {
+        // Messages queued before retirement still carry the old page's scripts
+        // and diagnostics; stop before running any of them.
+        if worker_retired() {
+            break;
+        }
         match msg {
             WorkerMessage::InitPage {
                 snapshot_json,
@@ -386,8 +412,7 @@ fn worker_main(state: WorkerThreadState) {
             WorkerMessage::Shutdown => break,
         }
     }
-    wake_deadline_ms.store(WAKE_NONE, Ordering::Release);
-    worker_stopped.store(true, Ordering::Release);
+    // The exit guard also covers a panic; this bump records a clean shutdown for tests.
     wake_epoch.fetch_add(1, Ordering::Release);
     DOM_TX.with(|slot| *slot.borrow_mut() = None);
     WORKER_RETIRED.with(|slot| *slot.borrow_mut() = None);
@@ -990,7 +1015,8 @@ fn url_parse_callback(
 }
 
 fn throw_page_detached(scope: &mut v8::PinScope<'_, '_>) {
-    let msg = v8::String::new(scope, "page detached").expect("page detached message");
+    let msg = v8::String::new(scope, "page detached")
+        .expect("V8 string allocation cannot fail for a static ASCII message");
     let err = v8::Exception::error(scope, msg);
     scope.throw_exception(err);
 }
@@ -1131,7 +1157,6 @@ fn execute_script_callback(
     diagnostics::clear_script();
     let cleared = v8::String::new(scope, "").unwrap();
     call_global_fn(scope, "__glide_set_script_kind", &[cleared.into()]);
-    settle_task(scope);
     WAKE_PUBLISH.with(|slot| {
         if let Some((deadline, epoch)) = slot.borrow().as_ref() {
             publish_next_wake(scope, deadline, epoch);

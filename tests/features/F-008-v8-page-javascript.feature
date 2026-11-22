@@ -3,9 +3,9 @@ Feature: F-008 V8 page JavaScript lifecycle
   I want timers and scripts to behave predictably across navigation and idle time
   So that pages stay responsive without stale work corrupting the next document
 
-  # Source / basis: ECMA-262 (timers); DOM Standard; HTML Living Standard (script execution)
+  # Source / basis: HTML Living Standard (timers, script execution); DOM Standard
   # Registry: docs/features.md -> F-008
-  # Tests: js::host::tests::{stale_dom_rpc_is_rejected,current_dom_rpc_is_applied,maybe_start_without_navigation_bumps_generation,page_with_timer_reports_next_wake,page_without_timers_reports_no_wake,settimeout_zero_reports_immediate_wake,worker_wake_on_dom_rpc_without_host_pump,earlier_timer_shortens_next_wake}, js::integration::timers_fixture_reports_wake_and_advances_with_pump, app::tests::pump_wait_*, manual M-049, M-050
+  # Tests: js::host::tests::{stale_dom_rpc_is_rejected,current_dom_rpc_is_applied,maybe_start_without_navigation_bumps_generation,page_with_timer_reports_next_wake,page_without_timers_reports_no_wake,settimeout_zero_reports_immediate_wake,settimeout_negative_delay_reports_immediate_wake,worker_wake_on_dom_rpc_without_host_pump,earlier_timer_shortens_next_wake_and_wakes_the_host}, js::integration::timers_fixture_reports_wake_and_advances_with_pump, app::tests::pump_wait_*, manual M-049, M-050
   # MCP: planned F-067 (glide_eval)
 
   Background:

@@ -23,6 +23,8 @@ pub enum NavCommand {
     DevToolsDockRight,
     DevToolsTab(crate::devtools::DevToolsTab),
     DevToolsConsoleClear,
+    DevToolsElementsSelect(u64),
+    DevToolsElementsToggle(u64),
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -139,6 +141,12 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
                 .and_then(crate::devtools::DevToolsTab::parse)
                 .map(NavCommand::DevToolsTab),
             Some("devtools-console-clear") => Some(NavCommand::DevToolsConsoleClear),
+            Some("devtools-elements-select") => query_value(url, "node")
+                .and_then(|n| n.parse().ok())
+                .map(NavCommand::DevToolsElementsSelect),
+            Some("devtools-elements-toggle") => query_value(url, "node")
+                .and_then(|n| n.parse().ok())
+                .map(NavCommand::DevToolsElementsToggle),
             Some("zoom-in") => Some(NavCommand::ZoomIn),
             Some("zoom-out") => Some(NavCommand::ZoomOut),
             Some("zoom-reset") => Some(NavCommand::ZoomReset),
@@ -801,6 +809,75 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   #devtools-pane-console.active {{
     display: flex;
   }}
+  #devtools-pane-elements.active {{
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }}
+  #devtools-elements-tree {{
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: calc(11px * var(--ui));
+    line-height: 1.35;
+    padding: calc(4px * var(--ui)) 0;
+  }}
+  div.devtools-elements-row {{
+    display: flex;
+    align-items: baseline;
+    padding: calc(1px * var(--ui)) calc(6px * var(--ui));
+    color: var(--text);
+    white-space: nowrap;
+  }}
+  div.devtools-elements-row:hover {{
+    background: var(--field-fill);
+  }}
+  div.devtools-elements-row.selected {{
+    background: rgba(0, 122, 255, 0.14);
+  }}
+  a.twist-link,
+  a.devtools-elements-row-link {{
+    color: inherit;
+    text-decoration: none;
+  }}
+  a.twist-link {{
+    flex: none;
+    width: calc(12px * var(--ui));
+  }}
+  a.devtools-elements-row-link {{
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  div.devtools-elements-row.more {{
+    padding: calc(1px * var(--ui)) calc(6px * var(--ui));
+    color: var(--text-secondary);
+    font-style: italic;
+  }}
+  span.twist {{
+    display: inline-block;
+    width: calc(12px * var(--ui));
+  }}
+  #devtools-elements-detail {{
+    flex: none;
+    max-height: 38%;
+    overflow: auto;
+    border-top: calc(1px * var(--ui)) solid var(--hairline);
+    padding: calc(6px * var(--ui));
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: calc(11px * var(--ui));
+  }}
+  div.devtools-elements-attr {{
+    padding: calc(1px * var(--ui)) 0;
+  }}
+  span.attr-name {{ color: var(--accent); }}
+  span.attr-value {{ color: var(--text-secondary); }}
+  p.devtools-elements-detail-empty {{
+    margin: 0;
+    color: var(--text-secondary);
+  }}
   div.devtools-console-line {{
     padding: calc(3px * var(--ui)) calc(8px * var(--ui));
     border-bottom: calc(1px * var(--ui)) solid rgba(0,0,0,0.06);
@@ -900,7 +977,10 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
         <div id="devtools-console-log"></div>
         <input id="devtools-console-input" type="text" spellcheck="false" autocomplete="off" placeholder="Evaluate JavaScript">
       </div>
-      <div id="devtools-pane-elements" class="devtools-pane"><p class="devtools-placeholder">DOM tree will appear here.</p></div>
+      <div id="devtools-pane-elements" class="devtools-pane">
+        <div id="devtools-elements-tree" tabindex="0"></div>
+        <div id="devtools-elements-detail"></div>
+      </div>
       <div id="devtools-pane-network" class="devtools-pane"><p class="devtools-placeholder">Network log will appear here.</p></div>
     </aside>
   </div>
@@ -1359,6 +1439,30 @@ pub fn clear_devtools_console_input(doc: &mut BaseDocument) {
 pub fn focus_devtools_console_input(doc: &mut BaseDocument) {
     if let Some(id) = doc.get_element_by_id("devtools-console-input") {
         doc.set_focus_to(id);
+    }
+}
+
+pub fn focus_devtools_elements_tree(doc: &mut BaseDocument) {
+    if let Some(id) = doc.get_element_by_id("devtools-elements-tree") {
+        doc.set_focus_to(id);
+    }
+}
+
+pub fn devtools_elements_tree_focused(doc: &BaseDocument) -> bool {
+    let Some(tree_id) = doc.get_element_by_id("devtools-elements-tree") else {
+        return false;
+    };
+    let Some(mut focus) = doc.get_focussed_node_id() else {
+        return false;
+    };
+    loop {
+        if focus == tree_id {
+            return true;
+        }
+        let Some(parent) = doc.get_node(focus).and_then(|n| n.parent) else {
+            return false;
+        };
+        focus = parent;
     }
 }
 
@@ -2397,6 +2501,15 @@ mod tests {
             parse("glide://devtools-console-clear"),
             Some(NavCommand::DevToolsConsoleClear)
         );
+        assert_eq!(
+            parse("glide://devtools-elements-select?node=42"),
+            Some(NavCommand::DevToolsElementsSelect(42))
+        );
+        assert_eq!(
+            parse("glide://devtools-elements-toggle?node=7"),
+            Some(NavCommand::DevToolsElementsToggle(7))
+        );
+        assert_eq!(parse("glide://devtools-elements-toggle?node=bad"), None);
     }
 
     #[test]
@@ -2466,6 +2579,43 @@ mod tests {
             .and_then(|n| n.attr(local_name!("style")))
             .unwrap_or_default();
         assert!(style.contains("width: calc(200px * var(--ui))"));
+    }
+
+    #[test]
+    fn devtools_elements_tree_focused_includes_descendant() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse_chrome(&html);
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            tab: crate::devtools::DevToolsTab::Elements,
+            ..Default::default()
+        };
+        super::apply_devtools_state(&mut doc, &state);
+        let tree = doc
+            .get_element_by_id("devtools-elements-tree")
+            .expect("tree");
+        crate::parse::parse_inner_html_into_mutator(
+            &mut doc.mutate(),
+            tree,
+            "<a class=\"devtools-elements-row-link\" href=\"#\"><span class=\"label\">x</span></a>",
+            false,
+        );
+        doc.resolve(0.0);
+        let link = doc
+            .get_node(tree)
+            .and_then(|n| n.children.first().copied())
+            .expect("link");
+        doc.set_focus_to(link);
+        assert!(super::devtools_elements_tree_focused(&doc));
+    }
+
+    #[test]
+    fn devtools_elements_pane_markup() {
+        let html = chrome_document("about:blank", true, false);
+        assert!(html.contains("id=\"devtools-elements-tree\""));
+        assert!(html.contains("id=\"devtools-elements-detail\""));
+        assert!(!html.contains("DOM tree will appear here"));
     }
 
     #[test]

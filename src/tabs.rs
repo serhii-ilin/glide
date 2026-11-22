@@ -6,6 +6,7 @@ use keyboard_types::Modifiers;
 use serde::{Deserialize, Serialize};
 
 use crate::devtools::console::ConsoleJournal;
+use crate::devtools::elements::ElementsPanelState;
 use crate::devtools::repl::ConsoleReplHistory;
 use crate::find::FindSession;
 use crate::history::History;
@@ -26,8 +27,11 @@ pub struct Tab {
     pub zoom: PageZoom,
     pub console: ConsoleJournal,
     pub console_repl_history: ConsoleReplHistory,
+    pub elements: ElementsPanelState,
     /// Bumped on each navigation so stale console wire events are ignored.
     pub console_epoch: u64,
+    /// Bumped on navigation so Elements tree state resets for a new document.
+    pub elements_epoch: u64,
     /// Last URL written into the address field, so a focused field is left alone.
     pub address_written: String,
 }
@@ -43,7 +47,9 @@ impl Tab {
             zoom: PageZoom::new(),
             console: ConsoleJournal::default(),
             console_repl_history: ConsoleReplHistory::default(),
+            elements: ElementsPanelState::default(),
             console_epoch: 1,
+            elements_epoch: 1,
             address_written: url,
         }
     }
@@ -131,6 +137,8 @@ impl TabManager {
         tab.console = ConsoleJournal::default();
         tab.console_repl_history = ConsoleReplHistory::default();
         tab.console_epoch = 1;
+        tab.elements = ElementsPanelState::default();
+        tab.elements_epoch = 1;
         self.tabs.push(tab);
         self.active = Some(self.tabs.len() - 1);
         id
@@ -520,6 +528,25 @@ mod tests {
         let a = tabs.by_index(0).map(|tab| tab.id).expect("tab A");
         assert!(tabs.close(a).is_some());
         assert_eq!(tabs.active().map(Tab::url), Some("https://b/"));
+    }
+
+    #[test]
+    fn duplicate_tab_resets_elements_expansion() {
+        let mut tabs = manager(&["https://a/"]);
+        let source = tabs.active().expect("active").id;
+        {
+            let tab = tabs.active_mut().expect("active");
+            tab.elements.expanded.insert(99);
+            tab.elements.selected = Some(42);
+            tab.elements_epoch = 5;
+        }
+        let duped = tabs.active().expect("active").clone();
+        let new_id = tabs.insert(duped);
+        assert_ne!(source, new_id);
+        let tab = tabs.active().expect("dup tab");
+        assert!(tab.elements.expanded.is_empty());
+        assert_eq!(tab.elements.selected, None);
+        assert_eq!(tab.elements_epoch, 1);
     }
 
     #[test]

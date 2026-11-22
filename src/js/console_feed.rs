@@ -49,7 +49,7 @@ fn worker_timestamp_ms() -> u64 {
     })
 }
 
-fn truncate_field(value: &str, max_len: usize) -> String {
+pub(crate) fn truncate_field(value: &str, max_len: usize) -> String {
     if value.len() <= max_len {
         return value.to_string();
     }

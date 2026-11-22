@@ -34,6 +34,7 @@ fn render_url_inner(url: &str, path: &Path, js_enabled: bool) -> Result<(), Stri
     Ok(())
 }
 
+/// Rasterize a laid-out document to straight RGBA8 pixels (`width * height * 4` bytes).
 pub fn paint_rgba(doc: &mut blitz_dom::BaseDocument, width: u32, height: u32) -> Vec<u8> {
     render_to_buffer::<VelloCpuImageRenderer, _>(
         |scene| {
@@ -51,6 +52,7 @@ pub fn paint_rgba(doc: &mut blitz_dom::BaseDocument, width: u32, height: u32) ->
     )
 }
 
+/// Wrap an RGBA8 buffer in a PNG without writing to disk.
 pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     let mut encoded = Vec::new();
     let mut encoder = png::Encoder::new(&mut encoded, width, height);

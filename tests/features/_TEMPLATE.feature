@@ -9,6 +9,7 @@ Feature: F-xxx Short feature name
   #                WPT test path, or Acid1-3 case>
   # Registry: docs/features.md -> F-xxx
   # Tests: <test names from the feature row, or manual check M-xxx>
+  # MCP: <glide_* tools that expose this | planned F-xxx (tool) | n/a (reason)>
 
   Background:
     Given <shared precondition, e.g. a fresh profile or a local file:// fixture>

@@ -22,6 +22,11 @@ You are a coding agent working on Glide, a small Rust desktop browser. An orches
 7. Update `docs/features.md` (registry) for every behavior you add or change: row status,
    requirement IDs, and the tests that cover it. Update `README.md` tables when keys or
    features change.
+   Fill the `MCP` column of every feature row you add or change (tool names,
+   `planned F-xxx (tool)` or `n/a (reason)`), following "Agent control (MCP)" in
+   `AGENTS.md`. If the feature exposes state or an action an agent needs and `src/mcp/`
+   exists, add or extend the tool with its `tests/mcp_stdio.rs` test; otherwise list it
+   under OPEN ISSUES.
 8. Do not weaken, delete or `#[ignore]` existing tests to make gates pass. Do not add
    `#[allow(...)]` to silence clippy unless the task says so; fix the code.
 9. Commit on the branch in small logical commits with imperative subject lines. Leave the

@@ -39,6 +39,8 @@ enum WorkerMessage {
         kind: String,
     },
     FireDomContentLoaded,
+    /// All scripts queued for this load have run; emit the per-page summary.
+    PageSettled,
     Pump {
         now_ms: u64,
     },
@@ -80,6 +82,10 @@ impl JsWorker {
 
     pub fn fire_dom_content_loaded(&self) {
         let _ = self.tx.send(WorkerMessage::FireDomContentLoaded);
+    }
+
+    pub fn page_settled(&self) {
+        let _ = self.tx.send(WorkerMessage::PageSettled);
     }
 
     pub fn pump(&self, now_ms: u64) {
@@ -136,6 +142,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
         v8::Global::new(hs, context)
     };
 
+    let mut scripts_run = 0u64;
     while let Ok(msg) = cmd_rx.recv() {
         match msg {
             WorkerMessage::InitPage {
@@ -143,6 +150,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 page_url,
             } => {
                 diagnostics::set_page_url(page_url.clone());
+                scripts_run = 0;
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
@@ -152,6 +160,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 settle_task(scope);
             }
             WorkerMessage::RunScripts { sources, kind } => {
+                scripts_run = scripts_run.saturating_add(sources.len() as u64);
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
@@ -181,6 +190,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 call_global_fn(scope, "__glide_fire_dom_content_loaded", &[]);
                 settle_task(scope);
             }
+            WorkerMessage::PageSettled => diagnostics::log_page_summary(scripts_run),
             WorkerMessage::Pump { now_ms } => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
@@ -241,6 +251,14 @@ fn install_bindings(scope: &mut v8::PinScope<'_, '_>, context: v8::Local<v8::Con
     let url_key = v8::String::new(scope, "__glide_url_parse").unwrap();
     global.set(scope, url_key.into(), url_fn.into());
 
+    let diag_fn = v8::Function::new(scope, diag_callback).expect("diag fn");
+    let diag_key = v8::String::new(scope, "__glide_diag").unwrap();
+    global.set(scope, diag_key.into(), diag_fn.into());
+
+    let caps_fn = v8::Function::new(scope, caps_callback).expect("caps fn");
+    let caps_key = v8::String::new(scope, "__glide_caps").unwrap();
+    global.set(scope, caps_key.into(), caps_fn.into());
+
     // Debug builds only. Release `map_dom_op` rejects `testResize` and `nodeCount`.
     #[cfg(debug_assertions)]
     {
@@ -295,6 +313,25 @@ fn dom_sync_callback(
         return;
     };
     rv.set(dom_value_to_v8(scope, &resp.value));
+}
+
+fn diag_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let feature = args.get(0).to_rust_string_lossy(scope);
+    let detail = args.get(1).to_rust_string_lossy(scope);
+    diagnostics::record_unsupported(&feature, &detail);
+}
+
+fn caps_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let missing = args.get(0).to_rust_string_lossy(scope);
+    diagnostics::record_capabilities(&missing);
 }
 
 fn console_callback(
@@ -552,8 +589,7 @@ fn v8_error_object<'s>(scope: &mut v8::PinScope<'s, '_>, msg: &str) -> v8::Local
 }
 
 fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name: &str) {
-    let measure = source.len() > 100_000 && std::env::var_os("GLIDE_MEASURE_SCRIPTS").is_some();
-    let started = measure.then(std::time::Instant::now);
+    let started = std::time::Instant::now();
     let done = Arc::new(AtomicBool::new(false));
     let done_flag = done.clone();
     let handle = scope.thread_safe_handle();
@@ -580,10 +616,11 @@ fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
     run_script(scope, code, name);
     done.store(true, Ordering::SeqCst);
     scope.cancel_terminate_execution();
-    if let Some(t0) = started {
-        let mut fields = script_fields(name);
-        fields.push(("bytes", source.len().to_string()));
-        fields.push(("seconds", format!("{:.3}", t0.elapsed().as_secs_f64())));
+    let mut fields = script_fields(name);
+    fields.push(("bytes", source.len().to_string()));
+    fields.push(("seconds", format!("{:.3}", started.elapsed().as_secs_f64())));
+    logging::debug("js.script", "script executed", &fields);
+    if source.len() > 100_000 && std::env::var_os("GLIDE_MEASURE_SCRIPTS").is_some() {
         logging::info("js.script", "script execution finished", &fields);
     }
 }

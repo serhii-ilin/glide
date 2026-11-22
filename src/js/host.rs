@@ -13,7 +13,8 @@ use super::apply::apply_request;
 use super::bridge::{DomRequest, DomResponse, bubble_handles};
 use super::paint_prune::prune_stale_paint_children;
 use super::scripts::{
-    ScriptSource, ScriptSpec, collect_scripts, execution_plan, source_body, spawn_resolve_sources,
+    ScriptSource, ScriptSpec, collect_scripts_for_page, execution_plan, source_body,
+    spawn_resolve_sources,
 };
 use super::snapshot;
 use super::tap::JsTap;
@@ -102,8 +103,9 @@ impl JsHost {
         ) {
             return;
         }
-        let specs =
-            with_page_subdoc(chrome, collect_scripts).unwrap_or_else(|| collect_scripts(chrome));
+        let specs = with_page_subdoc(chrome, |doc| collect_scripts_for_page(doc, Some(page_url)))
+            .unwrap_or_else(|| collect_scripts_for_page(chrome, Some(page_url)));
+        log_discovered_scripts(page_url, &specs);
         self.script_specs = specs.clone();
         self.base_url = page_url.to_string();
         self.started_for = Some((current_doc_id, page_url.to_string()));
@@ -173,6 +175,7 @@ impl JsHost {
                 worker.run_scripts(vec![(body, script_id)], "async");
             }
         }
+        worker.page_settled();
     }
 
     fn try_finish_pending_sources(&mut self) {
@@ -360,6 +363,29 @@ pub(crate) fn should_start_page(
         return false;
     }
     !matches!(started_for, Some((id, url)) if *id == current_doc_id && url == page_url)
+}
+
+/// One record of what a page's markup contained, before any script runs.
+fn log_discovered_scripts(page_url: &str, specs: &[ScriptSpec]) {
+    if specs.is_empty() {
+        return;
+    }
+    let inline = specs.iter().filter(|s| s.inline.is_some()).count();
+    let external = specs.len() - inline;
+    let deferred = specs.iter().filter(|s| s.defer).count();
+    let async_count = specs.iter().filter(|s| s.r#async).count();
+    logging::debug(
+        "js.page",
+        "page scripts discovered",
+        &[
+            ("page_url", page_url.to_string()),
+            ("scripts", specs.len().to_string()),
+            ("inline", inline.to_string()),
+            ("external", external.to_string()),
+            ("defer", deferred.to_string()),
+            ("async", async_count.to_string()),
+        ],
+    );
 }
 
 fn page_document_id(chrome: &BaseDocument) -> usize {

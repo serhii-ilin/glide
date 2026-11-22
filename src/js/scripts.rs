@@ -31,13 +31,19 @@ pub enum ScriptSource {
 
 /// Depth-first document order.
 pub fn collect_scripts(doc: &BaseDocument) -> Vec<ScriptSpec> {
+    collect_scripts_for_page(doc, None)
+}
+
+/// Depth-first document order. When `page_url` is known, unsupported script kinds
+/// are reported as `js.unsupported` records carrying that page.
+pub fn collect_scripts_for_page(doc: &BaseDocument, page_url: Option<&str>) -> Vec<ScriptSpec> {
     let mut out = Vec::new();
     let root = doc.root_node().id;
-    walk(doc, root, &mut out);
+    walk(doc, root, &mut out, page_url);
     out
 }
 
-fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
+fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>, page_url: Option<&str>) {
     let children: Vec<_> = doc
         .get_node(node)
         .map(|n| n.children.iter().copied().collect())
@@ -58,6 +64,13 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
                     continue;
                 }
                 if kind == "module" {
+                    if let Some(page) = page_url {
+                        diagnostics::report_unsupported(
+                            page,
+                            "module-script",
+                            el.attr(local_name!("src")).unwrap_or("<inline>"),
+                        );
+                    }
                     continue;
                 }
             }
@@ -86,7 +99,7 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
                 element: Some(super::bridge::node_to_handle(child)),
             });
         }
-        walk(doc, child, out);
+        walk(doc, child, out, page_url);
     }
 }
 

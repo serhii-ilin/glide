@@ -14,6 +14,7 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 
 use crate::html::{GlideHtmlProvider, HtmlPageDocument};
 use crate::js::{JsHost, JsTap};
+use crate::logging;
 use crate::parse;
 
 pub const VIEWPORT_WIDTH: u32 = 1100;
@@ -105,9 +106,65 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     if js_enabled {
         js_host.flush_dom_rpc(&mut document.0, Duration::from_secs(4));
         document.0.resolve(0.0);
+        if !html.trim().is_empty() && !has_visible_content(&document.0) {
+            logging::warn(
+                "js.page",
+                "page rendered no visible text",
+                &[
+                    ("page_url", final_url.clone()),
+                    (
+                        "hint",
+                        "Scripts ran without errors; the app may depend on a capability listed by js.caps (GLIDE_LOG=debug) or on an unimplemented navigation API."
+                            .into(),
+                    ),
+                ],
+            );
+        }
     }
 
     Ok(document)
+}
+
+/// Whether the laid-out page shows any text or replaced content.
+///
+/// Hidden subtrees (`display:none`) have no layout box, so a shell whose only text
+/// sits in a hidden fallback counts as blank. Used to report script apps that take
+/// a silent fallback path instead of rendering.
+pub fn has_visible_content(doc: &BaseDocument) -> bool {
+    let Some(body) = doc.find_body_node() else {
+        return false;
+    };
+    let size = body.final_layout().size;
+    let laid_out = size.width > 0.0 && size.height > 0.0;
+    body.children
+        .iter()
+        .any(|child| visible_in_subtree(doc, *child, laid_out))
+}
+
+/// `parent_laid_out` carries the nearest box ancestor: text nodes have no layout
+/// data of their own, and hidden subtrees (`display:none`) lay out to zero size.
+fn visible_in_subtree(doc: &BaseDocument, id: NodeId, parent_laid_out: bool) -> bool {
+    let Some(node) = doc.get_node(id) else {
+        return false;
+    };
+    match &node.data {
+        NodeData::Text(data) => parent_laid_out && !data.content.trim().is_empty(),
+        NodeData::Element(..) | NodeData::AnonymousBlock(..) => {
+            let size = node.final_layout().size;
+            let laid_out = size.width > 0.0 && size.height > 0.0;
+            let replaced = node.data.is_element_with_tag_name(&local_name!("img"))
+                || node.data.is_element_with_tag_name(&local_name!("svg"))
+                || node.data.is_element_with_tag_name(&local_name!("canvas"))
+                || node.data.is_element_with_tag_name(&local_name!("video"))
+                || node.data.is_element_with_tag_name(&local_name!("iframe"));
+            (laid_out && replaced)
+                || node
+                    .children
+                    .iter()
+                    .any(|child| visible_in_subtree(doc, *child, laid_out))
+        }
+        _ => false,
+    }
 }
 
 /// Collapse whitespace in each line, drop blank lines, and append a trailing newline.
@@ -229,6 +286,35 @@ mod tests {
 
     fn doc_from_html(html: &str, scripting: bool) -> BaseDocument {
         parse::document_from_html(html, DocumentConfig::default(), scripting)
+    }
+
+    fn laid_out_doc(html: &str) -> BaseDocument {
+        let config = DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        };
+        let mut doc = parse::document_from_html(html, config, true);
+        doc.resolve(0.0);
+        doc
+    }
+
+    #[test]
+    fn visible_content_ignores_display_none_text() {
+        let hidden = laid_out_doc(
+            r#"<!DOCTYPE html><html><body><div style="display:none">hidden</div></body></html>"#,
+        );
+        assert!(!has_visible_content(&hidden));
+
+        let shown = laid_out_doc("<!DOCTYPE html><html><body><p>shown</p></body></html>");
+        assert!(has_visible_content(&shown));
+    }
+
+    #[test]
+    fn visible_content_counts_a_sized_image() {
+        let doc = laid_out_doc(
+            r#"<!DOCTYPE html><html><body><img width="10" height="10"></body></html>"#,
+        );
+        assert!(has_visible_content(&doc));
     }
 
     #[test]

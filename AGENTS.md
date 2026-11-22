@@ -75,6 +75,38 @@ tests/fixtures/   local HTML used by tests
 - Behavior that cannot be automated (real window input, focus) gets a row in
   `docs/manual-tests.md` with exact steps and the expected result.
 
+## Logging and observability
+
+Diagnostics are a product feature: a page can fail quietly (a blank app shell) without
+ever throwing. These rules keep records parseable, bounded and useful.
+
+- **One record per event**, through `crate::logging` (`error`/`warn`/`info`/`debug`). Never
+  `println!`/`eprintln!`/`format!` a log line by hand, and never log from a hot loop
+  without deduplicating first.
+- **Fixed schema.** `key=value` fields with stable names: `page_url`, `script`,
+  `script_kind`, `error_kind`, `feature`, `detail`, `status`, `hint`. Reuse existing
+  names instead of inventing synonyms. Use the logging helpers' quoting for every value.
+- **Targets** name the subsystem: `js.page` (lifecycle, summaries, capabilities),
+  `js.script` (per-script execution), `js.loader` (discovery and fetch), `js.uncaught`,
+  `js.console`, `js.unsupported`, `js.batch`, `dom.*` for the DOM bridge.
+- **Levels:** `error` = a failure someone should act on; `warn` = the page or browser is
+  degraded (unsupported feature, skipped script, blank render); `info` = notable state
+  change, the default filter; `debug` = per-item diagnosis (each script, discovery
+  counts, capability probes). Routine per-page chatter is `debug`, never `info`.
+- **Correlate and act.** Every error and warning carries `page_url` and a `hint` that
+  says what to check or which feature ID tracks it. Unsupported behavior also carries
+  `feature` and `detail` with `error_kind="unsupported"`.
+- **Aggregate per load.** Emit one `js.page` "settled" record with counts and
+  `status="clean|degraded"`; log it at `info` when degraded and `debug` when clean.
+  Report missing capabilities once per page (`js.caps`), not per call site.
+- **Bound page-controlled data.** Never log script bodies, cookies, tokens or full
+  documents. Truncate URLs and inline markers, and cap the number of distinct records a
+  page can trigger.
+- **Tests.** A new record is covered by a test that asserts its target and fields:
+  a unit test for formatting/counting, or a `tests/diagnostics.rs` subprocess test using
+  a `tests/fixtures/` page and `GLIDE_LOG`. `GLIDE_LOG` levels stay
+  `off | error | warn | info | debug`.
+
 ## Quality gates (all must pass before merge)
 
 ```sh

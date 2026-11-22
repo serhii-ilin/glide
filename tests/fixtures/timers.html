@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>tick:0</title>
+  </head>
+  <body>
+    <p id="tick">0</p>
+    <p id="timeout">waiting</p>
+    <script>
+      var n = 0;
+      setInterval(function () {
+        n += 1;
+        document.getElementById('tick').textContent = String(n);
+        document.title = 'tick:' + n;
+      }, 200);
+      setTimeout(function () {
+        document.getElementById('timeout').textContent = 'fired';
+      }, 500);
+    </script>
+  </body>
+</html>

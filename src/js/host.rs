@@ -1161,9 +1161,11 @@ mod tests {
         assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
     }
 
+    use atomic_refcell::AtomicRefCell;
     use blitz_dom::Document;
     use blitz_traits::events::{
-        BlitzWheelDelta, BlitzWheelEvent, MouseEventButtons, Point, PointerCoords, UiEvent,
+        BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
+        MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
     };
     use blitz_traits::shell::{ColorScheme, Viewport};
     use keyboard_types::Modifiers;
@@ -1253,38 +1255,53 @@ mod tests {
         assert!(!page_subdoc_hover_is_none(&chrome));
     }
 
+    fn pointer_event(x: f32, y: f32) -> BlitzPointerEvent {
+        BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: PointerCoords {
+                page_x: x,
+                page_y: y,
+                screen_x: x,
+                screen_y: y,
+                client_x: x,
+                client_y: y,
+            },
+            button: MouseEventButton::Main,
+            buttons: MouseEventButtons::None,
+            mods: Modifiers::empty(),
+            details: PointerDetails::default(),
+            element: Point { x, y },
+            active_pointers: Arc::new(AtomicRefCell::new(Vec::new())),
+        }
+    }
+
     #[test]
     fn wheel_scrolls_inner_pane_after_hover_refresh() {
         let mut chrome = chrome_with_scroll_pane();
-        chrome.set_hover_to(120.0, 100.0);
-        chrome.resolve(0.0);
-        let before = pane_scroll_y(&chrome);
-        wheel_lines(&mut chrome, 120.0, 100.0, 3.0);
-        let without_subdoc_hover = pane_scroll_y(&chrome);
+        let (pane_x, pane_y) = with_page_subdoc(&chrome, pane_center).expect("page subdoc");
+        assert!(page_subdoc_hover_is_none(&chrome));
+
+        // Without a subdocument hover the wheel falls back to the page, not the pane.
+        wheel_lines(&mut chrome, pane_x, pane_y, -3.0);
         assert_eq!(
-            without_subdoc_hover, before,
-            "wheel should not scroll the pane until the subdocument hover is set"
+            pane_scroll_y(&chrome),
+            0.0,
+            "the pane must not scroll while the subdocument has no hover"
         );
 
-        const SCROLL_PAGE: &str = concat!(
-            "<!DOCTYPE html><html><body style=\"margin:0\">",
-            "<div id=\"pane\" style=\"width:200px;height:120px;overflow:auto\">",
-            "<div style=\"height:800px\">tall</div></div>",
-            "<div style=\"height:3000px\">filler</div>",
-            "</body></html>"
-        );
-        let mut page = parse::document_from_html(SCROLL_PAGE, viewport_doc_config(), false);
-        page.resolve(0.0);
-        let (pane_x, pane_y) = pane_center(&page);
-        let pane_id = page.get_element_by_id("pane").expect("pane");
-        page.set_hover_to(pane_x, pane_y);
-        page.resolve(0.0);
-        let baseline = page.get_node(pane_id).expect("pane node").scroll_offset().y;
-        wheel_lines(&mut page, pane_x, pane_y, -5.0);
-        let after = page.get_node(pane_id).expect("pane node").scroll_offset().y;
+        // This is the UiEvent the window produces from the synthetic PointerMoved.
+        chrome.handle_ui_event(UiEvent::PointerMove(pointer_event(pane_x, pane_y)));
+        chrome.resolve(0.0);
         assert!(
-            after > baseline,
-            "wheel should scroll the overflow pane once hover is set"
+            !page_subdoc_hover_is_none(&chrome),
+            "a forwarded pointer move must set the subdocument hover"
+        );
+
+        wheel_lines(&mut chrome, pane_x, pane_y, -3.0);
+        assert!(
+            pane_scroll_y(&chrome) > 0.0,
+            "wheel should scroll the inner pane after the hover refresh"
         );
     }
 }

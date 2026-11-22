@@ -4,6 +4,7 @@ pub mod computed;
 pub mod console;
 pub mod elements;
 pub mod highlight;
+pub mod inspect;
 pub mod repl;
 
 use blitz_dom::BaseDocument;
@@ -141,6 +142,9 @@ pub struct DevToolsSession {
     elements_last_detail_html: String,
     elements_last_computed_html: String,
     elements_last_highlight: Option<highlight::HighlightRect>,
+    pub inspect_mode: bool,
+    /// Swallow the next left-button release after a pick press (even if inspect mode already ended).
+    pub swallow_pointer_up: bool,
     pub repl_ui: repl::ConsoleReplUi,
 }
 
@@ -173,6 +177,7 @@ impl DevToolsSession {
         if !self.state.open {
             return;
         }
+        self.exit_inspect_mode(doc);
         self.state.close();
         self.sync_chrome(doc);
         highlight::apply_inspect_highlight(doc, None);
@@ -180,6 +185,74 @@ impl DevToolsSession {
         if let Some(saved) = self.focus_restore.take() {
             restore_devtools_focus(doc, saved);
         }
+    }
+
+    /// Leave inspect mode after a pick; keeps `swallow_pointer_up` until the release is consumed.
+    pub fn exit_inspect_mode_after_pick(&mut self, doc: &mut BaseDocument) {
+        if !self.inspect_mode {
+            return;
+        }
+        self.inspect_mode = false;
+        crate::chrome::set_inspect_toggle_active(doc, false);
+        inspect::exit_inspect_visuals(doc);
+    }
+
+    pub fn exit_inspect_mode(&mut self, doc: &mut BaseDocument) {
+        if !self.inspect_mode {
+            return;
+        }
+        self.inspect_mode = false;
+        self.swallow_pointer_up = false;
+        crate::chrome::set_inspect_toggle_active(doc, false);
+        inspect::exit_inspect_visuals(doc);
+    }
+
+    pub fn toggle_inspect_mode(&mut self, doc: &mut BaseDocument) {
+        if self.inspect_mode {
+            self.exit_inspect_mode(doc);
+            return;
+        }
+        if !self.state.open {
+            self.focus_restore = Some(capture_devtools_focus_restore(doc));
+            self.state.open = true;
+            self.state.reclamp_using_stage(doc);
+        }
+        self.state.tab = DevToolsTab::Elements;
+        self.inspect_mode = true;
+        self.sync_chrome(doc);
+        crate::chrome::set_inspect_toggle_active(doc, true);
+    }
+
+    pub fn update_inspect_hover(&mut self, chrome: &mut BaseDocument, x: f32, y: f32) -> bool {
+        if !self.inspect_mode {
+            return false;
+        }
+        if !inspect::chrome_pointer_targets_page(chrome, x, y) {
+            inspect::exit_inspect_visuals(chrome);
+            return true;
+        }
+        let Some(hit) = inspect::page_hit_at_chrome_point(chrome, x, y) else {
+            inspect::exit_inspect_visuals(chrome);
+            return true;
+        };
+        let Some(element) = inspect::inspectable_element_for_hit(chrome, hit) else {
+            inspect::exit_inspect_visuals(chrome);
+            return true;
+        };
+        let label = elements::with_page_document(chrome, |page| {
+            inspect::inspect_element_label(page, element)
+        });
+        let rect = elements::with_page_document(chrome, |page| {
+            inspect::highlight_for_page_node(chrome, page, element)
+        })
+        .flatten();
+        if let Some(r) = rect {
+            highlight::apply_inspect_highlight(chrome, Some(r));
+            inspect::apply_inspect_label(chrome, label.as_deref(), Some(r));
+        } else {
+            inspect::exit_inspect_visuals(chrome);
+        }
+        true
     }
 
     pub fn set_dock(&mut self, dock: DevToolsDock, doc: &mut BaseDocument) {
@@ -191,6 +264,7 @@ impl DevToolsSession {
     }
 
     pub fn set_tab(&mut self, tab: DevToolsTab, doc: &mut BaseDocument) {
+        self.exit_inspect_mode(doc);
         self.state.set_tab(tab);
         if self.state.open {
             self.sync_chrome(doc);
@@ -208,6 +282,7 @@ impl DevToolsSession {
     ) -> bool {
         let tab_changed = self.elements_last_tab != Some(tab.id);
         if tab_changed {
+            self.exit_inspect_mode(chrome);
             self.elements_last_stamp = None;
             self.elements_last_ui_generation = u64::MAX;
             self.elements_last_tree_html.clear();
@@ -260,10 +335,14 @@ impl DevToolsSession {
                 self.elements_last_computed_html = plan.computed_html.clone();
             }
         }
-        let highlight = elements::with_page_document(chrome, |page| {
-            highlight::highlight_for_selected(chrome, page, tab.elements.selected)
-        })
-        .flatten();
+        let highlight = if self.inspect_mode {
+            None
+        } else {
+            elements::with_page_document(chrome, |page| {
+                highlight::highlight_for_selected(chrome, page, tab.elements.selected)
+            })
+            .flatten()
+        };
         let highlight_changed = highlight != self.elements_last_highlight;
         if highlight_changed {
             highlight::apply_inspect_highlight(chrome, highlight);
@@ -498,6 +577,34 @@ mod tests {
                 .map(|n| !n.children.is_empty())
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn inspect_exits_when_devtools_tab_changes() {
+        use blitz_dom::local_name;
+
+        let mut chrome = parse_chrome(&chrome_document("about:blank", true, false));
+        chrome.resolve(0.0);
+        let mut session = DevToolsSession {
+            inspect_mode: true,
+            state: DevToolsState {
+                open: true,
+                tab: DevToolsTab::Elements,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        crate::chrome::set_inspect_toggle_active(&mut chrome, true);
+        session.set_tab(DevToolsTab::Console, &mut chrome);
+        assert!(!session.inspect_mode);
+        let btn = chrome
+            .get_element_by_id("devtools-inspect-toggle")
+            .expect("toggle");
+        let class = chrome
+            .get_node(btn)
+            .and_then(|n| n.attr(local_name!("class")))
+            .unwrap_or_default();
+        assert!(!class.contains("active"));
     }
 
     #[test]

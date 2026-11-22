@@ -36,6 +36,7 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Cmd/Ctrl+Q | Quit |
 | Cmd/Ctrl+F | Find in page |
 | F12 or Meta+Alt+I / Ctrl+Shift+I | Toggle developer tools |
+| Cmd/Ctrl+Shift+C | Open DevTools on Elements (if closed) and toggle element inspect mode |
 | Esc (focus in the DevTools panel) | Close developer tools |
 | Up / Down (Elements tree focused) | Select previous / next DOM row |
 | Left / Right (Elements tree focused) | Collapse or parent / expand node |

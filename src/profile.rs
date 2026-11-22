@@ -504,6 +504,7 @@ pub fn help_page_html() -> String {
         ("Cmd/Ctrl+D", "Bookmark the active tab"),
         ("Cmd/Ctrl+Shift+J", "Toggle page JavaScript (global)"),
         ("F12; Meta+Alt+I / Ctrl+Shift+I", "Toggle developer tools"),
+        ("Cmd/Ctrl+Shift+C", "Toggle element inspect mode (DevTools)"),
         ("Esc (in DevTools)", "Close developer tools"),
         ("Cmd/Ctrl+Q", "Quit"),
     ];

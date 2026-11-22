@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scroll pane fixture</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { min-height: 300vh; background: #e8e8e8; }
+  #pane {
+    position: fixed;
+    top: 24px;
+    left: 24px;
+    width: 220px;
+    height: 160px;
+    overflow: auto;
+    border: 1px solid #888;
+    background: #fff;
+  }
+  #pane-content { height: 1200px; padding: 8px; }
+  #marker { margin-top: 1100px; }
+  #page-foot { margin: 200vh 24px 48px; }
+</style>
+</head>
+<body>
+  <div id="pane">
+    <div id="pane-content">
+      <p>Inner pane: wheel here should scroll this box.</p>
+      <p id="marker">Pane bottom marker</p>
+    </div>
+  </div>
+  <p id="page-foot">Page body continues below the fold.</p>
+  <p><a href="input.html">Navigate without moving the mouse</a></p>
+</body>
+</html>

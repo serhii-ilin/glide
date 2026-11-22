@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script>
+    var s = document.createElement('script');
+    s.src = 'missing-script.js';
+    s.onerror = function () { document.getElementById('t').textContent = 'error fired'; };
+    document.body.appendChild(s);
+  </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t"></p>
+  <script>
+    window.order = ['classic'];
+    document.addEventListener('DOMContentLoaded', function () {
+      window.order.push('dom');
+      document.getElementById('t').textContent = window.order.join(',');
+    });
+  </script>
+  <script type="module">window.order.push('module');</script>
+</body>
+</html>

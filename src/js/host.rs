@@ -247,11 +247,17 @@ impl JsHost {
             None => return,
         };
         let specs = self.script_specs.clone();
-        let pick = |idxs: &[usize]| -> Vec<(String, Option<u64>)> {
+        let pick = |idxs: &[usize]| -> Vec<(String, Option<u64>, bool)> {
             idxs.iter()
                 .filter_map(|&i| {
-                    source_body(&sources[i])
-                        .map(|body| (body, specs.get(i).and_then(|s| s.element)))
+                    let spec = specs.get(i);
+                    source_body(&sources[i]).map(|body| {
+                        (
+                            body,
+                            spec.and_then(|s| s.element),
+                            spec.is_some_and(|s| s.module),
+                        )
+                    })
                 })
                 .collect()
         };
@@ -266,8 +272,10 @@ impl JsHost {
         worker.fire_dom_content_loaded();
         for idx in async_scripts {
             if let Some(body) = source_body(&sources[idx]) {
-                let script_id = specs.get(idx).and_then(|s| s.element);
-                worker.run_scripts(vec![(body, script_id)], "async");
+                let spec = specs.get(idx);
+                let script_id = spec.and_then(|s| s.element);
+                let module = spec.is_some_and(|s| s.module);
+                worker.run_scripts(vec![(body, script_id, module)], "async");
             }
         }
         worker.page_settled();

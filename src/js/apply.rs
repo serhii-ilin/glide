@@ -417,9 +417,37 @@ fn parse_data_url_bytes(url: &str) -> Result<(String, Vec<u8>), String> {
                 .map_err(|_| "invalid base64 data url".to_string())?
         }
     } else {
-        data.as_bytes().to_vec()
+        percent_decode(data)
     };
     Ok((content_type, bytes))
+}
+
+/// URL Standard data URL body decoding: `%XX` escapes, with `+` left literal.
+fn percent_decode(input: &str) -> Vec<u8> {
+    fn hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push(hi * 16 + lo);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
 }
 
 pub(crate) fn camel_to_kebab(name: &str) -> String {
@@ -539,6 +567,12 @@ mod tests {
     #[test]
     fn camel_case_style_maps_to_css() {
         assert_eq!(camel_to_kebab("backgroundColor"), "background-color");
+    }
+
+    #[test]
+    fn parse_data_url_percent_decodes_plain_payload() {
+        let (_, bytes) = parse_data_url_bytes("data:text/javascript,a%20b%2Bc").expect("data");
+        assert_eq!(bytes, b"a b+c");
     }
 
     #[test]

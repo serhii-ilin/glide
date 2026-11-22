@@ -19,6 +19,7 @@ pub struct ScriptSpec {
     pub src: Option<String>,
     pub defer: bool,
     pub r#async: bool,
+    pub module: bool,
     pub element: Option<u64>,
 }
 
@@ -34,16 +35,16 @@ pub fn collect_scripts(doc: &BaseDocument) -> Vec<ScriptSpec> {
     collect_scripts_for_page(doc, None)
 }
 
-/// Depth-first document order. When `page_url` is known, unsupported script kinds
-/// are reported as `js.unsupported` records carrying that page.
-pub fn collect_scripts_for_page(doc: &BaseDocument, page_url: Option<&str>) -> Vec<ScriptSpec> {
+/// Depth-first document order. `page_url` is accepted for call-site symmetry
+/// with the loader; classification now runs in the page runtime.
+pub fn collect_scripts_for_page(doc: &BaseDocument, _page_url: Option<&str>) -> Vec<ScriptSpec> {
     let mut out = Vec::new();
     let root = doc.root_node().id;
-    walk(doc, root, &mut out, page_url);
+    walk(doc, root, &mut out);
     out
 }
 
-fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>, page_url: Option<&str>) {
+fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
     let children: Vec<_> = doc
         .get_node(node)
         .map(|n| n.children.iter().copied().collect())
@@ -63,25 +64,29 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>, page_url: O
                 {
                     continue;
                 }
-                if kind == "module" {
-                    if let Some(page) = page_url {
-                        diagnostics::report_unsupported(
-                            page,
-                            "module-script",
-                            el.attr(local_name!("src")).unwrap_or("<inline>"),
-                        );
-                    }
-                    continue;
-                }
             }
-            let defer = el.attr(local_name!("defer")).is_some();
+            let module = el
+                .attr(local_name!("type"))
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("module"));
+            let defer_attr = el.attr(local_name!("defer")).is_some();
             let async_attr = el.attr(local_name!("async")).is_some();
             let src = el
                 .attr(local_name!("src"))
                 .map(str::to_string)
                 .filter(|s| !s.is_empty());
-            let defer = src.is_some() && defer;
-            let async_attr = src.is_some() && async_attr;
+            // Module scripts are deferred by default (HTML Living Standard,
+            // "script"); the `async` attribute makes inline and external
+            // modules execute as they load.
+            let defer = if module {
+                true
+            } else {
+                src.is_some() && defer_attr
+            };
+            let async_attr = if module {
+                async_attr
+            } else {
+                src.is_some() && async_attr
+            };
             let inline = if src.is_none() {
                 Some(
                     doc.get_node(child)
@@ -96,10 +101,11 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>, page_url: O
                 src,
                 defer,
                 r#async: async_attr,
+                module,
                 element: Some(super::bridge::node_to_handle(child)),
             });
         }
-        walk(doc, child, out, page_url);
+        walk(doc, child, out);
     }
 }
 
@@ -241,6 +247,23 @@ mod tests {
         assert_eq!(classic, vec![0, 3]);
         assert_eq!(defer, vec![1]);
         assert_eq!(async_scripts, vec![2]);
+    }
+
+    #[test]
+    fn module_scripts_are_deferred_or_async() {
+        let html = r#"<!DOCTYPE html><html><body>
+            <script type="module">globalThis.a = 1</script>
+            <script type="module" async src="m.js"></script>
+            <script type="module" src="d.js"></script>
+            <script>globalThis.b = 2</script>
+        </body></html>"#;
+        let doc = crate::parse::document_from_html(html, DocumentConfig::default(), true);
+        let scripts = collect_scripts(&doc);
+        assert!(scripts.iter().filter(|s| s.module).count() == 3);
+        let (classic, defer, async_scripts) = execution_plan(&scripts);
+        assert_eq!(classic, vec![3]);
+        assert_eq!(defer, vec![0, 2]);
+        assert_eq!(async_scripts, vec![1]);
     }
 
     #[test]

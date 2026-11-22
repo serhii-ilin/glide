@@ -1094,6 +1094,7 @@ fn failed_external_script_does_not_panic() {
         src: Some("https://example.invalid/missing.js".into()),
         defer: false,
         r#async: false,
+        module: false,
         element: None,
     }];
     let sources =

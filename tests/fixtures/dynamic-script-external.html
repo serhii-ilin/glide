@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script>
+    var s = document.createElement('script');
+    s.src = 'data:text/javascript,document.getElementById(%27t%27).textContent%3D%27external%20dynamic%27';
+    s.onload = function () {
+      document.getElementById('t').textContent += ' loaded';
+    };
+    document.body.appendChild(s);
+    document.getElementById('t').textContent = 'after';
+  </script>
+</body>
+</html>

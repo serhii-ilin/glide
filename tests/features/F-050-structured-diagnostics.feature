@@ -8,8 +8,10 @@ Feature: F-050 Structured diagnostics
   # Tests: logging::tests::*, js::diagnostics::tests::*,
   #        diagnostics::uncaught_script_error_is_logged_with_context,
   #        diagnostics::glide_log_warn_suppresses_informational_console_messages,
-  #        diagnostics::dynamically_inserted_script_is_reported_as_unsupported,
-  #        diagnostics::module_script_is_reported_as_skipped,
+  #        diagnostics::dynamically_inserted_script_runs,
+  #        diagnostics::dynamic_script_fetch_failure_is_reported,
+  #        diagnostics::module_script_runs,
+  #        diagnostics::module_import_is_reported_as_unsupported,
   #        compat::subprocess::tests::first_uncaught_from_structured_log, manual M-037
 
   Background:
@@ -36,16 +38,18 @@ Feature: F-050 Structured diagnostics
       | TypeError: Cannot redefine property: innerHTML | incompatible_descriptor |
       | TypeError: Invalid URL | invalid_url |
 
-  Scenario: An unimplemented page feature leaves a record
-    Given a page script inserts another script element
-    When the inserted script is mirrored but not executed
-    Then a js.unsupported warning carries the page URL, feature and detail
+  Scenario: A dynamic script that cannot be loaded leaves a record
+    Given a page script inserts a script element whose source is missing
+    When the fetch fails
+    Then a js.unsupported warning names feature "dynamic-script" and the source
+    And the element's error handler runs
     And the per-page summary reports status "degraded"
 
-  Scenario: A skipped script kind leaves a record
-    Given a page whose only script has type "module"
-    When the loader skips it
-    Then a js.unsupported warning names feature "module-script"
+  Scenario: An ES module with dependencies leaves a record
+    Given a page whose only script is a module with an import
+    When the module graph cannot be resolved
+    Then a js.unsupported warning names feature "module-import"
+    And the module body does not run
 
   Scenario: Silent feature detection is visible on demand
     Given a page probes Web APIs Glide does not provide

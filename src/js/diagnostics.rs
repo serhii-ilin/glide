@@ -311,9 +311,12 @@ pub fn record_capabilities(missing: &str) {
 fn unsupported_hint(feature: &str) -> &'static str {
     match feature {
         "dynamic-script" => {
-            "Scripts inserted after parsing are mirrored into Blitz but not executed (F-036)."
+            "A dynamically inserted script could not be fetched or executed; check its URL."
         }
-        "module-script" => "ES modules are parsed but never executed by the page runtime.",
+        "module-script" => "The module script could not be executed; check its syntax.",
+        "module-import" => {
+            "The module imports another module; the loader does not fetch module dependencies yet."
+        }
         "dynamic-import" => "import() is not wired to the script loader.",
         _ => "A page feature reached the DOM bridge with no implementation; see F-032/F-036.",
     }

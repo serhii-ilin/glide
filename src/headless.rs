@@ -94,12 +94,12 @@ pub fn settle_decision(
     min_js: Duration,
     max: Duration,
 ) -> Option<SettleBreak> {
-    if elapsed > max {
-        return Some(SettleBreak::TimedOut);
-    }
     let min_js = min_js.min(max);
     if net_done && js_done && elapsed >= min_js {
         return Some(SettleBreak::Settled);
+    }
+    if elapsed > max {
+        return Some(SettleBreak::TimedOut);
     }
     None
 }
@@ -443,7 +443,7 @@ mod tests {
         let max = Duration::from_secs(12);
         assert_eq!(
             settle_decision(
-                true,
+                false,
                 true,
                 max + Duration::from_millis(1),
                 Duration::ZERO,
@@ -453,6 +453,17 @@ mod tests {
         );
         assert_eq!(
             settle_decision(true, true, max, Duration::ZERO, max),
+            Some(SettleBreak::Settled)
+        );
+        let short_max = Duration::from_millis(800);
+        assert_eq!(
+            settle_decision(
+                true,
+                true,
+                Duration::from_millis(830),
+                Duration::from_secs(1),
+                short_max
+            ),
             Some(SettleBreak::Settled)
         );
     }

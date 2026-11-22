@@ -28,7 +28,7 @@ pub fn dom_html(
     if all {
         let ids = doc
             .query_selector_all(sel)
-            .map_err(|_| "invalid selector".to_string())?;
+            .map_err(|_| format!("invalid selector `{sel}`"))?;
         if ids.is_empty() {
             return Err(format!("no element matches selector `{sel}`"));
         }
@@ -48,7 +48,7 @@ pub fn dom_html(
     }
     let id = doc
         .query_selector(sel)
-        .map_err(|_| "invalid selector".to_string())?
+        .map_err(|_| format!("invalid selector `{sel}`"))?
         .ok_or_else(|| format!("no element matches selector `{sel}`"))?;
     let node = doc
         .get_node(id)
@@ -66,7 +66,7 @@ pub fn query(
 ) -> Result<Vec<ElementInfo>, String> {
     let ids = doc
         .query_selector_all(selector)
-        .map_err(|_| "invalid selector".to_string())?;
+        .map_err(|_| format!("invalid selector `{selector}`"))?;
     let mut out = Vec::new();
     for id in ids.into_iter().take(limit) {
         if let Some(info) = element_info(doc, id, scripting_enabled) {
@@ -222,7 +222,7 @@ mod tests {
     fn dom_invalid_selector_is_error() {
         let doc = laid_out("<!DOCTYPE html><html><body></body></html>");
         let err = dom_html(&doc, Some("[[["), false, DEFAULT_MAX_CHARS).expect_err("err");
-        assert!(!err.is_empty());
+        assert!(err.contains("invalid selector `[[[`"), "{err}");
     }
 
     #[test]

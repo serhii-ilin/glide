@@ -45,7 +45,7 @@ pub fn usage() -> &'static str {
        glide [url]                    open a window (default https://example.com/)\n  \
        glide --screenshot [url] [png] headless PNG (default url / glide-screenshot.png)\n  \
        glide --dump-text [url]        print page text after scripts settle\n  \
-       glide --mcp                    MCP server on stdio (headless session)\n  \
+       glide --mcp [--no-js]          MCP server on stdio (--mcp must be first)\n  \
        glide --no-js ...              disable page JavaScript\n\n\
      Options:\n  \
        -h, --help                     print this help\n"
@@ -311,6 +311,18 @@ mod tests {
                 attach: None,
             }
         );
+    }
+
+    #[test]
+    fn mcp_help_flag() {
+        assert!(matches!(
+            parse(["--mcp".into(), "--help".into()]),
+            Ok(RunMode::Help)
+        ));
+        assert!(matches!(
+            parse(["--mcp".into(), "-h".into()]),
+            Ok(RunMode::Help)
+        ));
     }
 
     #[test]

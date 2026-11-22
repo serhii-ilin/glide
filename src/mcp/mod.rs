@@ -8,6 +8,11 @@ use rmcp::ServiceExt;
 
 pub use tools::GlideMcp;
 
+fn mcp_connection_closed_message(err: &impl std::fmt::Display) -> bool {
+    let msg = err.to_string();
+    msg.contains("connection closed") || msg.contains("ConnectionClosed")
+}
+
 /// Start the MCP server on stdin/stdout with the given control backend.
 pub async fn serve_stdio(
     backend: Arc<dyn crate::control::ControlBackend>,
@@ -22,15 +27,16 @@ pub async fn serve_stdio(
         ],
     );
     let server = GlideMcp::new(backend);
-    let running = server
-        .serve(rmcp::transport::stdio())
-        .await
-        .map_err(|e| format!("mcp serve failed: {e}"))?;
-    running
-        .waiting()
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("mcp server exited: {e}"))
+    let running = match server.serve(rmcp::transport::stdio()).await {
+        Ok(service) => service,
+        Err(err) if mcp_connection_closed_message(&err) => return Ok(()),
+        Err(err) => return Err(format!("mcp serve failed: {err}")),
+    };
+    match running.waiting().await {
+        Ok(_reason) => Ok(()),
+        Err(err) if mcp_connection_closed_message(&err) => Ok(()),
+        Err(err) => Err(format!("mcp server exited: {err}")),
+    }
 }
 
 /// Fields for an `mcp.server` tool-call debug record (tested by unit tests).

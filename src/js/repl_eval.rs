@@ -2,8 +2,8 @@
 
 use std::fmt::Write as _;
 use std::pin::pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
@@ -14,40 +14,44 @@ const WATCHDOG_TICK_MS: u64 = 100;
 
 static WATCHDOG_MS: AtomicU64 = AtomicU64::new(DEFAULT_WATCHDOG_MS);
 
-/// Override REPL watchdog duration (used in unit tests; restore afterward).
-#[allow(dead_code)] // called from `js::integration` tests in the same crate
+/// Override the REPL watchdog duration; [`super::harness::WatchdogOverride`] restores it.
+#[cfg(test)]
 pub fn set_watchdog_duration_ms(ms: u64) {
     WATCHDOG_MS.store(ms, Ordering::Relaxed);
-}
-
-#[allow(dead_code)] // paired with `set_watchdog_duration_ms` in integration tests
-pub fn reset_watchdog_duration_ms() {
-    WATCHDOG_MS.store(DEFAULT_WATCHDOG_MS, Ordering::Relaxed);
 }
 
 pub fn watchdog_duration_ms() -> u64 {
     WATCHDOG_MS.load(Ordering::Relaxed)
 }
 
+fn lock_done(done: &Mutex<bool>) -> MutexGuard<'_, bool> {
+    done.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Arms a background thread that terminates the isolate after the watchdog duration.
+///
+/// `finish` is atomic with the final check-then-terminate, so once `finish` returns no
+/// new terminate can land; the caller only has to clear one requested in that window.
 struct EvalWatchdog {
-    done: Arc<AtomicBool>,
+    done: Arc<Mutex<bool>>,
 }
 
 impl EvalWatchdog {
     fn start(scope: &v8::PinScope<'_, '_>) -> Self {
-        let done = Arc::new(AtomicBool::new(false));
-        let done_flag = done.clone();
+        let done = Arc::new(Mutex::new(false));
+        let done_flag = Arc::clone(&done);
         let handle = scope.thread_safe_handle();
         let total_ms = watchdog_duration_ms().max(WATCHDOG_TICK_MS);
         let ticks = total_ms.div_ceil(WATCHDOG_TICK_MS);
         thread::spawn(move || {
             for _ in 0..ticks {
-                if done_flag.load(Ordering::SeqCst) {
+                if *lock_done(&done_flag) {
                     return;
                 }
                 thread::sleep(Duration::from_millis(WATCHDOG_TICK_MS));
             }
-            if !done_flag.load(Ordering::SeqCst) {
+            let done = lock_done(&done_flag);
+            if !*done {
                 handle.terminate_execution();
             }
         });
@@ -55,7 +59,7 @@ impl EvalWatchdog {
     }
 
     fn finish(&self) {
-        self.done.store(true, Ordering::SeqCst);
+        *lock_done(&self.done) = true;
     }
 }
 
@@ -132,9 +136,15 @@ fn eval_expression_value<'s>(
 ) -> Result<String, String> {
     let watchdog = EvalWatchdog::start(scope);
     let outcome = eval_source_value(scope, source, &watchdog);
-    // Keep the watchdog armed through the task flush so an endless microtask chain
-    // started by the eval is still bounded.
-    if settle_with_watchdog(scope) {
+    // Microtasks stay under the watchdog so an endless promise chain is bounded, but
+    // the DOM flush runs after it: a terminate between emptying `pendingBatch` and the
+    // `batchMutate` RPC would lose the batch or leave new nodes untagged.
+    let timed_out = drain_microtasks_under_watchdog(scope);
+    watchdog.finish();
+    // Clear a terminate requested between the watchdog's last check and `finish`.
+    scope.cancel_terminate_execution();
+    super::worker::flush_dom(scope);
+    if timed_out {
         return Err(timeout_message());
     }
     outcome
@@ -153,16 +163,12 @@ fn eval_source_value<'s>(
     format_v8_preview_under_watchdog(scope, value, 0)
 }
 
-/// Flush queued DOM work, returning true when the watchdog terminated the flush.
-fn settle_with_watchdog<'s>(scope: &mut v8::PinScope<'s, '_>) -> bool {
+/// Drain microtasks, returning true when the watchdog terminated the drain.
+fn drain_microtasks_under_watchdog<'s>(scope: &mut v8::PinScope<'s, '_>) -> bool {
     let tc = pin!(v8::TryCatch::new(scope));
     let tc = &mut tc.init();
-    super::worker::settle_task(tc);
-    if tc.has_terminated() {
-        tc.cancel_terminate_execution();
-        return true;
-    }
-    false
+    super::worker::drain_microtasks(tc);
+    tc.has_terminated()
 }
 
 fn run_expression_with_watchdog<'s>(

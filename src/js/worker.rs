@@ -883,7 +883,13 @@ fn script_fields(name: &str) -> Vec<(&'static str, String)> {
 }
 
 /// Run V8 microtasks and the Glide queue until both are idle, then flush DOM ops.
-pub(super) fn settle_task(scope: &mut v8::PinScope<'_, '_>) {
+fn settle_task(scope: &mut v8::PinScope<'_, '_>) {
+    drain_microtasks(scope);
+    flush_dom(scope);
+}
+
+/// Run V8 microtasks and the Glide queue until both are idle.
+pub(super) fn drain_microtasks(scope: &mut v8::PinScope<'_, '_>) {
     for _ in 0..32 {
         scope.perform_microtask_checkpoint();
         let ran = call_global_fn(scope, "__glide_drain_microtasks", &[])
@@ -892,6 +898,10 @@ pub(super) fn settle_task(scope: &mut v8::PinScope<'_, '_>) {
             break;
         }
     }
+}
+
+/// Flush queued DOM mutations to the Blitz mirror.
+pub(super) fn flush_dom(scope: &mut v8::PinScope<'_, '_>) {
     call_global_fn(scope, "__glide_flush_dom", &[]);
 }
 

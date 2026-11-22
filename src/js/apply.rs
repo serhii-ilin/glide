@@ -5,11 +5,23 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use base64::Engine as _;
 use blitz_dom::BaseDocument;
 use blitz_net::Provider;
 use blitz_traits::net::http::{self, HeaderMap, Method};
 use blitz_traits::net::{Body, Bytes, Request};
 use url::Url;
+
+const FORBIDDEN_RESPONSE_HEADERS: &[&str] = &["set-cookie", "set-cookie2"];
+const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
+    "cookie",
+    "host",
+    "content-length",
+    "connection",
+    "user-agent",
+    "referer",
+    "origin",
+];
 
 use super::bridge::{DomRequest, DomResponse, DomValue};
 
@@ -115,11 +127,11 @@ fn apply_fetch(
     body: &str,
     reply: u64,
 ) -> DomResponse {
-    if url.starts_with("data:") {
-        return DomResponse::ok(
-            reply,
-            DomValue::Json(data_url_response(url, method, headers, body)),
-        );
+    if is_data_url(url) {
+        return match data_url_response_json(url) {
+            Ok(value) => DomResponse::ok(reply, DomValue::Json(value)),
+            Err(reason) => DomResponse::err(reply, reason),
+        };
     }
     let Some(net) = net else {
         return DomResponse::err(reply, "no network provider");
@@ -175,6 +187,41 @@ fn apply_fetch(
     }
 }
 
+fn is_data_url(url: &str) -> bool {
+    url.get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+}
+
+fn is_forbidden_request_header(name: &str) -> bool {
+    let key = name.trim().to_ascii_lowercase();
+    FORBIDDEN_REQUEST_HEADERS
+        .iter()
+        .any(|blocked| key == *blocked)
+}
+
+fn header_name_valid(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && name.bytes().all(|b| {
+            b == b'!'
+                || b == b'#'
+                || b == b'$'
+                || b == b'&'
+                || b == b'+'
+                || b == b'-'
+                || b == b'.'
+                || b == b'^'
+                || b == b'_'
+                || b == b'|'
+                || b == b'~'
+                || b.is_ascii_alphanumeric()
+        })
+}
+
+fn header_value_valid(value: &str) -> bool {
+    !value.bytes().any(|b| b == b'\r' || b == b'\n')
+}
+
 fn build_fetch_request(
     url: Url,
     method: &str,
@@ -187,15 +234,20 @@ fn build_fetch_request(
     let mut headers = HeaderMap::new();
     let mut content_type = None;
     for (name, value) in header_pairs {
+        if is_forbidden_request_header(name) {
+            continue;
+        }
+        if !header_name_valid(name) || !header_value_valid(value) {
+            return Err("invalid header".to_string());
+        }
         if name.eq_ignore_ascii_case("content-type") {
             content_type = Some(value.clone());
         }
-        if let (Ok(header_name), Ok(header_value)) = (
-            http::header::HeaderName::from_bytes(name.as_bytes()),
-            http::header::HeaderValue::from_str(value),
-        ) {
-            headers.append(header_name, header_value);
-        }
+        let header_name = http::header::HeaderName::from_bytes(name.trim().as_bytes())
+            .map_err(|_| "invalid header".to_string())?;
+        let header_value =
+            http::header::HeaderValue::from_str(value).map_err(|_| "invalid header".to_string())?;
+        headers.append(header_name, header_value);
     }
     let body = if body.is_empty() {
         Body::Empty
@@ -218,81 +270,102 @@ fn status_text(status: u16) -> String {
         .to_string()
 }
 
-fn headers_json(pairs: &[(String, String)]) -> serde_json::Map<String, serde_json::Value> {
+fn headers_json_for_js(pairs: &[(String, String)]) -> serde_json::Map<String, serde_json::Value> {
     let mut map = serde_json::Map::new();
     for (name, value) in pairs {
+        if FORBIDDEN_RESPONSE_HEADERS
+            .iter()
+            .any(|blocked| name.eq_ignore_ascii_case(blocked))
+        {
+            continue;
+        }
         map.insert(name.clone(), serde_json::Value::String(value.clone()));
     }
     map
 }
 
-fn fetch_json(resp: &crate::http::Followed) -> DomValue {
-    let ok = (200..300).contains(&resp.status);
-    let mut headers = headers_json(&resp.headers);
-    if !resp.content_type.is_empty() && !headers.contains_key("content-type") {
-        headers.insert(
-            "content-type".into(),
-            serde_json::Value::String(resp.content_type.clone()),
-        );
-    }
-    DomValue::Json(serde_json::json!({
-        "status": resp.status,
-        "ok": ok,
-        "statusText": status_text(resp.status),
-        "url": resp.url,
-        "redirected": resp.redirected,
-        "headers": headers,
-        "body": String::from_utf8_lossy(&resp.body),
-    }))
-}
-
-fn data_url_response(
+fn fetch_reply_json(
+    status: u16,
     url: &str,
-    method: &str,
-    req_headers: &[(String, String)],
-    body: &str,
+    redirected: bool,
+    header_pairs: &[(String, String)],
+    body: &[u8],
 ) -> serde_json::Value {
-    let (content_type, payload) = parse_data_url(url);
-    let is_get = method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD");
-    let response_body = if is_get { payload } else { body.to_string() };
-    let mut headers: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-    headers.insert(
-        "content-type".into(),
-        serde_json::Value::String(content_type),
-    );
-    for (name, value) in req_headers {
-        headers.insert(
-            name.to_lowercase(),
-            serde_json::Value::String(value.clone()),
-        );
-    }
+    let ok = (200..300).contains(&status);
+    let body_base64 = base64::engine::general_purpose::STANDARD.encode(body);
     serde_json::json!({
-        "status": 200,
-        "ok": true,
-        "statusText": "OK",
+        "status": status,
+        "ok": ok,
+        "statusText": status_text(status),
         "url": url,
-        "redirected": false,
-        "headers": headers,
-        "body": response_body,
+        "redirected": redirected,
+        "headers": headers_json_for_js(header_pairs),
+        "body": String::from_utf8_lossy(body),
+        "bodyBase64": body_base64,
     })
 }
 
-fn parse_data_url(url: &str) -> (String, String) {
-    let mut content_type = "text/plain;charset=utf-8".to_string();
-    let mut payload = String::new();
-    let Some(rest) = url.strip_prefix("data:") else {
-        return (content_type, payload);
-    };
+fn fetch_json(resp: &crate::http::Followed) -> DomValue {
+    let mut header_pairs = resp.headers.clone();
+    if !resp.content_type.is_empty()
+        && !header_pairs
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+    {
+        header_pairs.push(("content-type".into(), resp.content_type.clone()));
+    }
+    DomValue::Json(fetch_reply_json(
+        resp.status,
+        &resp.url,
+        resp.redirected,
+        &header_pairs,
+        &resp.body,
+    ))
+}
+
+fn data_url_response_json(url: &str) -> Result<serde_json::Value, String> {
+    let (content_type, bytes) = parse_data_url_bytes(url)?;
+    let headers = vec![("content-type".into(), content_type)];
+    Ok(fetch_reply_json(200, url, false, &headers, &bytes))
+}
+
+fn data_url_content_type(meta: &str) -> String {
+    let trimmed = meta.trim();
+    if trimmed.is_empty() {
+        return "text/plain;charset=utf-8".into();
+    }
+    trimmed
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && !part.eq_ignore_ascii_case("base64"))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn parse_data_url_bytes(url: &str) -> Result<(String, Vec<u8>), String> {
+    if !is_data_url(url) {
+        return Err("invalid data url".to_string());
+    }
+    let rest = &url[5..];
     let Some((meta, data)) = rest.split_once(',') else {
-        return (content_type, payload);
+        return Ok((data_url_content_type(""), Vec::new()));
     };
-    if !meta.contains(";base64") {
-        payload = data.to_string();
-    }
-    if let Some(mime) = meta.split(';').next().filter(|m| !m.is_empty()) {
-        content_type = mime.to_string();
-    }
-    (content_type, payload)
+    let is_base64 = meta
+        .split(';')
+        .any(|part| part.eq_ignore_ascii_case("base64"));
+    let content_type = data_url_content_type(meta);
+    let bytes = if is_base64 {
+        if data.is_empty() {
+            Vec::new()
+        } else {
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| "invalid base64 data url".to_string())?
+        }
+    } else {
+        data.as_bytes().to_vec()
+    };
+    Ok((content_type, bytes))
 }
 
 pub(crate) fn camel_to_kebab(name: &str) -> String {
@@ -412,5 +485,64 @@ mod tests {
     #[test]
     fn camel_case_style_maps_to_css() {
         assert_eq!(camel_to_kebab("backgroundColor"), "background-color");
+    }
+
+    #[test]
+    fn parse_data_url_base64_decodes_payload() {
+        let (_, bytes) = parse_data_url_bytes("data:text/plain;base64,aGVsbG8=").unwrap();
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn parse_data_url_base64_rejects_garbage() {
+        assert!(parse_data_url_bytes("data:text/plain;base64,%%%").is_err());
+    }
+
+    #[test]
+    fn data_url_keeps_full_content_type() {
+        let (ctype, _) = parse_data_url_bytes("data:text/html;charset=utf-8,hi").unwrap();
+        assert_eq!(ctype, "text/html;charset=utf-8");
+    }
+
+    #[test]
+    fn build_fetch_request_carries_post_body() {
+        let url = Url::parse("https://example.test/").unwrap();
+        let req = build_fetch_request(
+            url,
+            "POST",
+            &[("content-type".into(), "text/plain".into())],
+            "payload",
+        )
+        .unwrap();
+        assert_eq!(req.method, Method::POST);
+        let Body::Bytes(bytes) = req.body else {
+            panic!("expected bytes body");
+        };
+        assert_eq!(&bytes[..], b"payload");
+    }
+
+    #[test]
+    fn build_fetch_request_drops_forbidden_request_headers() {
+        let url = Url::parse("https://example.test/").unwrap();
+        let req = build_fetch_request(
+            url,
+            "GET",
+            &[("Cookie".into(), "a=1".into()), ("X-Ok".into(), "1".into())],
+            "",
+        )
+        .unwrap();
+        assert!(!req.headers.contains_key(http::header::COOKIE));
+        assert!(req.headers.contains_key("x-ok"));
+    }
+
+    #[test]
+    fn js_headers_omit_set_cookie() {
+        let map = headers_json_for_js(&[
+            ("content-type".into(), "text/plain".into()),
+            ("Set-Cookie".into(), "secret=1".into()),
+        ]);
+        assert!(map.contains_key("content-type"));
+        assert!(!map.contains_key("Set-Cookie"));
+        assert!(!map.contains_key("set-cookie"));
     }
 }

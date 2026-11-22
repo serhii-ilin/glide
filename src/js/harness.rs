@@ -157,10 +157,34 @@ fn pump_repl_settle(
     }
 }
 
+/// Process-wide REPL watchdog override that restores the previous value on drop.
+///
+/// Create it only while holding the console test lock; field order in
+/// [`EvalHarness`] makes the reset happen before that lock is released.
+pub struct WatchdogOverride {
+    previous_ms: u64,
+}
+
+impl WatchdogOverride {
+    fn new(ms: u64) -> Self {
+        let previous_ms = crate::js::repl_eval::watchdog_duration_ms();
+        crate::js::repl_eval::set_watchdog_duration_ms(ms);
+        Self { previous_ms }
+    }
+}
+
+impl Drop for WatchdogOverride {
+    fn drop(&mut self) {
+        crate::js::repl_eval::set_watchdog_duration_ms(self.previous_ms);
+    }
+}
+
 /// Owns one page document and JS host so tests can eval and then inspect the DOM.
 pub struct EvalHarness {
     pub document: HtmlPageDocument,
     pub js_host: JsHost,
+    // Declared before the console lock guard so the override resets first on drop.
+    _watchdog: Option<WatchdogOverride>,
     _rt: tokio::runtime::Runtime,
     _console_test_lock: std::sync::MutexGuard<'static, ()>,
 }
@@ -209,9 +233,22 @@ impl EvalHarness {
         Self {
             document,
             js_host,
+            _watchdog: None,
             _rt: rt,
             _console_test_lock: console_test_lock,
         }
+    }
+
+    /// Build a harness and then shorten the REPL watchdog for this test only.
+    pub fn with_watchdog(
+        html: &str,
+        js_enabled: bool,
+        pump_for: Duration,
+        watchdog_ms: u64,
+    ) -> Self {
+        let mut harness = Self::new(html, js_enabled, pump_for);
+        harness._watchdog = Some(WatchdogOverride::new(watchdog_ms));
+        harness
     }
 
     pub fn eval_blocking(&mut self, expression: &str) -> Result<String, String> {
@@ -230,6 +267,28 @@ impl EvalHarness {
     ) -> Result<Result<String, String>, String> {
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.js_host.submit_eval(expression, Some(tx))?;
+        self.wait_for_reply(rx, wait)
+    }
+
+    /// Submit an eval with an explicit console route, to exercise the stale-route path.
+    pub fn submit_reply_at(
+        &mut self,
+        expression: &str,
+        tab_id: u64,
+        page_epoch: u64,
+        wait: Duration,
+    ) -> Result<Result<String, String>, String> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.js_host
+            .submit_eval_at(expression, tab_id, page_epoch, Some(tx))?;
+        self.wait_for_reply(rx, wait)
+    }
+
+    fn wait_for_reply(
+        &mut self,
+        rx: crossbeam_channel::Receiver<Result<String, String>>,
+        wait: Duration,
+    ) -> Result<Result<String, String>, String> {
         let deadline = Instant::now() + wait;
         loop {
             match rx.try_recv() {

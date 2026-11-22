@@ -89,18 +89,24 @@ impl JsHost {
 
     /// Submit an eval, optionally asking the worker to reply on `reply`.
     pub fn submit_eval(&self, source: &str, reply: Option<EvalReply>) -> Result<(), String> {
+        self.submit_eval_at(source, self.console_tab_id, self.console_page_epoch, reply)
+    }
+
+    /// Submit an eval tagged with an explicit console route (tests exercise stale routes).
+    pub(crate) fn submit_eval_at(
+        &self,
+        source: &str,
+        tab_id: u64,
+        page_epoch: u64,
+        reply: Option<EvalReply>,
+    ) -> Result<(), String> {
         if !self.is_enabled() {
             return Err("Console REPL unavailable: JavaScript is disabled.".to_string());
         }
         let Some(worker) = &self.worker else {
             return Err("Console REPL unavailable: no active page is loaded.".to_string());
         };
-        worker.eval_console(
-            source.to_string(),
-            self.console_tab_id,
-            self.console_page_epoch,
-            reply,
-        );
+        worker.eval_console(source.to_string(), tab_id, page_epoch, reply);
         Ok(())
     }
 
@@ -112,7 +118,8 @@ impl JsHost {
     /// Evaluate on the worker and pump the host until the reply arrives or `timeout` passes.
     ///
     /// Pumping is mandatory: an eval that touches the DOM blocks in the worker's DOM
-    /// sync RPC until this host drains it.
+    /// sync RPC until this host drains it. The timeout only stops waiting; it does not
+    /// cancel the eval, which may still finish on the worker and publish to the console.
     pub fn eval_blocking(
         &mut self,
         doc: &mut BaseDocument,
@@ -126,7 +133,7 @@ impl JsHost {
             match rx.try_recv() {
                 Ok(outcome) => return outcome,
                 Err(TryRecvError::Disconnected) => {
-                    return Err("Eval reply channel closed before the worker answered.".to_string());
+                    return Err("eval reply channel closed before the worker answered.".to_string());
                 }
                 Err(TryRecvError::Empty) => {}
             }

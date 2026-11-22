@@ -822,19 +822,19 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   a.devtools-elements-row {{
     display: block;
     padding: calc(1px * var(--ui)) calc(6px * var(--ui));
-    color: #2a2520;
+    color: var(--text);
     text-decoration: none;
     white-space: nowrap;
   }}
   a.devtools-elements-row:hover {{
-    background: #ebe6dc;
+    background: var(--field-fill);
   }}
   a.devtools-elements-row.selected {{
-    background: #d4e4f7;
+    background: rgba(0, 122, 255, 0.14);
   }}
   div.devtools-elements-row.more {{
     padding: calc(1px * var(--ui)) calc(6px * var(--ui));
-    color: #6b6358;
+    color: var(--text-secondary);
     font-style: italic;
   }}
   span.twist {{
@@ -845,7 +845,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     flex: none;
     max-height: 38%;
     overflow: auto;
-    border-top: calc(1px * var(--ui)) solid #d9d3c8;
+    border-top: calc(1px * var(--ui)) solid var(--hairline);
     padding: calc(6px * var(--ui));
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: calc(11px * var(--ui));
@@ -857,7 +857,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   span.attr-value {{ color: #0645ad; }}
   p.devtools-elements-detail-empty {{
     margin: 0;
-    color: #6b6358;
+    color: var(--text-secondary);
   }}
   div.devtools-console-line {{
     padding: calc(3px * var(--ui)) calc(8px * var(--ui));

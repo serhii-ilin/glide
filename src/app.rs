@@ -1456,8 +1456,13 @@ fn wheel_should_refresh_page_hover(
     chrome: &BaseDocument,
     buttons: MouseEventButtons,
 ) -> bool {
+    // Only when the wheel is over the page iframe (not the toolbar/DevTools) and
+    // the page subdocument lost/never got a hover (e.g. it was just replaced).
+    let over_page = crate::find::page_iframe_id(chrome)
+        .is_some_and(|page| chrome.get_hover_node_id() == Some(page));
     matches!(event, WindowEvent::MouseWheel { .. })
         && buttons == MouseEventButtons::None
+        && over_page
         && crate::js::page_subdoc_hover_is_none(chrome)
 }
 
@@ -1471,6 +1476,9 @@ impl Glide {
         window_id: WindowId,
         event: &WindowEvent,
     ) {
+        if self.devtools_drag.is_some() {
+            return;
+        }
         let Some(view) = self.inner.windows.get(&window_id) else {
             return;
         };
@@ -1855,8 +1863,22 @@ mod tests {
 
     #[test]
     fn wheel_should_refresh_page_hover_when_subdoc_hover_missing() {
-        let chrome = scroll_pane_chrome();
+        let mut chrome = scroll_pane_chrome();
+        chrome.set_hover_to(100.0, 100.0);
+        chrome.resolve(0.0);
+        let page = crate::find::page_iframe_id(&chrome).expect("page iframe");
+        assert_eq!(chrome.get_hover_node_id(), Some(page));
         assert!(wheel_should_refresh_page_hover(
+            &sample_wheel_event(),
+            &chrome,
+            MouseEventButtons::None,
+        ));
+    }
+
+    #[test]
+    fn wheel_should_not_refresh_page_hover_when_page_iframe_is_not_hovered() {
+        let chrome = scroll_pane_chrome();
+        assert!(!wheel_should_refresh_page_hover(
             &sample_wheel_event(),
             &chrome,
             MouseEventButtons::None,

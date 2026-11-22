@@ -1303,5 +1303,11 @@ mod tests {
             pane_scroll_y(&chrome) > 0.0,
             "wheel should scroll the inner pane after the hover refresh"
         );
+        let page_scroll =
+            with_page_subdoc(&chrome, |page| page.viewport_scroll().y).unwrap_or(-1.0);
+        assert_eq!(
+            page_scroll, 0.0,
+            "the page viewport must not scroll while the pane absorbs the wheel"
+        );
     }
 }

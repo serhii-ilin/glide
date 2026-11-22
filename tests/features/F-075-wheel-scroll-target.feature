@@ -23,10 +23,11 @@ Feature: F-075 Wheel scroll targets the inner pane under the pointer
     And the page viewport scroll stays unchanged while the pane can still absorb the wheel
 
   Scenario: Wheel over an inner pane right after navigation without moving the pointer
-    Given the user navigated to the page and did not move the pointer
-    When the user scrolls the mouse wheel over the inner pane
+    Given the user clicks the in-pane reload link and the page navigates
+    And the pointer stays over the pane
+    When the user scrolls the mouse wheel over the pane
     Then the pane's scroll offset increases
-    And Glide did not require a separate pointer move before the wheel
+    And the page behind the pane does not jump first
 
   Scenario: A wheel at the pane end chains scroll to the page
     Given the inner pane is scrolled to its bottom edge
@@ -37,4 +38,4 @@ Feature: F-075 Wheel scroll targets the inner pane under the pointer
     Given the pointer already moved over the inner pane
     When the user scrolls the mouse wheel down over the pane
     Then the pane's scroll offset increases
-    And Glide did not synthesize an extra pointer move for that wheel
+    And the page behind the pane does not jump first

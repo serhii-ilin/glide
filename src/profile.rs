@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use crate::devtools::{DEFAULT_PANEL_PX, DevToolsDock};
 use crate::logging;
 pub use crate::tabs::{Session, TabSession};
 use crate::zoom::PageZoom;
@@ -32,6 +33,14 @@ pub struct Settings {
     pub js_enabled: bool,
     #[serde(default = "default_zoom_percent")]
     pub zoom_percent: i32,
+    #[serde(default)]
+    pub devtools_dock: DevToolsDock,
+    #[serde(default = "default_devtools_size_px")]
+    pub devtools_size_px: i32,
+}
+
+fn default_devtools_size_px() -> i32 {
+    DEFAULT_PANEL_PX
 }
 
 fn default_js_enabled() -> bool {
@@ -47,6 +56,8 @@ impl Default for Settings {
         Self {
             js_enabled: true,
             zoom_percent: 100,
+            devtools_dock: DevToolsDock::default(),
+            devtools_size_px: default_devtools_size_px(),
         }
     }
 }
@@ -492,6 +503,8 @@ pub fn help_page_html() -> String {
         ("Cmd/Ctrl+= / - / 0", "Zoom in / out / reset (current tab)"),
         ("Cmd/Ctrl+D", "Bookmark the active tab"),
         ("Cmd/Ctrl+Shift+J", "Toggle page JavaScript (global)"),
+        ("F12; Meta+Alt+I / Ctrl+Shift+I", "Toggle developer tools"),
+        ("Esc (in DevTools)", "Close developer tools"),
         ("Cmd/Ctrl+Q", "Quit"),
     ];
     let mut items = String::new();
@@ -585,6 +598,8 @@ mod tests {
         let settings = Settings {
             js_enabled: false,
             zoom_percent: 150,
+            devtools_dock: DevToolsDock::Right,
+            devtools_size_px: 360,
         };
         p.save_settings(&settings).expect("save");
         assert_eq!(p.load_settings(), settings);
@@ -686,8 +701,23 @@ mod tests {
             Settings {
                 js_enabled: false,
                 zoom_percent: 100,
+                ..Settings::default()
             }
         );
+    }
+
+    #[test]
+    fn devtools_settings_default_on_legacy_file() {
+        let p = temp_profile();
+        fs::create_dir_all(p.dir()).expect("mkdir");
+        fs::write(
+            p.dir().join(SETTINGS_FILE),
+            br#"{"js_enabled":true,"zoom_percent":125}"#,
+        )
+        .expect("write");
+        let loaded = p.load_settings();
+        assert_eq!(loaded.devtools_dock, DevToolsDock::default());
+        assert_eq!(loaded.devtools_size_px, DEFAULT_PANEL_PX);
     }
 
     #[test]
@@ -811,6 +841,7 @@ mod tests {
         let saved = Settings {
             js_enabled: true,
             zoom_percent: 100,
+            ..Settings::default()
         };
         assert!(!effective_js_enabled(true, &saved));
         assert!(saved.js_enabled);

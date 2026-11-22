@@ -11,9 +11,11 @@ use blitz_shell::{
 };
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ButtonSource, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
+
+use crate::devtools::{DevToolsDock, DevToolsSession};
 
 use std::sync::atomic::Ordering;
 
@@ -143,6 +145,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
     };
 
     let view = chrome_view_state(&tabs, js_enabled, &bookmarks_state, None);
+    let devtools = DevToolsSession::from_settings(&saved_settings);
     let mut doc = build_chrome_page_document(&view, js_enabled, &load_state, chrome_config);
     {
         let mut chrome = doc.0.inner_mut();
@@ -152,6 +155,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
             tab.find.restore(&mut chrome, find_open, &find_query);
             tab.zoom.apply_to_chrome(&mut chrome);
         }
+        devtools.sync_chrome(&mut chrome);
     }
 
     let attrs = WindowAttributes::default()
@@ -177,6 +181,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         bookmarks: bookmarks_state,
         bookmark_list: bookmark_list.clone(),
         history_log,
+        devtools,
     });
     app.inner.add_window(window);
     event_loop
@@ -238,6 +243,84 @@ struct GlideBootstrap {
     bookmarks: BookmarksState,
     bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
     history_log: HistoryLogState,
+    devtools: DevToolsSession,
+}
+
+struct DevToolsSplitDrag {
+    dock: DevToolsDock,
+    start_axis: f32,
+    start_size: i32,
+}
+
+enum DevToolsPointerOutcome {
+    NotConsumed,
+    Consumed,
+    ConsumedSaveSettings,
+}
+
+fn handle_devtools_pointer(
+    devtools: &mut DevToolsSession,
+    drag: &mut Option<DevToolsSplitDrag>,
+    view: &mut blitz_shell::View<Renderer>,
+    event: &WindowEvent,
+) -> DevToolsPointerOutcome {
+    match event {
+        WindowEvent::PointerButton { button, state, .. } => {
+            if *state == ElementState::Released {
+                if drag.is_some() {
+                    *drag = None;
+                    return DevToolsPointerOutcome::ConsumedSaveSettings;
+                }
+                return DevToolsPointerOutcome::NotConsumed;
+            }
+            if !matches!(button, ButtonSource::Mouse(MouseButton::Left)) {
+                return DevToolsPointerOutcome::NotConsumed;
+            }
+            if !devtools.state.open {
+                return DevToolsPointerOutcome::NotConsumed;
+            }
+            let coords = view.pointer_coords(view.pointer_pos);
+            let mut chrome = view.doc.inner_mut();
+            let Some(node_id) =
+                crate::chrome::hit_test_chrome(&mut chrome, coords.client_x, coords.client_y)
+            else {
+                return DevToolsPointerOutcome::NotConsumed;
+            };
+            if !crate::chrome::node_is_devtools_split(&chrome, node_id) {
+                return DevToolsPointerOutcome::NotConsumed;
+            }
+            drop(chrome);
+            *drag = Some(DevToolsSplitDrag {
+                dock: devtools.state.dock,
+                start_axis: match devtools.state.dock {
+                    DevToolsDock::Bottom => coords.client_y,
+                    DevToolsDock::Right => coords.client_x,
+                },
+                start_size: devtools.state.size_px,
+            });
+            DevToolsPointerOutcome::Consumed
+        }
+        WindowEvent::PointerMoved { position, .. } if drag.is_some() => {
+            let coords = view.pointer_coords(*position);
+            let dock = drag.as_ref().map(|d| d.dock).unwrap_or(devtools.state.dock);
+            let start_axis = drag.as_ref().map(|d| d.start_axis).unwrap_or(0.0);
+            let start_size = drag.as_ref().map(|d| d.start_size).unwrap_or(0);
+            let axis = match dock {
+                DevToolsDock::Bottom => coords.client_y,
+                DevToolsDock::Right => coords.client_x,
+            };
+            let size_px = (start_size as f32 + axis - start_axis).round() as i32;
+            let resized = {
+                let mut chrome = view.doc.inner_mut();
+                devtools.resize_from_drag(&mut chrome, size_px).is_some()
+            };
+            if resized {
+                view.request_redraw();
+            }
+            DevToolsPointerOutcome::Consumed
+        }
+        _ => DevToolsPointerOutcome::NotConsumed,
+    }
 }
 
 struct Glide {
@@ -246,6 +329,8 @@ struct Glide {
     js: JsHost,
     html_provider: GlideHtmlProvider,
     tabs: TabManager,
+    devtools: DevToolsSession,
+    devtools_drag: Option<DevToolsSplitDrag>,
     last_title: String,
     load_state: Arc<LoadState>,
     chrome_loading: bool,
@@ -404,6 +489,8 @@ impl Glide {
             bookmarks: init.bookmarks,
             bookmark_list: init.bookmark_list,
             history_log: init.history_log,
+            devtools: init.devtools,
+            devtools_drag: None,
         }
     }
 
@@ -413,6 +500,7 @@ impl Glide {
         } else {
             self.session.saved_settings.js_enabled
         };
+        let (devtools_dock, devtools_size_px) = self.devtools.settings_fields();
         let settings = Settings {
             js_enabled,
             zoom_percent: self
@@ -420,6 +508,8 @@ impl Glide {
                 .active()
                 .map(|tab| tab.zoom.percent())
                 .unwrap_or_else(|| self.session.default_zoom.percent()),
+            devtools_dock,
+            devtools_size_px,
         };
         self.session.profile.save_settings(&settings)
     }
@@ -617,6 +707,21 @@ impl Glide {
                         if let Some(tab) = self.tabs.active_mut() {
                             tab.find.step(&mut doc, false);
                         }
+                    }
+                    NavCommand::DevToolsToggle => {
+                        self.devtools.toggle(&mut doc);
+                        save_settings_after = true;
+                    }
+                    NavCommand::DevToolsDockBottom => {
+                        self.devtools.set_dock(DevToolsDock::Bottom, &mut doc);
+                        save_settings_after = true;
+                    }
+                    NavCommand::DevToolsDockRight => {
+                        self.devtools.set_dock(DevToolsDock::Right, &mut doc);
+                        save_settings_after = true;
+                    }
+                    NavCommand::DevToolsTab(tab) => {
+                        self.devtools.set_tab(*tab, &mut doc);
                     }
                     NavCommand::ZoomIn | NavCommand::ZoomOut | NavCommand::ZoomReset => {
                         if let Some(tab) = self.tabs.active_mut() {
@@ -884,109 +989,132 @@ impl Glide {
         {
             return false;
         }
-        let Some(view) = self.inner.windows.get_mut(&window_id) else {
-            return false;
-        };
-
         let mut save_zoom_settings = false;
-        let handled = match shortcut {
-            keyboard::BrowserShortcut::FocusAddressBar => {
-                keyboard::focus_address_bar(view);
-                view.request_redraw();
-                true
-            }
-            keyboard::BrowserShortcut::CloseTab => {
-                let failed = self.load_state.failed_page_urls();
-                let session = Session::from_tabs(&self.tabs, &failed);
-                let _ = self.session.profile.save_session(&session);
-                if self.tabs.len() <= 1 {
-                    self.inner
-                        .proxy
-                        .send_event(BlitzShellEvent::CloseWindow { window_id });
-                } else {
-                    self.bus.push(NavCommand::CloseActiveTab);
+        let mut save_devtools_settings = false;
+        let handled = {
+            let Some(view) = self.inner.windows.get_mut(&window_id) else {
+                return false;
+            };
+            match shortcut {
+                keyboard::BrowserShortcut::FocusAddressBar => {
+                    keyboard::focus_address_bar(view);
+                    view.request_redraw();
+                    true
                 }
-                true
-            }
-            keyboard::BrowserShortcut::Quit => {
-                let failed = self.load_state.failed_page_urls();
-                let session = Session::from_tabs(&self.tabs, &failed);
-                let _ = self.session.profile.save_session(&session);
-                for id in self.inner.windows.keys().copied().collect::<Vec<_>>() {
-                    self.inner
-                        .proxy
-                        .send_event(BlitzShellEvent::CloseWindow { window_id: id });
-                }
-                event_loop.exit();
-                true
-            }
-            keyboard::BrowserShortcut::NewTab => {
-                self.bus.push(NavCommand::NewTab);
-                true
-            }
-            keyboard::BrowserShortcut::NextTab => {
-                self.bus.push(NavCommand::NextTab);
-                true
-            }
-            keyboard::BrowserShortcut::PreviousTab => {
-                self.bus.push(NavCommand::PrevTab);
-                true
-            }
-            keyboard::BrowserShortcut::SelectTab(index) => {
-                self.bus.push(NavCommand::SelectTabIndex(index));
-                true
-            }
-            keyboard::BrowserShortcut::Scroll(action) => {
-                keyboard::scroll_page(view, action);
-                view.request_redraw();
-                true
-            }
-            keyboard::BrowserShortcut::ZoomIn
-            | keyboard::BrowserShortcut::ZoomOut
-            | keyboard::BrowserShortcut::ZoomReset => {
-                if let Some(tab) = self.tabs.active_mut() {
-                    match shortcut {
-                        keyboard::BrowserShortcut::ZoomIn => tab.zoom.zoom_in(),
-                        keyboard::BrowserShortcut::ZoomOut => tab.zoom.zoom_out(),
-                        _ => tab.zoom.reset(),
+                keyboard::BrowserShortcut::CloseTab => {
+                    let failed = self.load_state.failed_page_urls();
+                    let session = Session::from_tabs(&self.tabs, &failed);
+                    let _ = self.session.profile.save_session(&session);
+                    if self.tabs.len() <= 1 {
+                        self.inner
+                            .proxy
+                            .send_event(BlitzShellEvent::CloseWindow { window_id });
+                    } else {
+                        self.bus.push(NavCommand::CloseActiveTab);
                     }
-                    {
-                        let mut chrome = view.doc.inner_mut();
-                        tab.zoom.apply_to_chrome(&mut chrome);
-                    }
+                    true
                 }
-                save_zoom_settings = true;
-                view.request_redraw();
-                true
-            }
-            keyboard::BrowserShortcut::Find
-            | keyboard::BrowserShortcut::FindClose
-            | keyboard::BrowserShortcut::FindNext
-            | keyboard::BrowserShortcut::FindPrev => {
-                {
-                    let mut chrome = view.doc.inner_mut();
+                keyboard::BrowserShortcut::Quit => {
+                    let failed = self.load_state.failed_page_urls();
+                    let session = Session::from_tabs(&self.tabs, &failed);
+                    let _ = self.session.profile.save_session(&session);
+                    for id in self.inner.windows.keys().copied().collect::<Vec<_>>() {
+                        self.inner
+                            .proxy
+                            .send_event(BlitzShellEvent::CloseWindow { window_id: id });
+                    }
+                    event_loop.exit();
+                    true
+                }
+                keyboard::BrowserShortcut::NewTab => {
+                    self.bus.push(NavCommand::NewTab);
+                    true
+                }
+                keyboard::BrowserShortcut::NextTab => {
+                    self.bus.push(NavCommand::NextTab);
+                    true
+                }
+                keyboard::BrowserShortcut::PreviousTab => {
+                    self.bus.push(NavCommand::PrevTab);
+                    true
+                }
+                keyboard::BrowserShortcut::SelectTab(index) => {
+                    self.bus.push(NavCommand::SelectTabIndex(index));
+                    true
+                }
+                keyboard::BrowserShortcut::Scroll(action) => {
+                    keyboard::scroll_page(view, action);
+                    view.request_redraw();
+                    true
+                }
+                keyboard::BrowserShortcut::ZoomIn
+                | keyboard::BrowserShortcut::ZoomOut
+                | keyboard::BrowserShortcut::ZoomReset => {
                     if let Some(tab) = self.tabs.active_mut() {
                         match shortcut {
-                            keyboard::BrowserShortcut::Find => tab.find.open_bar(&mut chrome),
-                            keyboard::BrowserShortcut::FindClose => tab.find.close_bar(&mut chrome),
-                            keyboard::BrowserShortcut::FindNext => tab.find.step(&mut chrome, true),
-                            _ => tab.find.step(&mut chrome, false),
+                            keyboard::BrowserShortcut::ZoomIn => tab.zoom.zoom_in(),
+                            keyboard::BrowserShortcut::ZoomOut => tab.zoom.zoom_out(),
+                            _ => tab.zoom.reset(),
+                        }
+                        {
+                            let mut chrome = view.doc.inner_mut();
+                            tab.zoom.apply_to_chrome(&mut chrome);
                         }
                     }
-                }
-                view.request_redraw();
-                true
-            }
-            other => {
-                if let Some(command) = keyboard::nav_from_shortcut(other) {
-                    self.bus.push(command);
+                    save_zoom_settings = true;
+                    view.request_redraw();
                     true
-                } else {
-                    false
+                }
+                keyboard::BrowserShortcut::Find
+                | keyboard::BrowserShortcut::FindClose
+                | keyboard::BrowserShortcut::FindNext
+                | keyboard::BrowserShortcut::FindPrev => {
+                    {
+                        let mut chrome = view.doc.inner_mut();
+                        if let Some(tab) = self.tabs.active_mut() {
+                            match shortcut {
+                                keyboard::BrowserShortcut::Find => tab.find.open_bar(&mut chrome),
+                                keyboard::BrowserShortcut::FindClose => {
+                                    tab.find.close_bar(&mut chrome)
+                                }
+                                keyboard::BrowserShortcut::FindNext => {
+                                    tab.find.step(&mut chrome, true)
+                                }
+                                _ => tab.find.step(&mut chrome, false),
+                            }
+                        }
+                    }
+                    view.request_redraw();
+                    true
+                }
+                keyboard::BrowserShortcut::ToggleDevTools => {
+                    {
+                        let mut chrome = view.doc.inner_mut();
+                        self.devtools.toggle(&mut chrome);
+                    }
+                    save_devtools_settings = true;
+                    view.request_redraw();
+                    true
+                }
+                keyboard::BrowserShortcut::DevToolsClose => {
+                    {
+                        let mut chrome = view.doc.inner_mut();
+                        self.devtools.close(&mut chrome);
+                    }
+                    view.request_redraw();
+                    true
+                }
+                other => {
+                    if let Some(command) = keyboard::nav_from_shortcut(other) {
+                        self.bus.push(command);
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
         };
-        if save_zoom_settings {
+        if save_zoom_settings || save_devtools_settings {
             let _ = self.save_settings();
         }
         handled
@@ -1060,19 +1188,52 @@ impl ApplicationHandler for Glide {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        if let WindowEvent::KeyboardInput { event, .. } = &event
-            && let Some(view) = self.inner.windows.get_mut(&window_id)
-        {
-            let find_open = crate::chrome::find_bar_open(&view.doc.inner());
-            let mods = view.keyboard_modifiers.state();
-            let mut chrome = view.doc.inner_mut();
-            if let Some(shortcut) =
-                keyboard::dispatch_find_field_keys(&mut chrome, event, mods, find_open)
-            {
-                drop(chrome);
-                self.handle_browser_shortcut_value(event_loop, window_id, shortcut);
-                return;
+        let chrome_shortcut = if let WindowEvent::KeyboardInput { event, .. } = &event {
+            self.inner.windows.get_mut(&window_id).and_then(|view| {
+                let find_open = crate::chrome::find_bar_open(&view.doc.inner());
+                let devtools_open = crate::chrome::devtools_open(&view.doc.inner());
+                let mods = view.keyboard_modifiers.state();
+                let find_shortcut = {
+                    let mut chrome = view.doc.inner_mut();
+                    keyboard::dispatch_find_field_keys(&mut chrome, event, mods, find_open)
+                };
+                find_shortcut.or_else(|| {
+                    keyboard::dispatch_devtools_field_keys(&view.doc.inner(), event, devtools_open)
+                })
+            })
+        } else {
+            None
+        };
+        if let Some(shortcut) = chrome_shortcut {
+            self.handle_browser_shortcut_value(event_loop, window_id, shortcut);
+            return;
+        }
+
+        let devtools_pointer = matches!(
+            event,
+            WindowEvent::PointerButton { .. } | WindowEvent::PointerMoved { .. }
+        );
+        if devtools_pointer {
+            let outcome = self.inner.windows.get_mut(&window_id).map(|view| {
+                handle_devtools_pointer(&mut self.devtools, &mut self.devtools_drag, view, &event)
+            });
+            match outcome {
+                Some(DevToolsPointerOutcome::Consumed) => return,
+                Some(DevToolsPointerOutcome::ConsumedSaveSettings) => {
+                    let _ = self.save_settings();
+                    return;
+                }
+                Some(DevToolsPointerOutcome::NotConsumed) | None => {}
             }
+        }
+
+        if self.devtools_drag.is_some()
+            && matches!(
+                event,
+                WindowEvent::PointerButton { .. } | WindowEvent::PointerMoved { .. }
+            )
+        {
+            return;
         }
 
         if self.handle_browser_shortcut(event_loop, window_id, &event) {

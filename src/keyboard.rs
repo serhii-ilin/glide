@@ -42,6 +42,8 @@ pub enum BrowserShortcut {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    ToggleDevTools,
+    DevToolsClose,
     Scroll(ScrollAction),
 }
 
@@ -104,6 +106,13 @@ pub fn browser_shortcut(
         KeyCode::Digit9 if primary && !shift => return Some(BrowserShortcut::SelectTab(8)),
         KeyCode::KeyJ if primary && shift => return Some(BrowserShortcut::ToggleJs),
         KeyCode::KeyD if primary && !shift => return Some(BrowserShortcut::ToggleBookmark),
+        KeyCode::F12 if !primary && !alt && !shift => return Some(BrowserShortcut::ToggleDevTools),
+        KeyCode::KeyI
+            if (modifiers.meta_key() && modifiers.alt_key())
+                || (modifiers.control_key() && modifiers.shift_key()) =>
+        {
+            return Some(BrowserShortcut::ToggleDevTools);
+        }
         KeyCode::F5 if !primary && !alt => return Some(BrowserShortcut::Reload),
         KeyCode::ArrowLeft if alt && !primary => return Some(BrowserShortcut::Back),
         KeyCode::ArrowRight if alt && !primary => return Some(BrowserShortcut::Forward),
@@ -579,7 +588,9 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         | BrowserShortcut::FindPrev
         | BrowserShortcut::ZoomIn
         | BrowserShortcut::ZoomOut
-        | BrowserShortcut::ZoomReset => None,
+        | BrowserShortcut::ZoomReset
+        | BrowserShortcut::ToggleDevTools
+        | BrowserShortcut::DevToolsClose => None,
         BrowserShortcut::Scroll(_) => None,
     }
 }
@@ -609,6 +620,27 @@ pub fn try_browser_shortcut(
 }
 
 /// Find-field keys (Enter, Shift+Enter, Esc) before Blitz handles them.
+/// DevTools panel keys before Blitz handles them.
+pub fn dispatch_devtools_field_keys(
+    chrome: &BaseDocument,
+    event: &KeyEvent,
+    devtools_open: bool,
+) -> Option<BrowserShortcut> {
+    if !devtools_open || !event.state.is_pressed() {
+        return None;
+    }
+    if !crate::chrome::devtools_focused(chrome) {
+        return None;
+    }
+    let PhysicalKey::Code(code) = event.physical_key else {
+        return None;
+    };
+    match code {
+        KeyCode::Escape => Some(BrowserShortcut::DevToolsClose),
+        _ => None,
+    }
+}
+
 pub fn dispatch_find_field_keys(
     chrome: &mut BaseDocument,
     event: &KeyEvent,
@@ -829,6 +861,30 @@ mod tests {
             ));
         }
         cases.extend(zoom_cases());
+        cases.push(case(
+            "F12 toggle DevTools",
+            KeyCode::F12,
+            none,
+            false,
+            false,
+            Some(BrowserShortcut::ToggleDevTools),
+        ));
+        cases.push(case(
+            "Meta+Alt+I toggle DevTools",
+            KeyCode::KeyI,
+            ModifiersState::META | ModifiersState::ALT,
+            false,
+            false,
+            Some(BrowserShortcut::ToggleDevTools),
+        ));
+        cases.push(case(
+            "Ctrl+Shift+I toggle DevTools",
+            KeyCode::KeyI,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            false,
+            false,
+            Some(BrowserShortcut::ToggleDevTools),
+        ));
         cases.extend(both(
             "Enter (not a browser shortcut)",
             KeyCode::Enter,
@@ -1767,6 +1823,28 @@ mod tests {
         assert_eq!(
             dispatch_find_field_keys(&mut doc, &enter, shift, true),
             Some(BrowserShortcut::FindPrev)
+        );
+    }
+
+    #[test]
+    fn dispatch_devtools_esc_closes_panel() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        doc.resolve(0.0);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &state);
+        crate::chrome::focus_devtools_panel(&mut doc);
+        let esc = test_key_event(
+            KeyCode::Escape,
+            ElementState::Pressed,
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+        );
+        assert_eq!(
+            super::dispatch_devtools_field_keys(&doc, &esc, true),
+            Some(BrowserShortcut::DevToolsClose)
         );
     }
 

@@ -927,7 +927,7 @@ impl Glide {
                         }
                     }
                     NavCommand::MenuOpen(menu) => {
-                        self.open_menu = Some(*menu);
+                        self.open_menu = crate::chrome::toggle_open_menu(self.open_menu, *menu);
                         structure_changed = true;
                     }
                     NavCommand::MenuClose => {
@@ -1072,14 +1072,30 @@ impl Glide {
         event_loop: &dyn ActiveEventLoop,
         window_id: WindowId,
         event: &WindowEvent,
+        menu_open: bool,
     ) -> bool {
         let Some(view) = self.inner.windows.get_mut(&window_id) else {
             return false;
         };
-        let Some(shortcut) = keyboard::try_browser_shortcut(view, event) else {
+        let Some(shortcut) = keyboard::try_browser_shortcut(view, event, menu_open) else {
             return false;
         };
         self.apply_browser_shortcut(event_loop, window_id, shortcut)
+    }
+
+    fn menu_dismissed_by(&mut self, window_id: &WindowId, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::Focused(false) => true,
+            WindowEvent::PointerButton { position, .. } => {
+                let Some(view) = self.inner.windows.get_mut(window_id) else {
+                    return false;
+                };
+                let coords = view.pointer_coords(*position);
+                let mut doc = view.doc.inner_mut();
+                !crate::chrome::pointer_keeps_menu_open(&mut doc, coords.client_x, coords.client_y)
+            }
+            _ => false,
+        }
     }
 
     fn handle_browser_shortcut_value(
@@ -1358,6 +1374,18 @@ impl ApplicationHandler for Glide {
             }
         }
 
+        if self.open_menu.is_some() && self.menu_dismissed_by(&window_id, &event) {
+            self.bus.push(NavCommand::MenuClose);
+            self.sync();
+            // The shell hit-tests the forwarded press/release before the next
+            // redraw. Lay out the rebuilt chrome now so an outside click still
+            // targets its live node instead of a stale, unlaid-out subtree.
+            if let Some(view) = self.inner.windows.get_mut(&window_id) {
+                view.doc.inner_mut().resolve(0.0);
+                view.request_redraw();
+            }
+        }
+
         let chrome_shortcut = if let WindowEvent::KeyboardInput { event, .. } = &event {
             let ime_composing = self.ime_composing;
             self.inner.windows.get_mut(&window_id).and_then(|view| {
@@ -1422,7 +1450,8 @@ impl ApplicationHandler for Glide {
             return;
         }
 
-        if self.handle_browser_shortcut(event_loop, window_id, &event) {
+        let menu_open = self.open_menu.is_some();
+        if self.handle_browser_shortcut(event_loop, window_id, &event, menu_open) {
             self.inner
                 .proxy
                 .send_event(BlitzShellEvent::Poll { window_id });

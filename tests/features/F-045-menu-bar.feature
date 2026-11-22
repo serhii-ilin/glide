@@ -10,10 +10,15 @@ Feature: F-045 In-window menu bar
   #        chrome::tests::menu_open_command_exposes_items,
   #        chrome::tests::menu_close_hides_dropdown,
   #        chrome::tests::menu_action_closes_dropdown,
+  #        chrome::tests::toggle_open_menu_switches_or_closes,
+  #        chrome::tests::pointer_on_dropdown_or_trigger_keeps_menu_open,
+  #        chrome::tests::pointer_outside_dropdown_dismisses_menu,
   #        chrome::tests::history_disables_back_and_forward_when_unavailable,
   #        chrome::tests::history_enables_back_and_forward_when_available,
   #        chrome::tests::close_tab_is_disabled_with_a_single_tab,
-  #        chrome::tests::tab_cycling_is_disabled_with_a_single_tab, manual M-034
+  #        chrome::tests::tab_cycling_is_disabled_with_a_single_tab,
+  #        keyboard::tests::escape_closes_menu_before_stop,
+  #        manual M-034
 
   Background:
     Given a browser window with the menu bar enabled
@@ -39,6 +44,27 @@ Feature: F-045 In-window menu bar
     Given the View menu is open
     When I open the File menu
     Then only the File dropdown is open
+
+  Scenario: Clicking outside the dropdown closes it
+    Given the File menu is open
+    When I click the page
+    Then no dropdown is open
+
+  Scenario: Clicking the open menu title closes its dropdown
+    Given the File menu is open
+    When I click the File menu title
+    Then no dropdown is open
+
+  Scenario: Escape closes the open menu
+    Given the File menu is open
+    When I press Escape
+    Then no dropdown is open
+    And the page load is not stopped
+
+  Scenario: Losing window focus closes the open menu
+    Given the File menu is open
+    When the window loses focus
+    Then no dropdown is open
 
   Scenario: Unavailable commands are disabled, not active
     Given a single tab with no back or forward history

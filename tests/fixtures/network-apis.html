@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Network APIs</title>
+</head>
+<body>
+  <p id="out">pending</p>
+  <script>
+    (function () {
+      var failures = [];
+      function check(name, fn) {
+        try {
+          if (!fn()) failures.push(name);
+        } catch (err) {
+          failures.push(name + ': ' + err);
+        }
+      }
+
+      check('xhr-global', function () {
+        return typeof XMLHttpRequest === 'function'
+          && XMLHttpRequest.UNSENT === 0 && XMLHttpRequest.DONE === 4;
+      });
+      check('fetch-globals', function () {
+        return typeof fetch === 'function' && typeof Request === 'function'
+          && typeof Response === 'function' && typeof Headers === 'function';
+      });
+      check('blob-file-reader', function () {
+        return typeof Blob === 'function' && typeof FileReader === 'function'
+          && typeof TextEncoder === 'function' && typeof TextDecoder === 'function';
+      });
+      check('sendBeacon', function () {
+        return typeof navigator.sendBeacon === 'function'
+          && navigator.sendBeacon('data:,beacon', 'x') === true;
+      });
+
+      var syncDone = false;
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'data:,xhr-ok', false);
+        xhr.send();
+        syncDone = xhr.status === 200 && xhr.responseText === 'xhr-ok' && xhr.readyState === 4;
+      } catch (e) { syncDone = false; }
+      check('xhr-sync', function () { return syncDone; });
+
+      var asyncDone = false;
+      var xhrA = new XMLHttpRequest();
+      xhrA.onload = function () {
+        asyncDone = xhrA.responseText === 'xhr-async';
+        finish();
+      };
+      xhrA.open('GET', 'data:,xhr-async', true);
+      xhrA.send();
+
+      var fetchDone = false;
+      fetch('data:,fetch-ok').then(function (r) { return r.text(); }).then(function (t) {
+        fetchDone = t === 'fetch-ok';
+        finish();
+      });
+
+      var pending = 2;
+      function finish() {
+        pending -= 1;
+        if (pending > 0) return;
+        check('xhr-async', function () { return asyncDone; });
+        check('fetch', function () { return fetchDone; });
+        document.getElementById('out').textContent = failures.length
+          ? 'NETWORK-FAIL:' + failures.join(',')
+          : 'NETWORK-OK';
+      }
+    })();
+  </script>
+</body>
+</html>

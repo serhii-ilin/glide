@@ -30,6 +30,89 @@ fn click_listener_receives_bubbled_event() {
 }
 
 #[test]
+fn xhr_sync_and_async_requests_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var log = [];
+      var s = new XMLHttpRequest();
+      s.open('GET', 'data:,sync-body', false);
+      s.setRequestHeader('X-Test', 'echo');
+      s.send();
+      log.push('sync:' + s.readyState + ':' + s.status + ':' + s.responseText);
+      log.push('hdr:' + s.getResponseHeader('x-test'));
+      var a = new XMLHttpRequest();
+      var states = [];
+      a.onreadystatechange = function () { states.push(a.readyState); };
+      a.open('GET', 'data:,async-body', true);
+      a.onload = function () {
+        log.push('async:' + a.responseText);
+        log.push('states:' + states.join(','));
+        document.getElementById('t').textContent = log.join('|');
+      };
+      a.send();
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.contains("sync:4:200:sync-body"), "{text}");
+    assert!(text.contains("hdr:echo"), "{text}");
+    assert!(text.contains("async:async-body"), "{text}");
+    assert!(text.contains("states:"), "{text}");
+}
+
+#[test]
+fn fetch_request_and_response_objects_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var h = new Headers([['X-A', 'b'], ['x-a', 'c']]);
+      var merged = h.get('X-A');
+      var req = new Request('data:,static', { method: 'POST', headers: h, body: 'posted' });
+      Promise.all([
+        fetch(req).then(function (r) { return r.text().then(function (t) { return 'post:' + t; }); }),
+        fetch('data:,{"n":1}', { method: 'GET' }).then(function (r) { return r.json().then(function (j) { return 'json:' + j.n; }); }),
+        fetch('data:,buf').then(function (r) { return r.arrayBuffer().then(function (b) { return 'buf:' + b.byteLength; }); }),
+      ]).then(function (parts) {
+        document.getElementById('t').textContent = [merged, req.method, parts.join(',')].join('|');
+      });
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.starts_with("b, c|POST|"), "{text}");
+    assert!(text.contains("post:posted"), "{text}");
+    assert!(text.contains("json:1"), "{text}");
+    assert!(text.contains("buf:"), "{text}");
+}
+
+#[test]
+fn text_and_blob_helpers_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var enc = new TextEncoder();
+      var dec = new TextDecoder();
+      var bytes = enc.encode('Glide \u263A');
+      var round = dec.decode(bytes);
+      var blob = new Blob(['hello', enc.encode('!')], { type: 'text/plain' });
+      var reader = new FileReader();
+      Promise.all([
+        blob.slice(1, 4).text(),
+        new Promise(function (resolve) {
+          reader.onloadend = function () { resolve(String(reader.result).slice(0, 30)); };
+          reader.readAsDataURL(blob);
+        }),
+      ]).then(function (parts2) {
+        var bad = dec.decode(new Uint8Array([0xff, 0xfe, 0xfd]));
+        document.getElementById('t').textContent =
+          [round, parts2[0], parts2[1], bad].join('|');
+      });
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.contains("Glide \u{263A}"), "{text}");
+    assert!(text.contains("ell"), "{text}");
+    assert!(text.contains("data:text/plain;base64,"), "{text}");
+    assert!(text.contains('\u{FFFD}'), "{text}");
+}
+
+#[test]
 fn fetch_promise_resolves() {
     let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
     <script>

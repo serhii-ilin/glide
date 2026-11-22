@@ -238,6 +238,15 @@ fn onclick_attr_fixture_runs() {
 }
 
 #[test]
+fn network_apis_work() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("network-apis.html"), true).expect("load");
+    assert!(text.contains("NETWORK-OK"), "{text}");
+    assert!(!text.contains("NETWORK-FAIL"), "{text}");
+}
+
+#[test]
 fn common_web_api_shims_work() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

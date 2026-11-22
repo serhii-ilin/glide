@@ -88,9 +88,21 @@ impl ConsoleEntry {
 
 #[derive(Debug, Clone, Default)]
 pub struct ConsoleJournal {
-    entries: VecDeque<ConsoleEntry>,
+    /// `(sequence, entry)`; the sequence is assigned once at push time so revoking a
+    /// row never renumbers the rows that follow it.
+    entries: VecDeque<(u64, ConsoleEntry)>,
     generation: u64,
     total_pushed: u64,
+}
+
+/// Console rows newer than a cursor, plus the cursor to poll from next time.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConsoleSince {
+    /// `(sequence, entry)` pairs, oldest first.
+    pub entries: Vec<(u64, ConsoleEntry)>,
+    pub next_cursor: u64,
+    /// Entries with `seq >= cursor` evicted from the ring before this read.
+    pub dropped: u64,
 }
 
 impl ConsoleJournal {
@@ -98,7 +110,7 @@ impl ConsoleJournal {
         if self.entries.len() >= CONSOLE_CAPACITY {
             self.entries.pop_front();
         }
-        self.entries.push_back(entry);
+        self.entries.push_back((self.total_pushed, entry));
         self.total_pushed = self.total_pushed.saturating_add(1);
         self.generation = self.generation.saturating_add(1);
     }
@@ -107,7 +119,7 @@ impl ConsoleJournal {
         let Some(index) = self
             .entries
             .iter()
-            .position(|e| e.promise_id == Some(promise_id))
+            .position(|(_, entry)| entry.promise_id == Some(promise_id))
         else {
             return false;
         };
@@ -125,8 +137,49 @@ impl ConsoleJournal {
         self.generation = self.generation.saturating_add(1);
     }
 
+    /// Entries with sequence `>= cursor`, oldest first, at most `limit` of them.
+    ///
+    /// An entry's sequence is its 0-based position in the stream of all pushes; it is
+    /// stored at push time, so revoking an unhandled-rejection row does not renumber
+    /// later rows. `next_cursor` is the sequence after the last returned entry, so
+    /// polling with it never repeats a row. `dropped` counts rows that left the front of
+    /// the ring before the caller could read them (revoking the oldest unread row counts
+    /// as dropped; revoking a middle row does not).
+    ///
+    /// `clear()` empties the ring but leaves `total_pushed` alone, so the next pushed
+    /// entry continues the sequence: navigation Clear reports the unread rows as
+    /// `dropped`. A cursor beyond `total_pushed` (a stale reader, or one that outlived a
+    /// clear) is not an error: it restarts at the oldest retained entry instead of
+    /// panicking or waiting forever.
+    pub fn since(&self, cursor: u64, limit: usize) -> ConsoleSince {
+        let total = self.total_pushed;
+        let first_seq = self.entries.front().map(|(seq, _)| *seq).unwrap_or(total);
+        let dropped = first_seq.saturating_sub(cursor);
+        let start = if cursor < first_seq || cursor > total {
+            first_seq
+        } else {
+            cursor
+        };
+        let entries: Vec<(u64, ConsoleEntry)> = self
+            .entries
+            .iter()
+            .filter(|(seq, _)| *seq >= start)
+            .take(limit)
+            .map(|(seq, entry)| (*seq, entry.clone()))
+            .collect();
+        let next_cursor = entries
+            .last()
+            .map(|(seq, _)| seq.saturating_add(1))
+            .unwrap_or_else(|| start.max(first_seq));
+        ConsoleSince {
+            entries,
+            next_cursor,
+            dropped,
+        }
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = &ConsoleEntry> {
-        self.entries.iter()
+        self.entries.iter().map(|(_, entry)| entry)
     }
 
     pub fn len(&self) -> usize {
@@ -351,6 +404,134 @@ mod tests {
     use crate::chrome::chrome_document;
     use crate::html::GlideHtmlProvider;
     use crate::parse;
+
+    fn log_entry(message: &str, timestamp_ms: u64) -> ConsoleEntry {
+        ConsoleEntry {
+            level: ConsoleLevel::Log,
+            message: message.to_string(),
+            source: None,
+            line: None,
+            timestamp_ms,
+            promise_id: None,
+        }
+    }
+
+    #[test]
+    fn since_returns_entries_after_cursor() {
+        let mut journal = ConsoleJournal::default();
+        for (index, message) in ["a", "b", "c"].iter().enumerate() {
+            journal.push(log_entry(message, index as u64));
+        }
+        let batch = journal.since(1, 10);
+        assert_eq!(batch.dropped, 0);
+        assert_eq!(batch.next_cursor, 3);
+        let rows: Vec<(u64, &str)> = batch
+            .entries
+            .iter()
+            .map(|(seq, entry)| (*seq, entry.message.as_str()))
+            .collect();
+        assert_eq!(rows, vec![(1, "b"), (2, "c")]);
+    }
+
+    #[test]
+    fn since_respects_limit() {
+        let mut journal = ConsoleJournal::default();
+        for (index, message) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+            journal.push(log_entry(message, index as u64));
+        }
+        let batch = journal.since(0, 2);
+        assert_eq!(batch.dropped, 0);
+        assert_eq!(batch.next_cursor, 2);
+        let rows: Vec<(u64, &str)> = batch
+            .entries
+            .iter()
+            .map(|(seq, entry)| (*seq, entry.message.as_str()))
+            .collect();
+        assert_eq!(rows, vec![(0, "a"), (1, "b")]);
+    }
+
+    #[test]
+    fn since_reports_dropped_after_eviction() {
+        let mut journal = ConsoleJournal::default();
+        for i in 0..CONSOLE_CAPACITY + 3 {
+            journal.push(log_entry(&format!("m{i}"), i as u64));
+        }
+        let batch = journal.since(0, 5);
+        assert_eq!(batch.dropped, 3);
+        assert_eq!(batch.next_cursor, 8);
+        let rows: Vec<(u64, &str)> = batch
+            .entries
+            .iter()
+            .map(|(seq, entry)| (*seq, entry.message.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(3, "m3"), (4, "m4"), (5, "m5"), (6, "m6"), (7, "m7")]
+        );
+    }
+
+    #[test]
+    fn since_stable_after_revoke_rejection() {
+        let mut journal = ConsoleJournal::default();
+        journal.push(log_entry("a", 0));
+        journal.push(ConsoleEntry {
+            level: ConsoleLevel::UnhandledRejection,
+            message: "rejection".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 1,
+            promise_id: Some(7),
+        });
+        journal.push(log_entry("b", 2));
+
+        let first = journal.since(0, 1);
+        let first_rows: Vec<(u64, &str)> = first
+            .entries
+            .iter()
+            .map(|(seq, entry)| (*seq, entry.message.as_str()))
+            .collect();
+        assert_eq!(first_rows, vec![(0, "a")]);
+        assert_eq!(first.next_cursor, 1);
+        assert_eq!(first.dropped, 0);
+
+        // Removing a middle row must not renumber the rows that follow it.
+        assert!(journal.revoke_rejection(7));
+        let second = journal.since(first.next_cursor, 10);
+        let second_rows: Vec<(u64, &str)> = second
+            .entries
+            .iter()
+            .map(|(seq, entry)| (*seq, entry.message.as_str()))
+            .collect();
+        assert_eq!(second_rows, vec![(2, "b")]);
+        assert_eq!(second.next_cursor, 3);
+        assert_eq!(second.dropped, 0);
+    }
+
+    #[test]
+    fn since_foreign_cursor_past_end_starts_at_oldest() {
+        let mut journal = ConsoleJournal::default();
+        for (index, message) in ["a", "b", "c"].iter().enumerate() {
+            journal.push(log_entry(message, index as u64));
+        }
+        journal.clear();
+        journal.push(log_entry("after", 4));
+        // Clear drops the three unread rows; a cursor from before it sees them as dropped.
+        let dropped = journal.since(0, 10);
+        assert_eq!(dropped.dropped, 3);
+        assert_eq!(dropped.entries.len(), 1);
+        // `clear` keeps `total_pushed`, so the retained row is sequence 3 and a
+        // foreign cursor past the end must fall back to the oldest retained row.
+        let batch = journal.since(999, 10);
+        assert_eq!(batch.dropped, 0);
+        assert_eq!(batch.next_cursor, 4);
+        let rows: Vec<(u64, &str)> = batch
+            .entries
+            .iter()
+            .map(|(seq, entry)| (*seq, entry.message.as_str()))
+            .collect();
+        assert_eq!(rows, vec![(3, "after")]);
+        assert!(journal.since(u64::MAX, 10).entries.len() == 1);
+    }
 
     #[test]
     fn ring_buffer_drops_oldest_at_capacity() {

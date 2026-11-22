@@ -10,6 +10,10 @@
 
 **Follow-up:** Mutation mirroring stays off until `__glide_init_page` finishes the snapshot. After that, domino records each mutation into one queue. The queue is flushed **once per task** — after a classic script, a timer callback, an animation-frame callback, an event dispatch, and the load / `DOMContentLoaded` firing — and also immediately before a layout read (`offsetWidth`, `getBoundingClientRect`, `getComputedStyle`). Nodes created in that queue carry a client id (`cid`) so later ops in the same batch can name them before Blitz has assigned a node id. One RPC round trip covers the whole task.
 
+**Update (2026-11-22):** Console eval is another task that ends with a flush: `eval_console_expression` runs `settle_task` before the worker sends its reply, so an agent's next read sees the mutations and the REPL watchdog still bounds a runaway microtask chain.
+
+**Update (2026-11-22, eval flush ordering):** The eval path now drains V8 microtasks under the REPL watchdog, finishes the watchdog, clears any terminate requested between the watchdog's final check and `finish()`, and only then flushes the DOM batch to Blitz. A terminate inside `flushMutations` would otherwise lose the batch or leave new nodes untagged. Two consequences are accepted: a timeout during the microtask drain reports an error even though the expression already ran and its side effects are flushed; and a microtask `console.log` now reaches the REPL wire before the `< result` row, matching Chrome's console order.
+
 ## Page `globalThis` is the window (2026-11-20)
 
 **Decision:** Merge domino’s `Window` prototype onto V8’s `globalThis` (`Object.setPrototypeOf`), set `document.defaultView === globalThis`, and bind `addEventListener` / `dispatchEvent` to `globalThis`. Vendored WPT `testharness.js` stays at `})(self);` unchanged from upstream.

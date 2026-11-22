@@ -157,6 +157,165 @@ fn pump_repl_settle(
     }
 }
 
+/// Process-wide REPL watchdog override that restores the previous value on drop.
+///
+/// Create it only while holding the console test lock; field order in
+/// [`EvalHarness`] makes the reset happen before that lock is released.
+pub struct WatchdogOverride {
+    previous_ms: u64,
+}
+
+impl WatchdogOverride {
+    fn new(ms: u64) -> Self {
+        let previous_ms = crate::js::repl_eval::watchdog_duration_ms();
+        crate::js::repl_eval::set_watchdog_duration_ms(ms);
+        Self { previous_ms }
+    }
+}
+
+impl Drop for WatchdogOverride {
+    fn drop(&mut self) {
+        crate::js::repl_eval::set_watchdog_duration_ms(self.previous_ms);
+    }
+}
+
+/// Owns one page document and JS host so tests can eval and then inspect the DOM.
+pub struct EvalHarness {
+    pub document: HtmlPageDocument,
+    pub js_host: JsHost,
+    // Declared before the console lock guard so the override resets first on drop.
+    _watchdog: Option<WatchdogOverride>,
+    _rt: tokio::runtime::Runtime,
+    _console_test_lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl EvalHarness {
+    pub fn new(html: &str, js_enabled: bool, pump_for: Duration) -> Self {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let console_test_lock = crate::js::console_feed::test_console_serial_lock();
+        let _ = crate::js::console_feed::drain_pending();
+        let net = Arc::new(Provider::new(None));
+        let tap = if js_enabled {
+            JsTap::new_enabled()
+        } else {
+            JsTap::new_disabled()
+        };
+        let provider = GlideHtmlProvider {
+            scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(js_enabled)),
+            js_tap: tap.clone(),
+        };
+        let mut js_host = JsHost::new(js_enabled, tap, Some(net.clone()));
+        js_host.set_console_route(0, 1);
+        let config = DocumentConfig {
+            base_url: Some("https://example.test/".into()),
+            net_provider: Some(net.clone()),
+            html_parser_provider: Some(Arc::new(provider)),
+            ..Default::default()
+        };
+        let mut document = HtmlPageDocument(parse::document_from_html(html, config, js_enabled));
+        if js_enabled {
+            js_host.maybe_start_page(&document.0, "https://example.test/", rt.handle());
+            js_host.finish_script_resolution_sync(
+                rt.handle(),
+                &crate::js::scripts::collect_scripts(&document.0),
+            );
+        }
+        let start = Instant::now();
+        while start.elapsed() < pump_for {
+            document.0.resolve(0.0);
+            js_host.pump(&mut document.0, Instant::now());
+            thread::sleep(Duration::from_millis(5));
+        }
+        js_host.flush_dom_rpc(&mut document.0, Duration::from_millis(200));
+        Self {
+            document,
+            js_host,
+            _watchdog: None,
+            _rt: rt,
+            _console_test_lock: console_test_lock,
+        }
+    }
+
+    /// Build a harness and then shorten the REPL watchdog for this test only.
+    pub fn with_watchdog(
+        html: &str,
+        js_enabled: bool,
+        pump_for: Duration,
+        watchdog_ms: u64,
+    ) -> Self {
+        let mut harness = Self::new(html, js_enabled, pump_for);
+        harness._watchdog = Some(WatchdogOverride::new(watchdog_ms));
+        harness
+    }
+
+    pub fn eval_blocking(&mut self, expression: &str) -> Result<String, String> {
+        self.js_host.eval_blocking(
+            &mut self.document.0,
+            expression,
+            JsHost::default_eval_timeout(),
+        )
+    }
+
+    /// Submit an eval with its own reply channel and pump until the worker answers.
+    pub fn submit_reply(
+        &mut self,
+        expression: &str,
+        wait: Duration,
+    ) -> Result<Result<String, String>, String> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.js_host.submit_eval(expression, Some(tx))?;
+        self.wait_for_reply(rx, wait)
+    }
+
+    /// Submit an eval with an explicit console route, to exercise the stale-route path.
+    pub fn submit_reply_at(
+        &mut self,
+        expression: &str,
+        tab_id: u64,
+        page_epoch: u64,
+        wait: Duration,
+    ) -> Result<Result<String, String>, String> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.js_host
+            .submit_eval_at(expression, tab_id, page_epoch, Some(tx))?;
+        self.wait_for_reply(rx, wait)
+    }
+
+    fn wait_for_reply(
+        &mut self,
+        rx: crossbeam_channel::Receiver<Result<String, String>>,
+        wait: Duration,
+    ) -> Result<Result<String, String>, String> {
+        let deadline = Instant::now() + wait;
+        loop {
+            match rx.try_recv() {
+                Ok(outcome) => return Ok(outcome),
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    return Err("eval reply channel closed".to_string());
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+            }
+            if Instant::now() >= deadline {
+                return Err("eval reply timed out".to_string());
+            }
+            self.document.0.resolve(0.0);
+            self.js_host.pump(&mut self.document.0, Instant::now());
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    pub fn element_text(&self, id: &str) -> Option<String> {
+        self.document
+            .0
+            .get_element_by_id(id)
+            .and_then(|node| self.document.0.get_node(node))
+            .map(|node| node.text_content())
+    }
+}
+
 /// Load inline HTML, evaluate a sequence of REPL expressions, then drain wire events.
 pub fn run_inline_page_with_repl_sequence(
     html: &str,

@@ -1310,19 +1310,27 @@ fn repl_eval_throws_error_row() {
 
 #[test]
 fn repl_eval_respects_watchdog() {
-    let html = r#"<!DOCTYPE html><html><body></body></html>"#;
-    super::repl_eval::set_watchdog_duration_ms(300);
-    let wire = super::harness::run_inline_page_with_repl_sequence(
-        html,
-        &["while (true) {}", "1 + 1"],
-        std::time::Duration::from_millis(200),
-        std::time::Duration::from_millis(450),
-    )
-    .expect("repl eval");
-    super::repl_eval::reset_watchdog_duration_ms();
+    let mut harness = super::harness::EvalHarness::with_watchdog(
+        EMPTY_PAGE,
+        true,
+        std::time::Duration::from_millis(150),
+        300,
+    );
+    let timeout = harness
+        .submit_reply("while (true) {}", std::time::Duration::from_secs(5))
+        .expect("reply");
+    assert!(
+        matches!(timeout, Err(ref message) if message.to_lowercase().contains("timed out")),
+        "{timeout:?}"
+    );
+    let after = harness
+        .submit_reply("1 + 1", std::time::Duration::from_secs(5))
+        .expect("reply");
+    assert_eq!(after, Ok("2".to_string()));
+    let wire = harness.js_host.drain_console_wire();
     assert!(
         wire.iter()
-            .any(|e| { e.level == "error" && e.message.to_lowercase().contains("timed out") }),
+            .any(|e| e.level == "error" && e.message.to_lowercase().contains("timed out")),
         "{wire:?}"
     );
     assert!(
@@ -1391,4 +1399,241 @@ fn repl_eval_global_var_visible_on_next_eval() {
             .any(|e| e.level == "repl-result" && e.message.contains("< 5")),
         "{wire:?}"
     );
+}
+
+const EMPTY_PAGE: &str = r#"<!DOCTYPE html><html><body></body></html>"#;
+
+#[test]
+fn repl_eval_reply_receives_result() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let outcome = harness
+        .submit_reply("2 + 2", std::time::Duration::from_secs(3))
+        .expect("reply");
+    assert_eq!(outcome, Ok("4".to_string()));
+    // The DevTools console keeps receiving the same wire row as a REPL submission.
+    let wire = harness.js_host.drain_console_wire();
+    assert!(
+        wire.iter()
+            .any(|e| e.level == "repl-result" && e.message.contains("< 4")),
+        "{wire:?}"
+    );
+}
+
+#[test]
+fn repl_eval_reply_receives_error() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let outcome = harness
+        .submit_reply(
+            "throw new Error('repl-fail')",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("reply");
+    assert!(
+        matches!(outcome, Err(ref message) if message.contains("repl-fail")),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn repl_eval_reply_on_watchdog_timeout() {
+    let mut harness = super::harness::EvalHarness::with_watchdog(
+        EMPTY_PAGE,
+        true,
+        std::time::Duration::from_millis(150),
+        300,
+    );
+    let outcome = harness
+        .submit_reply("while (true) {}", std::time::Duration::from_secs(5))
+        .expect("reply");
+    assert!(
+        matches!(outcome, Err(ref message) if message.to_lowercase().contains("timed out")),
+        "{outcome:?}"
+    );
+    // The watchdog must cancel termination cleanly so the next eval still runs.
+    let after = harness
+        .submit_reply("1 + 1", std::time::Duration::from_secs(5))
+        .expect("reply");
+    assert_eq!(after, Ok("2".to_string()));
+}
+
+#[test]
+fn throwing_eval_does_not_leave_watchdog_armed() {
+    let mut harness = super::harness::EvalHarness::with_watchdog(
+        EMPTY_PAGE,
+        true,
+        std::time::Duration::from_millis(150),
+        300,
+    );
+    let thrown = harness
+        .submit_reply("throw new Error('x')", std::time::Duration::from_secs(3))
+        .expect("reply");
+    assert!(
+        matches!(thrown, Err(ref message) if message.contains('x')),
+        "{thrown:?}"
+    );
+    // Wait past the watchdog: a leaked watchdog thread would terminate the isolate now.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let after = harness
+        .submit_reply("1 + 1", std::time::Duration::from_secs(3))
+        .expect("reply");
+    assert_eq!(after, Ok("2".to_string()));
+}
+
+#[test]
+fn compile_error_eval_does_not_leave_watchdog_armed() {
+    let mut harness = super::harness::EvalHarness::with_watchdog(
+        EMPTY_PAGE,
+        true,
+        std::time::Duration::from_millis(150),
+        300,
+    );
+    let failed = harness
+        .submit_reply("1 +", std::time::Duration::from_secs(3))
+        .expect("reply");
+    assert!(failed.is_err(), "{failed:?}");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let after = harness
+        .submit_reply("1 + 1", std::time::Duration::from_secs(3))
+        .expect("reply");
+    assert_eq!(after, Ok("2".to_string()));
+}
+
+#[test]
+fn stale_route_eval_reply_is_error() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let outcome = harness
+        .submit_reply_at("1 + 1", 9, 9, std::time::Duration::from_secs(3))
+        .expect("reply");
+    assert!(
+        matches!(outcome, Err(ref message) if message.starts_with("Expression ignored")),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn throwing_eval_still_mirrors_dom_mutations() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let outcome = harness
+        .submit_reply(
+            "var p=document.createElement('p'); p.id='t'; p.textContent='kept'; \
+             document.body.appendChild(p); throw 1",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("reply");
+    assert!(outcome.is_err(), "{outcome:?}");
+    assert_eq!(
+        harness.element_text("t").as_deref(),
+        Some("kept"),
+        "the error path must still flush queued DOM mutations"
+    );
+}
+
+#[test]
+fn watchdog_timeout_in_microtasks_still_flushes_dom() {
+    let mut harness = super::harness::EvalHarness::with_watchdog(
+        EMPTY_PAGE,
+        true,
+        std::time::Duration::from_millis(150),
+        300,
+    );
+    let outcome = harness
+        .submit_reply(
+            "document.body.appendChild(Object.assign(document.createElement('p'), \
+             {id:'m',textContent:'m'})); \
+             Promise.resolve().then(function f(){ return Promise.resolve().then(f); }); 0",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("reply");
+    assert!(
+        matches!(outcome, Err(ref message) if message.to_lowercase().contains("timed out")),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        harness.element_text("m").as_deref(),
+        Some("m"),
+        "a watchdog timeout in microtasks must not drop the queued mutation batch"
+    );
+    let result = harness
+        .eval_blocking("document.getElementById('m').textContent = 'm2'")
+        .expect("eval");
+    assert_eq!(result, "\"m2\"");
+    assert_eq!(harness.element_text("m").as_deref(), Some("m2"));
+}
+
+#[test]
+fn repl_eval_microtask_console_log_precedes_result() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let outcome = harness
+        .submit_reply(
+            "Promise.resolve().then(() => console.log('p')); 1",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("reply");
+    assert_eq!(outcome, Ok("1".to_string()));
+    let wire = harness.js_host.drain_console_wire();
+    let logged = wire
+        .iter()
+        .position(|e| e.level == "log" && e.message == "p");
+    let result = wire
+        .iter()
+        .position(|e| e.level == "repl-result" && e.message.contains("< 1"));
+    assert!(
+        matches!((logged, result), (Some(logged), Some(result)) if logged < result),
+        "{wire:?}"
+    );
+}
+
+#[test]
+fn eval_blocking_returns_value() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    assert_eq!(harness.eval_blocking("1 + 1").expect("eval"), "2");
+}
+
+#[test]
+fn eval_blocking_dom_mutation_is_mirrored() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let result = harness
+        .eval_blocking(
+            "(function () {\
+               var p = document.createElement('p');\
+               p.id = 'added';\
+               p.textContent = 'mirrored';\
+               document.body.appendChild(p);\
+               return 'ok';\
+             })()",
+        )
+        .expect("eval");
+    assert_eq!(result, "\"ok\"");
+    assert_eq!(
+        harness.element_text("added").as_deref(),
+        Some("mirrored"),
+        "the Blitz document should mirror the eval mutation"
+    );
+}
+
+#[test]
+fn eval_blocking_with_js_disabled_is_error() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, false, std::time::Duration::from_millis(50));
+    let error = harness.eval_blocking("1 + 1").expect_err("disabled");
+    assert!(error.contains("JavaScript is disabled"), "{error}");
+}
+
+#[test]
+fn json_eval_returns_json_text() {
+    let mut harness =
+        super::harness::EvalHarness::new(EMPTY_PAGE, true, std::time::Duration::from_millis(150));
+    let source = super::repl_eval::json_eval_source("({ a: 1 })");
+    let raw = harness.eval_blocking(&source).expect("eval");
+    // The reply is the DevTools preview of a string, so parse the JS/JSON string
+    // literal to recover the JSON text `JSON.stringify` produced.
+    let json_text: String = serde_json::from_str(&raw).expect("string preview parses as JSON");
+    assert_eq!(json_text, r#"{"a":1}"#);
 }

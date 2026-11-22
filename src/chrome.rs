@@ -185,6 +185,16 @@ pub fn command_closes_menu(command: &NavCommand) -> bool {
     !matches!(command, NavCommand::MenuOpen(_) | NavCommand::MenuClose)
 }
 
+/// The open menu after a trigger click: the same title toggles closed,
+/// another title replaces the open dropdown.
+pub fn toggle_open_menu(current: Option<MenuId>, requested: MenuId) -> Option<MenuId> {
+    if current == Some(requested) {
+        None
+    } else {
+        Some(requested)
+    }
+}
+
 fn query_value(url: &Url, key: &str) -> Option<String> {
     url.query_pairs()
         .find(|(name, _)| name == key)
@@ -1490,6 +1500,36 @@ fn is_ancestor_of(doc: &BaseDocument, ancestor: NodeId, node: NodeId) -> bool {
     false
 }
 
+fn class_contains_token(class: &str, token: &str) -> bool {
+    class.split_whitespace().any(|part| part == token)
+}
+
+fn node_keeps_menu_open(doc: &BaseDocument, node: NodeId) -> bool {
+    let mut current = node;
+    loop {
+        if doc
+            .get_node(current)
+            .and_then(|n| n.attr(local_name!("class")))
+            .is_some_and(|class| {
+                class_contains_token(class, "menu-dropdown")
+                    || class_contains_token(class, "menu-trigger")
+            })
+        {
+            return true;
+        }
+        let Some(parent) = doc.get_node(current).and_then(|n| n.parent) else {
+            return false;
+        };
+        current = parent;
+    }
+}
+
+/// Whether a pointer at these chrome coordinates is on the open dropdown or a
+/// menu-bar trigger, where a press must leave the menu open.
+pub fn pointer_keeps_menu_open(doc: &mut BaseDocument, x: f32, y: f32) -> bool {
+    hit_test_chrome(doc, x, y).is_some_and(|node| node_keeps_menu_open(doc, node))
+}
+
 pub fn stage_layout_axis_css_px(doc: &BaseDocument, dock: DevToolsDock) -> Option<f32> {
     let id = doc.get_element_by_id("stage")?;
     let layout = doc.get_node(id)?.final_layout();
@@ -1661,9 +1701,9 @@ mod tests {
 
     use super::{
         ChromeViewState, MenuId, NavCommand, TabView, chrome_document_from_state,
-        command_closes_menu, command_from_url, render_menu_bar, set_address_focused,
-        set_bookmark_star, set_loading_ui, set_ui_scale, should_write_committed_address,
-        toolbar_layout_height,
+        command_closes_menu, command_from_url, pointer_keeps_menu_open, render_menu_bar,
+        set_address_focused, set_bookmark_star, set_loading_ui, set_ui_scale,
+        should_write_committed_address, toggle_open_menu, toolbar_layout_height,
     };
     use blitz_dom::{BaseDocument, DocumentConfig, local_name};
     use blitz_traits::node_id::NodeId;
@@ -1904,6 +1944,77 @@ mod tests {
         assert!(command_closes_menu(&action));
         assert!(!command_closes_menu(&NavCommand::MenuOpen(MenuId::File)));
         assert!(!command_closes_menu(&NavCommand::MenuClose));
+        assert_eq!(
+            toggle_open_menu(Some(MenuId::File), MenuId::File),
+            None,
+            "same title toggles closed"
+        );
+        assert_eq!(
+            toggle_open_menu(Some(MenuId::File), MenuId::View),
+            Some(MenuId::View),
+            "another title switches"
+        );
+        assert_eq!(
+            toggle_open_menu(None, MenuId::File),
+            Some(MenuId::File),
+            "none opens requested"
+        );
+    }
+
+    #[test]
+    fn toggle_open_menu_switches_or_closes() {
+        assert_eq!(toggle_open_menu(Some(MenuId::File), MenuId::File), None);
+        assert_eq!(
+            toggle_open_menu(Some(MenuId::File), MenuId::History),
+            Some(MenuId::History)
+        );
+        assert_eq!(toggle_open_menu(None, MenuId::Tabs), Some(MenuId::Tabs));
+    }
+
+    fn center_of(doc: &BaseDocument, element_id: &str) -> (f32, f32) {
+        let id = doc.get_element_by_id(element_id).expect(element_id);
+        let node = doc.get_node(id).expect("node");
+        let pos = node.absolute_position(0.0, 0.0);
+        let size = node.final_layout().size;
+        (pos.x + size.width / 2.0, pos.y + size.height / 2.0)
+    }
+
+    fn open_file_menu_doc() -> BaseDocument {
+        let view = ChromeViewState {
+            open_menu: Some(MenuId::File),
+            ..ChromeViewState::default()
+        };
+        let mut doc = parse_chrome(&chrome_document_from_state(&view));
+        doc.resolve(0.0);
+        doc
+    }
+
+    #[test]
+    fn pointer_on_dropdown_or_trigger_keeps_menu_open() {
+        let mut doc = open_file_menu_doc();
+        let (tx, ty) = center_of(&doc, "menu-file");
+        let (dx, dy) = center_of(&doc, "menu-file-dropdown");
+        assert!(
+            pointer_keeps_menu_open(&mut doc, tx, ty),
+            "menu title trigger"
+        );
+        assert!(pointer_keeps_menu_open(&mut doc, dx, dy), "open dropdown");
+    }
+
+    #[test]
+    fn pointer_outside_dropdown_dismisses_menu() {
+        let mut doc = open_file_menu_doc();
+        let (px, py) = center_of(&doc, "page");
+        assert!(
+            !pointer_keeps_menu_open(&mut doc, px, py),
+            "page click should dismiss"
+        );
+        let mut doc = open_file_menu_doc();
+        let (ux, uy) = center_of(&doc, "url-form");
+        assert!(
+            !pointer_keeps_menu_open(&mut doc, ux, uy),
+            "address field should dismiss"
+        );
     }
 
     #[test]

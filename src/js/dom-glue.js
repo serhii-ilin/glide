@@ -133,6 +133,232 @@
     } catch (_) { /* console may be unavailable during early init */ }
   }
 
+  let moDeliverScheduled = false;
+  let moSnapshotBuilding = false;
+  const moRegistry = new Set();
+
+  function nodeListLike(nodes) {
+    const arr = Array.from(nodes);
+    arr.item = function (i) { return arr[i] || null; };
+    return arr;
+  }
+
+  function attrNameMatchesFilter(name, filter, target) {
+    if (!filter || !filter.length) return true;
+    const n = String(name);
+    const html = target && target.namespaceURI === XHTML;
+    for (let i = 0; i < filter.length; i++) {
+      const f = String(filter[i]);
+      if (html ? f.toLowerCase() === n.toLowerCase() : f === n) return true;
+    }
+    return false;
+  }
+
+  function isDescendant(node, ancestor) {
+    let n = node;
+    while (n) {
+      if (n === ancestor) return true;
+      n = n.parentNode;
+    }
+    return false;
+  }
+
+  function recordMatchesTarget(target, options, recordTarget) {
+    if (recordTarget === target) return true;
+    return !!options.subtree && recordTarget && isDescendant(recordTarget, target);
+  }
+
+  // Domino's mutation hooks do not expose previous attribute/character values;
+  // attributeOldValue/characterDataOldValue options are accepted but oldValue stays null.
+  function dominoToMutationRecords(rec) {
+    const out = [];
+    if (!rec) return out;
+    switch (rec.type) {
+      case MUTATE.INSERT: {
+        const parent = rec.target;
+        const node = rec.node;
+        if (!parent || !node) break;
+        out.push({
+          type: 'childList',
+          target: parent,
+          addedNodes: nodeListLike([node]),
+          removedNodes: nodeListLike([]),
+          previousSibling: node.previousSibling,
+          nextSibling: node.nextSibling,
+        });
+        break;
+      }
+      case MUTATE.REMOVE: {
+        const parent = rec.target;
+        const node = rec.node;
+        if (!parent || !node) break;
+        out.push({
+          type: 'childList',
+          target: parent,
+          addedNodes: nodeListLike([]),
+          removedNodes: nodeListLike([node]),
+          previousSibling: node.previousSibling,
+          nextSibling: node.nextSibling,
+        });
+        break;
+      }
+      case MUTATE.MOVE: {
+        const node = rec.target;
+        const parent = node && node.parentNode;
+        if (!parent || !node) break;
+        out.push({
+          type: 'childList',
+          target: parent,
+          addedNodes: nodeListLike([node]),
+          removedNodes: nodeListLike([]),
+          previousSibling: node.previousSibling,
+          nextSibling: node.nextSibling,
+        });
+        break;
+      }
+      case MUTATE.ATTR: {
+        const a = rec.attr;
+        if (!rec.target || !a) break;
+        out.push({
+          type: 'attributes',
+          target: rec.target,
+          attributeName: a.localName || a.name,
+          attributeNamespace: a.namespaceURI || null,
+          oldValue: null,
+        });
+        break;
+      }
+      case MUTATE.REMOVE_ATTR: {
+        const a = rec.attr;
+        if (!rec.target || !a) break;
+        out.push({
+          type: 'attributes',
+          target: rec.target,
+          attributeName: a.localName || a.name,
+          attributeNamespace: a.namespaceURI || null,
+          oldValue: null,
+        });
+        break;
+      }
+      case MUTATE.VALUE: {
+        if (!rec.target) break;
+        out.push({
+          type: 'characterData',
+          target: rec.target,
+          oldValue: null,
+        });
+        break;
+      }
+      default:
+        break;
+    }
+    return out;
+  }
+
+  function observerWantsRecord(options, record) {
+    if (record.type === 'childList' && !options.childList) return false;
+    if (record.type === 'attributes' && !options.attributes) return false;
+    if (record.type === 'characterData' && !options.characterData) return false;
+    if (record.type === 'attributes' && options.attributeFilter) {
+      if (!attrNameMatchesFilter(record.attributeName, options.attributeFilter, record.target)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function scheduleMutationObserverDelivery() {
+    if (moDeliverScheduled) return;
+    moDeliverScheduled = true;
+    const deliver = function () {
+      moDeliverScheduled = false;
+      if (moSnapshotBuilding) return;
+      let reschedule = false;
+      for (const obs of moRegistry) {
+        if (!obs._queue.length) continue;
+        const batch = obs._queue.slice();
+        obs._queue.length = 0;
+        try {
+          obs._callback.call(obs, batch, obs);
+        } catch (err) {
+          consoleError(err);
+        }
+        if (obs._queue.length) reschedule = true;
+      }
+      if (reschedule) scheduleMutationObserverDelivery();
+    };
+    if (typeof global.queueMicrotask === 'function') global.queueMicrotask(deliver);
+    else Promise.resolve().then(deliver);
+  }
+
+  function enqueueMutationRecords(rec) {
+    if (moSnapshotBuilding || !rec) return;
+    const records = dominoToMutationRecords(rec);
+    if (!records.length) return;
+    let added = false;
+    for (const obs of moRegistry) {
+      if (!obs._targets.size) continue;
+      for (const [target, options] of obs._targets) {
+        for (const record of records) {
+          if (!recordMatchesTarget(target, options, record.target)) continue;
+          if (!observerWantsRecord(options, record)) continue;
+          obs._queue.push(record);
+          added = true;
+        }
+      }
+    }
+    if (added) scheduleMutationObserverDelivery();
+  }
+
+  function normalizeMoOptions(options) {
+    options = options || {};
+    return {
+      childList: !!options.childList,
+      attributes: !!options.attributes,
+      characterData: !!options.characterData,
+      subtree: !!options.subtree,
+      attributeOldValue: !!options.attributeOldValue,
+      characterDataOldValue: !!options.characterDataOldValue,
+      attributeFilter: Array.isArray(options.attributeFilter)
+        ? options.attributeFilter.map(String) : null,
+    };
+  }
+
+  function resetMutationObservers() {
+    for (const obs of moRegistry) {
+      obs._targets.clear();
+      obs._queue.length = 0;
+    }
+  }
+
+  global.MutationObserver = class MutationObserver {
+    constructor(callback) {
+      if (typeof callback !== 'function') {
+        throw new TypeError('MutationObserver callback must be a function');
+      }
+      this._callback = callback;
+      this._targets = new Map();
+      this._queue = [];
+      moRegistry.add(this);
+    }
+    observe(target, options) {
+      if (!target || (target.nodeType !== 1 && target.nodeType !== 9 && target.nodeType !== 11)) {
+        throw new TypeError('MutationObserver.observe: target must be a Node');
+      }
+      this._targets.set(target, normalizeMoOptions(options));
+    }
+    disconnect() {
+      this._targets.clear();
+      this._queue.length = 0;
+    }
+    takeRecords() {
+      const batch = this._queue.slice();
+      this._queue.length = 0;
+      return batch;
+    }
+  };
+  global.MutationRecord = function MutationRecord() {};
+
   function blitzId(node) {
     return nodeToBlitz.get(node);
   }
@@ -334,6 +560,7 @@
   }
 
   function onMutation(rec) {
+    enqueueMutationRecords(rec);
     if (!mirroringEnabled || !rec) return;
     remirrorSkipped();
     switch (rec.type) {
@@ -1014,6 +1241,8 @@
   global.__glide_get_page_url = function () { return currentPageUrl; };
 
   global.__glide_init_page = function (snapshotJson, pageUrl) {
+    moSnapshotBuilding = true;
+    resetMutationObservers();
     pendingOnHandlers.length = 0;
     blitzToNode = new Map();
     nodeToBlitz = new WeakMap();
@@ -1070,6 +1299,7 @@
     for (const [node, name, val] of pendingOnHandlers) applyOnAttribute(node, name, val);
     pendingOnHandlers.length = 0;
     mirroringEnabled = true;
+    moSnapshotBuilding = false;
     ['addEventListener', 'removeEventListener', 'dispatchEvent'].forEach((name) => {
       const fn = global[name];
       if (typeof fn === 'function') {

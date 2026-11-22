@@ -7,9 +7,7 @@
 //! modifier, which macOS does not always put on the key event when Command is held.
 //! Glide synthesizes those editing keys and forwards them into iframe sub-documents.
 
-use blitz_dom::BaseDocument;
-#[cfg(target_os = "macos")]
-use blitz_dom::Document;
+use blitz_dom::{BaseDocument, Document};
 use blitz_shell::View;
 use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, KeyState, UiEvent};

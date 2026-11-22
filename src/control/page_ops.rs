@@ -78,7 +78,9 @@ pub fn query(
 
 /// Centre of the first element matching `selector` in page coordinates.
 ///
-/// Hidden and zero-size elements have no layout box, so they cannot be clicked.
+/// Non-atomic inline elements have no layout box; their clickable area is the first
+/// non-empty line fragment. A point that is covered by another element is rejected so a
+/// click cannot silently activate the wrong target.
 pub fn element_center(
     doc: &BaseDocument,
     selector: &str,
@@ -89,25 +91,104 @@ pub fn element_center(
         .ok_or_else(|| format!("no element matches selector `{selector}`"))?;
     let info = element_info(doc, id, true)
         .ok_or_else(|| format!("element `{selector}` is not visible"))?;
-    if !info.visible {
-        return Err(format!("element `{selector}` is not visible"));
-    }
-    Ok((
-        info.rect.x + info.rect.width / 2.0,
-        info.rect.y + info.rect.height / 2.0,
-        info,
-    ))
+    let rect = first_non_empty_rect(doc, id)
+        .or_else(|| first_descendant_rect(doc, id))
+        .ok_or_else(|| format!("element `{selector}` is not visible"))?;
+    let x = rect.x + rect.width / 2.0;
+    let y = rect.y + rect.height / 2.0;
+    ensure_not_covered(doc, id, selector, x, y)?;
+    Ok((x, y, info))
 }
 
-/// Element under a page point, used to report the target of a coordinate click.
+/// Element under viewport point `(x, y)`, used to report the target of a coordinate click.
 pub fn element_at(doc: &BaseDocument, x: f32, y: f32) -> Option<ElementInfo> {
-    let hit = doc.hit(x, y)?;
-    element_info(doc, hit.node_id, true)
+    if let Some(id) = doc.element_from_point(x, y) {
+        return element_info(doc, id, true);
+    }
+    let scroll = doc.viewport_scroll();
+    let hit = doc.hit(x + scroll.x as f32, y + scroll.y as f32)?;
+    let id = doc.nearest_non_anonymous_ancestor(hit.node_id)?;
+    element_info(doc, id, true)
 }
 
 /// Element info for a known node, used to report the focused target when typing.
 pub(crate) fn element_info_for(doc: &BaseDocument, id: NodeId) -> Option<ElementInfo> {
     element_info(doc, id, true)
+}
+
+fn page_rect(doc: &BaseDocument, rect: blitz_dom::BoundingRect) -> Rect {
+    let scroll = doc.viewport_scroll();
+    Rect {
+        x: (rect.x + scroll.x) as f32,
+        y: (rect.y + scroll.y) as f32,
+        width: rect.width as f32,
+        height: rect.height as f32,
+    }
+}
+
+fn first_non_empty_rect(doc: &BaseDocument, id: NodeId) -> Option<Rect> {
+    let node = doc.get_node(id)?;
+    if !matches!(
+        node.data,
+        NodeData::Element(..) | NodeData::AnonymousBlock(..)
+    ) {
+        return None;
+    }
+    doc.node_client_rects(id)
+        .into_iter()
+        .map(|rect| page_rect(doc, rect))
+        .find(|rect| rect.width > 0.0 && rect.height > 0.0)
+}
+
+fn first_descendant_rect(doc: &BaseDocument, id: NodeId) -> Option<Rect> {
+    let node = doc.get_node(id)?;
+    for child in node.children.iter() {
+        if let Some(rect) = first_non_empty_rect(doc, *child) {
+            return Some(rect);
+        }
+        if let Some(rect) = first_descendant_rect(doc, *child) {
+            return Some(rect);
+        }
+    }
+    None
+}
+
+fn ensure_not_covered(
+    doc: &BaseDocument,
+    target: NodeId,
+    selector: &str,
+    x: f32,
+    y: f32,
+) -> Result<(), String> {
+    let Some(hit) = doc.hit(x, y) else {
+        return Err(format!("element `{selector}` is not visible"));
+    };
+    let mut current = Some(hit.node_id);
+    while let Some(id) = current {
+        if id == target {
+            return Ok(());
+        }
+        current = doc.get_node(id).and_then(|node| node.parent);
+    }
+    Err(format!(
+        "element `{selector}` is covered by {}",
+        covering_label(doc, hit.node_id)
+    ))
+}
+
+fn covering_label(doc: &BaseDocument, id: NodeId) -> String {
+    let mut current = Some(id);
+    while let Some(node_id) = current {
+        if let Some(element) = doc.get_node(node_id).and_then(|node| node.element_data()) {
+            let tag = element.name.local.to_string();
+            return match element.attr(local_name!("id")) {
+                Some(element_id) => format!("<{tag}#{element_id}>"),
+                None => format!("<{tag}>"),
+            };
+        }
+        current = doc.get_node(node_id).and_then(|node| node.parent);
+    }
+    "<unknown>".to_string()
 }
 
 pub fn page_title(doc: &BaseDocument) -> String {
@@ -139,22 +220,22 @@ fn element_info(doc: &BaseDocument, id: NodeId, scripting_enabled: bool) -> Opti
     }
     let text = collapse_whitespace(&text);
     let (text, _) = truncate_chars(&text, MAX_ELEMENT_TEXT_CHARS);
-    let pos = node.absolute_position(0.0, 0.0);
-    let size = node.final_layout().size;
-    let width = size.width;
-    let height = size.height;
-    let visible = width > 0.0 && height > 0.0;
+    let rect = doc
+        .get_client_bounding_rect(id)
+        .map(|rect| page_rect(doc, rect))
+        .unwrap_or(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        });
+    let visible = rect.width > 0.0 && rect.height > 0.0;
     Some(ElementInfo {
         tag,
         id: id_attr,
         class: class_attr,
         text,
-        rect: Rect {
-            x: pos.x,
-            y: pos.y,
-            width,
-            height,
-        },
+        rect,
         visible,
     })
 }
@@ -291,6 +372,48 @@ mod tests {
         let doc = laid_out("<!DOCTYPE html><html><body></body></html>");
         let err = element_center(&doc, "#nope").expect_err("missing");
         assert!(err.contains("no element matches selector"), "{err}");
+    }
+
+    #[test]
+    fn inline_link_center_uses_fragment_box() {
+        let mut doc = laid_out(
+            r##"<!DOCTYPE html><html><body>
+            <div style="width:60px"><a id="l" href="#x">wrapped inline link text that spans lines</a></div>
+            </body></html>"##,
+        );
+        doc.resolve(0.0);
+        let id = doc.get_element_by_id("l").expect("link");
+        let fragments: Vec<_> = doc
+            .node_client_rects(id)
+            .into_iter()
+            .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
+            .collect();
+        assert!(fragments.len() >= 2, "link should wrap: {fragments:?}");
+        let scroll = doc.viewport_scroll();
+        let expected_x = (fragments[0].x + scroll.x + fragments[0].width / 2.0) as f32;
+        let expected_y = (fragments[0].y + scroll.y + fragments[0].height / 2.0) as f32;
+        let (x, y, info) = element_center(&doc, "#l").expect("centre");
+        assert!((x - expected_x).abs() < 0.5, "{x} vs {expected_x}");
+        assert!((y - expected_y).abs() < 0.5, "{y} vs {expected_y}");
+        assert_eq!(info.id.as_deref(), Some("l"));
+    }
+
+    #[test]
+    fn query_reports_inline_link_box() {
+        let mut doc = laid_out(
+            r##"<!DOCTYPE html><html><body>
+            <p><a id="l" href="#x">plain inline link</a></p>
+            </body></html>"##,
+        );
+        doc.resolve(0.0);
+        let elements = query(&doc, "#l", DEFAULT_QUERY_LIMIT, true).expect("query");
+        let link = elements.first().expect("link");
+        assert!(link.visible, "{:?}", link.rect);
+        assert!(
+            link.rect.width > 0.0 && link.rect.height > 0.0,
+            "{:?}",
+            link.rect
+        );
     }
 
     #[test]

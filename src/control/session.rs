@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use blitz_dom::{Document, DocumentConfig};
+use blitz_dom::{Document, DocumentConfig, local_name};
 use blitz_net::Provider;
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, KeyState, MouseEventButton,
@@ -15,6 +15,7 @@ use blitz_traits::events::{
 };
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::NetProvider;
+use blitz_traits::node_id::NodeId;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use crossbeam_channel::{RecvTimeoutError, Sender, bounded, unbounded};
 use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
@@ -23,7 +24,7 @@ use super::ControlBackend;
 use super::page_ops;
 use super::protocol::{
     ClickParams, ControlRequest, ControlResult, DEFAULT_MAX_CHARS, DEFAULT_NAV_TIMEOUT_MS,
-    DEFAULT_QUERY_LIMIT, InputOutcome, LoadStatus, PageInfo, TypeParams,
+    DEFAULT_QUERY_LIMIT, ElementInfo, InputOutcome, LoadStatus, PageInfo, TypeParams,
 };
 use crate::devtools::console::{ConsoleEntry, ConsoleJournal};
 use crate::headless::{self, SettleOptions, VIEWPORT_HEIGHT, VIEWPORT_WIDTH};
@@ -41,7 +42,6 @@ const SESSION_LOG_PAGE_URL_MAX: usize = 120;
 const CONTROL_SESSION_TARGET: &str = "control.session";
 const SESSION_PANIC_DETAIL_MAX: usize = 512;
 const DEFAULT_INPUT_TIMEOUT_MS: u64 = 2_000;
-const INPUT_QUIET_TICKS: u32 = 5;
 
 static NEXT_SESSION_TAB: AtomicU64 = AtomicU64::new(SESSION_TAB_BASE);
 
@@ -374,34 +374,60 @@ impl HeadlessSession {
     }
 
     /// Click at a selector's centre or at explicit page coordinates.
+    ///
+    /// `x`/`y` in [`ClickParams`] are viewport coordinates as seen in a screenshot; the
+    /// session adds `viewport_scroll()` before dispatching pointer events. Worst case waits
+    /// `timeout_ms` (default 2 s) for the input to settle, plus the navigation timeout
+    /// (default 12 s) when the click starts a load.
     pub fn click(&mut self, params: ClickParams) -> Result<InputOutcome, String> {
         params.validate()?;
         let timeout = input_timeout(params.timeout_ms);
-        let (x, y, target) = if let Some(selector) = params.selector.as_deref() {
-            if let Some(doc) = self.document.as_mut() {
-                doc.0.resolve(0.0);
-            }
-            let doc = self.document.as_ref().ok_or_else(no_page_loaded)?;
-            let (x, y, info) = page_ops::element_center(&doc.0, selector)?;
-            (x, y, Some(info))
+        let nav_timeout = nav_timeout(params.timeout_ms);
+        let selector = params
+            .selector
+            .as_deref()
+            .filter(|selector| !selector.trim().is_empty());
+        self.prepare_input();
+
+        let (x, y, viewport_x, viewport_y, target) = if let Some(selector) = selector {
+            let (x, y, info) = {
+                let doc = self.document.as_ref().ok_or_else(no_page_loaded)?;
+                page_ops::element_center(&doc.0, selector)?
+            };
+            let scroll = self
+                .document
+                .as_ref()
+                .ok_or_else(no_page_loaded)?
+                .0
+                .viewport_scroll();
+            (x, y, x - scroll.x as f32, y - scroll.y as f32, Some(info))
         } else {
-            let (x, y) = match (params.x, params.y) {
+            let (viewport_x, viewport_y) = match (params.x, params.y) {
                 (Some(x), Some(y)) => (x, y),
                 _ => return Err("give a selector or both x and y".to_string()),
             };
-            if let Some(doc) = self.document.as_mut() {
-                doc.0.resolve(0.0);
-            }
+            let scroll = self
+                .document
+                .as_ref()
+                .ok_or_else(no_page_loaded)?
+                .0
+                .viewport_scroll();
             let target = {
                 let doc = self.document.as_ref().ok_or_else(no_page_loaded)?;
-                page_ops::element_at(&doc.0, x, y)
+                page_ops::element_at(&doc.0, viewport_x, viewport_y)
             };
-            (x, y, target)
+            (
+                viewport_x + scroll.x as f32,
+                viewport_y + scroll.y as f32,
+                viewport_x,
+                viewport_y,
+                target,
+            )
         };
 
-        self.send_pointer(x, y);
+        self.send_pointer(x, y, viewport_x, viewport_y);
         self.settle_after_input(timeout);
-        let navigated = self.follow_pending_navigation(timeout)?;
+        let navigated = self.follow_pending_navigation(nav_timeout, "clicked")?;
         let page = self.page_info()?;
         Ok(InputOutcome {
             x,
@@ -413,38 +439,53 @@ impl HeadlessSession {
     }
 
     /// Type text, optionally into a selector, and optionally press Enter.
+    ///
+    /// The selector is clicked first to focus it; `type` then moves the caret to the end
+    /// so the text appends. Worst case waits `timeout_ms` (default 2 s) for the input to
+    /// settle, plus the navigation timeout (default 12 s) when Enter submits a form.
+    /// `setTimeout` follow-ups scheduled by page handlers are not awaited.
     pub fn type_text(&mut self, params: TypeParams) -> Result<InputOutcome, String> {
         let timeout = input_timeout(params.timeout_ms);
-        let mut x = 0.0;
-        let mut y = 0.0;
-        let mut target = None;
+        let nav_timeout = nav_timeout(params.timeout_ms);
+        let selector = params
+            .selector
+            .as_deref()
+            .filter(|selector| !selector.trim().is_empty());
+        self.prepare_input();
 
-        if let Some(selector) = params.selector.as_deref() {
-            if let Some(doc) = self.document.as_mut() {
-                doc.0.resolve(0.0);
-            }
-            let (cx, cy, info) = {
+        let (x, y, target) = if let Some(selector) = selector {
+            let (page_x, page_y, info) = {
                 let doc = self.document.as_ref().ok_or_else(no_page_loaded)?;
                 page_ops::element_center(&doc.0, selector)?
             };
-            x = cx;
-            y = cy;
-            target = Some(info);
-            self.send_pointer(x, y);
-        } else if let Some(doc) = self.document.as_ref()
-            && let Some(id) = doc.0.get_focussed_node_id()
-            && doc
+            let scroll = self
+                .document
+                .as_ref()
+                .ok_or_else(no_page_loaded)?
                 .0
-                .get_node(id)
-                .and_then(|node| node.element_data())
-                .is_some_and(|el| el.text_input_data().is_some())
-            && let Some(info) = page_ops::element_info_for(&doc.0, id)
-        {
-            x = info.rect.x + info.rect.width / 2.0;
-            y = info.rect.y + info.rect.height / 2.0;
-            target = Some(info);
-        }
+                .viewport_scroll();
+            self.send_pointer(
+                page_x,
+                page_y,
+                page_x - scroll.x as f32,
+                page_y - scroll.y as f32,
+            );
+            if self.focused_text_field().is_none() {
+                return Err(format!("element `{selector}` is not a text field"));
+            }
+            (page_x, page_y, Some(info))
+        } else {
+            let (_, info) = self
+                .focused_text_field()
+                .ok_or_else(|| "no focused text field; pass a selector".to_string())?;
+            (
+                info.rect.x + info.rect.width / 2.0,
+                info.rect.y + info.rect.height / 2.0,
+                Some(info),
+            )
+        };
 
+        self.dispatch_ui_event(&UiEvent::KeyDown(end_key_event(KeyState::Pressed)));
         self.dispatch_ui_event(&UiEvent::Ime(BlitzImeEvent::Commit(params.text)));
         if params.submit {
             self.dispatch_ui_event(&UiEvent::KeyDown(enter_key_event(KeyState::Pressed)));
@@ -452,7 +493,7 @@ impl HeadlessSession {
         }
 
         self.settle_after_input(timeout);
-        let navigated = self.follow_pending_navigation(timeout)?;
+        let navigated = self.follow_pending_navigation(nav_timeout, "typed")?;
         let page = self.page_info()?;
         Ok(InputOutcome {
             x,
@@ -463,6 +504,22 @@ impl HeadlessSession {
         })
     }
 
+    fn focused_text_field(&self) -> Option<(NodeId, ElementInfo)> {
+        let doc = self.document.as_ref()?;
+        let id = doc.0.get_focussed_node_id()?;
+        if !is_editable(&doc.0, id) {
+            return None;
+        }
+        Some((id, page_ops::element_info_for(&doc.0, id)?))
+    }
+
+    fn prepare_input(&mut self) {
+        if let Some(doc) = self.document.as_mut() {
+            let _ = crate::js::prune_stale_paint_children(&mut doc.0);
+            doc.0.resolve(0.0);
+        }
+    }
+
     fn dispatch_ui_event(&mut self, event: &UiEvent) {
         if let Some(doc) = self.document.as_mut() {
             doc.0.handle_ui_event(event.clone());
@@ -470,54 +527,96 @@ impl HeadlessSession {
         self.tap.record_ui_event(event);
     }
 
-    fn send_pointer(&mut self, x: f32, y: f32) {
-        let move_event = UiEvent::PointerMove(pointer_event(x, y, MouseEventButtons::None));
+    fn send_pointer(&mut self, page_x: f32, page_y: f32, client_x: f32, client_y: f32) {
+        let move_event = UiEvent::PointerMove(pointer_event(
+            page_x,
+            page_y,
+            client_x,
+            client_y,
+            MouseEventButtons::None,
+        ));
         self.dispatch_ui_event(&move_event);
-        let down_event = UiEvent::PointerDown(pointer_event(x, y, MouseEventButtons::Primary));
+        let down_event = UiEvent::PointerDown(pointer_event(
+            page_x,
+            page_y,
+            client_x,
+            client_y,
+            MouseEventButtons::Primary,
+        ));
         self.dispatch_ui_event(&down_event);
-        let up_event = UiEvent::PointerUp(pointer_event(x, y, MouseEventButtons::None));
+        let up_event = UiEvent::PointerUp(pointer_event(
+            page_x,
+            page_y,
+            client_x,
+            client_y,
+            MouseEventButtons::None,
+        ));
         self.dispatch_ui_event(&up_event);
     }
 
-    /// Pump page JavaScript until it has been quiet for a few ticks, then flush DOM RPC.
+    /// Flush recorded tap events, wait for the page worker to reach them, then flush DOM RPC.
+    ///
+    /// The worker processes messages in order, so an `eval_blocking` round trip after the
+    /// dispatch barrier proves the page handlers ran. Timer follow-ups are not awaited.
     fn settle_after_input(&mut self, timeout: Duration) {
         let deadline = Instant::now() + timeout;
-        let mut quiet = 0;
-        while let Some(doc) = self.document.as_mut() {
-            let Some(js_host) = self.js_host.as_mut() else {
-                break;
-            };
+        if let (Some(doc), Some(js_host)) = (self.document.as_mut(), self.js_host.as_mut()) {
             doc.0.resolve(0.0);
-            if js_host.pump(&mut doc.0, Instant::now()) {
-                quiet = 0;
-            } else {
-                quiet += 1;
+            js_host.pump(&mut doc.0, Instant::now());
+            let barrier = timeout
+                .min(JsHost::default_eval_timeout())
+                .max(Duration::from_millis(100));
+            let _ = js_host.eval_blocking(&mut doc.0, "0", barrier);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining > Duration::ZERO {
+                js_host.flush_dom_rpc_until_idle(
+                    &mut doc.0,
+                    remaining.min(Duration::from_secs(1)),
+                    Duration::from_millis(50),
+                );
             }
-            if quiet >= INPUT_QUIET_TICKS || Instant::now() >= deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if let (Some(doc), Some(js_host)) = (self.document.as_mut(), self.js_host.as_mut())
-            && remaining > Duration::ZERO
-        {
-            js_host.flush_dom_rpc_until_idle(
-                &mut doc.0,
-                remaining.min(Duration::from_secs(1)),
-                Duration::from_millis(50),
-            );
             doc.0.resolve(0.0);
         }
         self.drain_console_wire();
     }
 
-    fn follow_pending_navigation(&mut self, timeout: Duration) -> Result<bool, String> {
+    fn follow_pending_navigation(
+        &mut self,
+        timeout: Duration,
+        action: &str,
+    ) -> Result<bool, String> {
         let Some(url) = self.pending_nav.lock().ok().and_then(|mut q| q.pop()) else {
             return Ok(false);
         };
-        self.navigate(&url, timeout)?;
+        let scheme = url::Url::parse(&url)
+            .map(|parsed| parsed.scheme().to_string())
+            .unwrap_or_default();
+        if !matches!(scheme.as_str(), "http" | "https" | "file" | "data") {
+            logging::warn(
+                CONTROL_SESSION_TARGET,
+                "ignored unsupported navigation",
+                &[
+                    (
+                        "page_url",
+                        console_feed::truncate_field(
+                            self.page_url_for_log().as_deref().unwrap_or("none"),
+                            SESSION_LOG_PAGE_URL_MAX,
+                        ),
+                    ),
+                    ("error_kind", "unsupported".into()),
+                    ("feature", "F-068".into()),
+                    ("detail", scheme),
+                    (
+                        "hint",
+                        "The headless session loads only http, https, file and data URLs; the input itself was delivered."
+                            .into(),
+                    ),
+                ],
+            );
+            return Ok(false);
+        }
+        self.navigate(&url, timeout)
+            .map_err(|err| format!("{action}; navigation to {url} failed: {err}"))?;
         Ok(true)
     }
 
@@ -697,14 +796,22 @@ fn input_timeout(timeout_ms: Option<u64>) -> Duration {
     Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_INPUT_TIMEOUT_MS))
 }
 
-fn pointer_event(x: f32, y: f32, buttons: MouseEventButtons) -> BlitzPointerEvent {
+fn pointer_event(
+    page_x: f32,
+    page_y: f32,
+    client_x: f32,
+    client_y: f32,
+    buttons: MouseEventButtons,
+) -> BlitzPointerEvent {
+    // Blitz's default actions hit-test with page coordinates while the JS tap and
+    // screenshot-facing coordinates use client coordinates, so keep both fields honest.
     let coords = PointerCoords {
-        page_x: x,
-        page_y: y,
-        screen_x: x,
-        screen_y: y,
-        client_x: x,
-        client_y: y,
+        page_x,
+        page_y,
+        screen_x: client_x,
+        screen_y: client_y,
+        client_x,
+        client_y,
     };
     BlitzPointerEvent {
         id: BlitzPointerId::Mouse,
@@ -730,6 +837,30 @@ fn enter_key_event(state: KeyState) -> BlitzKeyEvent {
         state,
         text: None,
     }
+}
+
+fn end_key_event(state: KeyState) -> BlitzKeyEvent {
+    BlitzKeyEvent {
+        key: Key::Named(NamedKey::End),
+        code: Code::End,
+        modifiers: Modifiers::default(),
+        location: Location::Standard,
+        is_auto_repeating: false,
+        is_composing: false,
+        state,
+        text: None,
+    }
+}
+
+fn is_editable(doc: &blitz_dom::BaseDocument, id: NodeId) -> bool {
+    let Some(element) = doc.get_node(id).and_then(|node| node.element_data()) else {
+        return false;
+    };
+    element.text_input_data().is_some()
+        || matches!(
+            element.attr(local_name!("contenteditable")),
+            Some("") | Some("true") | Some("plaintext-only")
+        )
 }
 
 pub(crate) fn resolve_nav_url(raw: &str) -> String {
@@ -788,5 +919,49 @@ mod tests {
             search.starts_with("https://duckduckgo.com/html/?q="),
             "{search}"
         );
+    }
+
+    #[test]
+    fn type_text_writes_into_blitz_editor() {
+        let rt = crate::tokio_runtime();
+        let _g = rt.enter();
+        let mut session = HeadlessSession::new(SessionOptions { js_enabled: true });
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-form.html");
+        let url = url::Url::from_file_path(&path)
+            .expect("file url")
+            .to_string();
+        session
+            .navigate(&url, Duration::from_secs(12))
+            .expect("navigate");
+        let outcome = session
+            .type_text(TypeParams {
+                text: "Alice".into(),
+                selector: Some("#name".into()),
+                submit: false,
+                timeout_ms: None,
+            })
+            .expect("type");
+        assert!(!outcome.navigated);
+        let doc = session.document.as_ref().expect("document");
+        let id = doc.0.get_element_by_id("name").expect("input");
+        let editor_text = |doc: &blitz_dom::BaseDocument| {
+            doc.get_node(id)
+                .and_then(|node| node.element_data())
+                .and_then(|el| el.text_input_data())
+                .map(|data| data.editor.text().to_string())
+                .expect("editor text")
+        };
+        assert_eq!(editor_text(&doc.0), "Alice");
+        session
+            .type_text(TypeParams {
+                text: "!".into(),
+                selector: Some("#name".into()),
+                submit: false,
+                timeout_ms: None,
+            })
+            .expect("type appends");
+        let doc = session.document.as_ref().expect("document");
+        assert_eq!(editor_text(&doc.0), "Alice!");
     }
 }

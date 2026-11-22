@@ -6,7 +6,7 @@ pub const DEFAULT_MAX_CHARS: usize = 20_000;
 pub const DEFAULT_QUERY_LIMIT: usize = 50;
 pub const DEFAULT_NAV_TIMEOUT_MS: u64 = 12_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum ControlRequest {
     Navigate(NavigateParams),
@@ -116,17 +116,15 @@ pub struct Rect {
 pub struct ClickParams {
     #[serde(default)]
     pub selector: Option<String>,
+    /// Viewport x coordinate as seen in a screenshot; the session adds `viewport_scroll()`.
     #[serde(default)]
     pub x: Option<f32>,
+    /// Viewport y coordinate as seen in a screenshot; the session adds `viewport_scroll()`.
     #[serde(default)]
     pub y: Option<f32>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
-
-// `ControlRequest` derives `Eq`; a click point is a float pair, so provide the marker
-// implementation that the derive cannot produce for `f32`.
-impl Eq for ClickParams {}
 
 impl ClickParams {
     /// Exactly one of a selector or both x and y must be supplied.
@@ -157,7 +155,9 @@ pub struct TypeParams {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InputOutcome {
+    /// Resolved page x coordinate (viewport input plus scroll for coordinate clicks).
     pub x: f32,
+    /// Resolved page y coordinate (viewport input plus scroll for coordinate clicks).
     pub y: f32,
     pub target: Option<ElementInfo>,
     pub navigated: bool,

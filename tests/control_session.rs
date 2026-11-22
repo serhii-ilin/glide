@@ -623,6 +623,22 @@ fn click_coordinates_hit_the_button() {
     let outcome =
         input_outcome(&backend, ControlRequest::Click(params)).expect("click coordinates");
     assert!(!outcome.navigated);
+    assert_eq!(
+        outcome.target.expect("target").id.as_deref(),
+        Some("btn"),
+        "coordinate clicks should resolve the hit element"
+    );
+    assert!(element_html(&backend, "#out").contains("clicked"));
+}
+
+#[test]
+fn click_coordinates_ignore_blank_selector() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let mut params = button_click_params(&backend);
+    params.selector = Some("   ".into());
+    let outcome = input_outcome(&backend, ControlRequest::Click(params)).expect("click");
+    assert!(!outcome.navigated);
     assert!(element_html(&backend, "#out").contains("clicked"));
 }
 
@@ -647,6 +663,114 @@ fn click_link_navigates() {
 }
 
 #[test]
+fn click_plain_inline_link_navigates() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#inline".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect("click inline link");
+    assert!(outcome.navigated, "inline link click should navigate");
+    assert_eq!(outcome.page.title, "Page B");
+}
+
+#[test]
+fn click_wrapped_link_navigates() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#wrapped".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect("click wrapped link");
+    assert!(outcome.navigated, "wrapped link click should navigate");
+    assert_eq!(outcome.page.title, "Page B");
+}
+
+#[test]
+fn click_javascript_link_runs_onclick_without_error() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#js-link".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect("javascript link click");
+    assert!(!outcome.navigated);
+    assert!(element_html(&backend, "#out").contains("js clicked"));
+}
+
+#[test]
+fn click_mailto_link_is_ignored() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#mailto-link".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect("mailto link click");
+    assert!(!outcome.navigated);
+    assert_eq!(outcome.page.title, "Form");
+}
+
+#[test]
+fn click_link_to_missing_file_reports_clicked() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let err = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#missing-link".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect_err("missing link");
+    assert!(err.starts_with("clicked; navigation to "), "{err}");
+    assert!(err.contains("failed"), "{err}");
+}
+
+#[test]
+fn click_covered_element_is_error() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let err = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#covered".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect_err("covered element");
+    assert!(err.contains("is covered by"), "{err}");
+    assert!(err.contains("overlay"), "{err}");
+}
+
+#[test]
 fn type_text_updates_input_listener() {
     let backend = session_js_on();
     load_form(&backend);
@@ -663,9 +787,11 @@ fn type_text_updates_input_listener() {
     assert!(!outcome.navigated);
     assert_eq!(outcome.page.title, "Form");
     assert_eq!(outcome.target.expect("target").id.as_deref(), Some("name"));
+    // The host dispatches the event type only; page JS does not see the typed value
+    // until F-039 mirrors form control values from Blitz into domino.
     let echo = element_html(&backend, "#echo");
     assert!(
-        echo.contains("input") || echo.contains("Alice"),
+        echo.contains(">input</p>"),
         "input listener did not run: {echo}"
     );
 }
@@ -684,18 +810,70 @@ fn type_submit_presses_enter() {
         }),
     )
     .expect("type submit");
-    // Blitz reports implicit form submission but its form code only navigates for
-    // http(s)/data GET and http(s) POST, so a file:// action is not followed yet.
-    if outcome.navigated {
-        assert_eq!(outcome.page.title, "Page B");
-    } else {
-        assert_eq!(outcome.page.title, "Form");
-        let key = element_html(&backend, "#key");
-        assert!(
-            key.contains("Enter") || key.contains("keydown"),
-            "keydown did not reach the page: {key}"
-        );
-    }
+    assert!(outcome.navigated, "data: form submission should navigate");
+    assert_eq!(outcome.page.title, "Submitted");
+    assert!(
+        outcome.page.url.contains("q=query"),
+        "form submission should use the typed value: {}",
+        outcome.page.url
+    );
+}
+
+#[test]
+fn type_submit_file_form_does_not_navigate() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Type(TypeParams {
+            text: "query".into(),
+            selector: Some("#fileq".into()),
+            submit: true,
+            timeout_ms: None,
+        }),
+    )
+    .expect("type submit file form");
+    assert!(!outcome.navigated);
+    assert_eq!(outcome.page.title, "Form");
+    let key = element_html(&backend, "#filekey");
+    assert!(
+        key.contains(">keydown</p>"),
+        "keydown did not reach the page: {key}"
+    );
+}
+
+#[test]
+fn type_into_button_is_error() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let err = input_outcome(
+        &backend,
+        ControlRequest::Type(TypeParams {
+            text: "nope".into(),
+            selector: Some("#btn".into()),
+            submit: false,
+            timeout_ms: None,
+        }),
+    )
+    .expect_err("type into button");
+    assert_eq!(err, "element `#btn` is not a text field");
+}
+
+#[test]
+fn type_without_focus_is_error() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let err = input_outcome(
+        &backend,
+        ControlRequest::Type(TypeParams {
+            text: "nope".into(),
+            selector: None,
+            submit: false,
+            timeout_ms: None,
+        }),
+    )
+    .expect_err("type without focus");
+    assert_eq!(err, "no focused text field; pass a selector");
 }
 
 #[test]

@@ -10,19 +10,36 @@
   <p id="out"></p>
   <input id="name">
   <p id="echo"></p>
-  <form id="f" action="mcp-page-b.html">
+  <form id="f" action="data:text/html,<title>Submitted</title>">
     <input id="q" name="q">
   </form>
+  <form id="file-f" action="mcp-page-b.html">
+    <input id="fileq" name="fileq">
+  </form>
   <p id="key"></p>
-  <a id="link" href="mcp-page-b.html" style="display:inline-block">to B</a>
+  <p id="filekey"></p>
+  <a id="link" href="mcp-page-b.html">to B</a>
+  <a id="inline" href="mcp-page-b.html">plain inline B</a>
+  <div style="width:80px">
+    <a id="wrapped" href="mcp-page-b.html">wrapped link text that is long enough to wrap onto several lines</a>
+  </div>
+  <a id="js-link" href="javascript:void(0)" onclick="document.getElementById('out').textContent='js clicked'">js</a>
+  <a id="mailto-link" href="mailto:test@example.com">mail</a>
+  <a id="missing-link" href="no-such-mcp-page.html">missing</a>
+  <div id="cover-wrap" style="position:relative;width:120px;height:40px">
+    <button id="covered" style="width:120px;height:40px">Covered</button>
+    <div id="overlay" style="position:absolute;left:0;top:0;width:120px;height:40px;background:red"></div>
+  </div>
   <button id="hidden" style="display:none">Hidden</button>
   <script>
-    document.getElementById("name").addEventListener("input", function (event) {
-      var value = event.target.value;
-      document.getElementById("echo").textContent = value === "" ? event.type : value;
+    document.getElementById("name").addEventListener("input", function (e) {
+      document.getElementById("echo").textContent = e.type;
     });
-    document.getElementById("q").addEventListener("keydown", function (event) {
-      document.getElementById("key").textContent = event.key || event.type;
+    document.getElementById("q").addEventListener("keydown", function (e) {
+      document.getElementById("key").textContent = e.type;
+    });
+    document.getElementById("fileq").addEventListener("keydown", function (e) {
+      document.getElementById("filekey").textContent = e.type;
     });
   </script>
 </body>

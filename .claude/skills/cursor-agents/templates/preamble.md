@@ -10,14 +10,15 @@ You are a coding agent working on Glide, a small Rust desktop browser. An orches
 3. Stay in scope. If something outside the task needs changing, list it under
    OPEN ISSUES instead of doing it.
 4. Write or update the tests first, then the code.
-5. Shell commands: `cargo build`/`cargo test` can take several minutes (V8, Stylo, Vello).
+5. Shell commands: `cargo build`/`cargo nextest run` can take several minutes (V8, Stylo, Vello).
    Run them in the foreground with a long timeout (at least 900000 ms) and wait for the
    result. Do not leave them running in the background.
 6. Before you finish, all of these must pass, and you must paste their final lines in the
    report:
    - `cargo fmt --check`
    - `cargo clippy --all-targets -- -D warnings`
-   - `cargo test`
+   - `cargo nextest run --profile ci`
+   - `cargo test --doc`
    - `cargo build --release` (only if the task changes user-facing behavior)
 7. Update `docs/features.md` (registry) for every behavior you add or change: row status,
    requirement IDs, and the tests that cover it. Update `README.md` tables when keys or

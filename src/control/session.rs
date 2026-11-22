@@ -1,5 +1,6 @@
 //! Long-lived headless browsing session on a dedicated thread.
 
+use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -31,6 +32,8 @@ use crate::tabs::TabId;
 
 const SESSION_TAB_BASE: u64 = 1_u64 << 32;
 const SESSION_LOG_PAGE_URL_MAX: usize = 120;
+const CONTROL_SESSION_TARGET: &str = "control.session";
+const SESSION_PANIC_DETAIL_MAX: usize = 512;
 
 static NEXT_SESSION_TAB: AtomicU64 = AtomicU64::new(SESSION_TAB_BASE);
 
@@ -98,46 +101,71 @@ pub fn spawn_session(
                 match rx.recv_timeout(Duration::from_millis(30)) {
                     Ok(envelope) => {
                         let method = request_method_name(&envelope.request);
-                        let result =
-                            catch_unwind(AssertUnwindSafe(|| session.handle(envelope.request)))
-                                .unwrap_or_else(|payload| {
-                                    let detail = if let Some(s) = payload.downcast_ref::<&str>() {
-                                        (*s).to_string()
-                                    } else if let Some(s) = payload.downcast_ref::<String>() {
-                                        s.clone()
-                                    } else {
-                                        "panic".to_string()
-                                    };
-                                    logging::error(
-                                "control.session",
-                                "request panicked",
-                                &[
-                                    ("method", method.clone()),
-                                    (
-                                        "hint",
-                                        "Blitz or JS worker fault; file a bug if this reproduces"
-                                            .into(),
-                                    ),
-                                    ("detail", detail.clone()),
-                                ],
-                            );
-                                    Err(format!("internal error: {detail}"))
-                                });
+                        let result = catch_session_op(&method, "request panicked", || {
+                            session.handle(envelope.request)
+                        });
                         let fields = session_request_log_fields(
                             &method,
                             if result.is_ok() { "ok" } else { "error" },
                             session.page_url_for_log().as_deref().unwrap_or("none"),
                         );
-                        logging::debug("control.session", "handled request", &fields);
+                        logging::debug(CONTROL_SESSION_TARGET, "handled request", &fields);
                         let _ = envelope.reply.send(result);
                     }
-                    Err(RecvTimeoutError::Timeout) => session.tick(),
+                    Err(RecvTimeoutError::Timeout) => {
+                        catch_session_tick(&mut session);
+                    }
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
             }
         })
         .map_err(|err| err.to_string())?;
     Ok(LocalSessionBackend { tx })
+}
+
+fn panic_payload_string(payload: Box<dyn Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "panic".to_string()
+    }
+}
+
+fn log_control_session_panic(method: &str, message: &str, detail: &str) {
+    logging::error(
+        CONTROL_SESSION_TARGET,
+        message,
+        &[
+            ("method", method.to_string()),
+            (
+                "hint",
+                "Blitz or JS worker fault; file a bug if this reproduces".into(),
+            ),
+            (
+                "detail",
+                console_feed::truncate_field(detail, SESSION_PANIC_DETAIL_MAX),
+            ),
+        ],
+    );
+}
+
+fn catch_session_op<T, F>(method: &str, panic_message: &str, op: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    catch_unwind(AssertUnwindSafe(op)).unwrap_or_else(|payload| {
+        let detail = panic_payload_string(payload);
+        log_control_session_panic(method, panic_message, &detail);
+        Err(format!("internal error: {detail}"))
+    })
+}
+
+fn catch_session_tick(session: &mut HeadlessSession) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| session.tick())) {
+        log_control_session_panic("tick", "tick panicked", &panic_payload_string(payload));
+    }
 }
 
 pub(crate) fn session_request_log_fields(
@@ -276,9 +304,12 @@ impl HeadlessSession {
             return Err("no previous page".to_string());
         }
         let target = history.entries()[history.index() - 1].clone();
-        self.load_url(target, timeout, LoadHistory::Traverse)?;
+        self.load_url(target.clone(), timeout, LoadHistory::Traverse)?;
         let history = self.history.as_mut().ok_or_else(no_page_loaded)?;
         let _ = history.back();
+        if self.current_url != target {
+            history.replace_current(self.current_url.clone());
+        }
         self.page_info()
     }
 
@@ -288,9 +319,12 @@ impl HeadlessSession {
             return Err("no next page".to_string());
         }
         let target = history.entries()[history.index() + 1].clone();
-        self.load_url(target, timeout, LoadHistory::Traverse)?;
+        self.load_url(target.clone(), timeout, LoadHistory::Traverse)?;
         let history = self.history.as_mut().ok_or_else(no_page_loaded)?;
         let _ = history.forward();
+        if self.current_url != target {
+            history.replace_current(self.current_url.clone());
+        }
         self.page_info()
     }
 
@@ -328,8 +362,6 @@ impl HeadlessSession {
         let (final_url, bytes) = headless::fetch_page(&url, self.opts.js_enabled, &handle, &net)?;
         let html = String::from_utf8_lossy(&bytes);
 
-        self.js_host = None;
-
         let tap = if self.opts.js_enabled {
             JsTap::new_enabled()
         } else {
@@ -360,16 +392,18 @@ impl HeadlessSession {
             self.opts.js_enabled,
         ));
 
-        self.epoch = self.epoch.saturating_add(1);
-        js_host.set_console_route(self.tab_id, self.epoch);
+        let new_epoch = self.epoch.saturating_add(1);
+        js_host.set_console_route(self.tab_id, new_epoch);
         js_host.maybe_start_page(&document.0, &final_url, &handle);
 
-        let settle_opts = SettleOptions {
+        let mut settle_opts = SettleOptions {
             max: timeout,
             ..SettleOptions::default()
         };
+        if timeout <= Duration::from_millis(1000) {
+            settle_opts.quiet_ticks = 8;
+        }
         let tab_id = self.tab_id;
-        let epoch = self.epoch;
         let journal = &mut self.console;
         let outcome = headless::settle(
             &mut document.0,
@@ -379,20 +413,19 @@ impl HeadlessSession {
             settle_opts,
             || {
                 for ev in console_feed::drain_for_tab(tab_id) {
-                    if ev.page_epoch == epoch {
+                    if ev.page_epoch == new_epoch {
                         journal.push(ConsoleEntry::from_wire(ev));
                     }
                 }
             },
         );
-        self.last_status = if outcome.timed_out {
+        let last_status = if outcome.timed_out {
             LoadStatus::Timeout
         } else {
             LoadStatus::Settled
         };
 
         if self.opts.js_enabled {
-            self.drain_console_wire();
             let remaining = timeout.saturating_sub(load_started.elapsed());
             let flush_budget = remaining.min(Duration::from_secs(4));
             if flush_budget > Duration::ZERO {
@@ -403,12 +436,18 @@ impl HeadlessSession {
                 );
             }
             document.0.resolve(0.0);
-            self.drain_console_wire();
+            for ev in console_feed::drain_for_tab(tab_id) {
+                if ev.page_epoch == new_epoch {
+                    journal.push(ConsoleEntry::from_wire(ev));
+                }
+            }
         }
 
         self.document = Some(document);
         self.js_host = Some(js_host);
+        self.epoch = new_epoch;
         self.current_url = final_url.clone();
+        self.last_status = last_status;
 
         match history {
             LoadHistory::Push => match &mut self.history {
@@ -465,10 +504,12 @@ fn nav_timeout(timeout_ms: Option<u64>) -> Duration {
 
 pub(crate) fn resolve_nav_url(raw: &str) -> String {
     let trimmed = raw.trim();
-    if let Ok(url) = url::Url::parse(trimmed)
-        && !url.scheme().is_empty()
-    {
-        return url.to_string();
+    if let Ok(url) = url::Url::parse(trimmed) {
+        match url.scheme() {
+            "file" => return trimmed.to_string(),
+            "http" | "https" | "data" => return url.to_string(),
+            _ => {}
+        }
     }
     location::resolve_location(trimmed)
 }
@@ -484,6 +525,7 @@ mod tests {
         assert_eq!(map.get("method").map(String::as_str), Some("navigate"));
         assert_eq!(map.get("status").map(String::as_str), Some("ok"));
         assert!(map.contains_key("page_url"));
+        assert_eq!(CONTROL_SESSION_TARGET, "control.session");
     }
 
     #[test]
@@ -500,8 +542,21 @@ mod tests {
     }
 
     #[test]
-    fn resolve_nav_url_passes_data_and_about() {
-        assert!(resolve_nav_url("data:text/html,hi").starts_with("data:"));
-        assert_eq!(resolve_nav_url("about:blank"), "about:blank");
+    fn resolve_nav_url_uses_address_bar_rules_for_bare_hosts() {
+        assert_eq!(resolve_nav_url("localhost:3000"), "https://localhost:3000/");
+        assert_eq!(
+            resolve_nav_url("example.com:8080"),
+            "https://example.com:8080/"
+        );
+        assert_eq!(resolve_nav_url("data:text/html,x"), "data:text/html,x");
+        assert_eq!(
+            resolve_nav_url("file:///tmp/a b.html"),
+            "file:///tmp/a b.html"
+        );
+        let search = resolve_nav_url("some phrase");
+        assert!(
+            search.starts_with("https://duckduckgo.com/html/?q="),
+            "{search}"
+        );
     }
 }

@@ -77,3 +77,68 @@ Feature: F-066 MCP headless session navigation and page inspection
     Given glide is started in MCP mode
     When the client exchanges several JSON-RPC messages
     Then every stdout line parses as JSON-RPC
+
+  @mcp-stdio
+  Scenario: Back and forward over stdio
+    Given glide is started in MCP mode
+    When the client navigates MCP page A then page B, goes back, then forward
+    Then page titles are "Page A" then "Page B"
+
+  @mcp-stdio
+  Scenario: Reload over stdio re-runs inline scripts
+    Given glide is started in MCP mode on MCP page A
+    When the client reloads the page
+    Then DOM for "#run" is present again
+
+  @mcp-stdio
+  Scenario: Page info over stdio reports settled state
+    Given glide is started in MCP mode on MCP page A
+    When the client requests page info
+    Then the page info JSON reports title "Page A" and status settled
+
+  @mcp-stdio
+  Scenario: DOM and query over stdio
+    Given glide is started in MCP mode on MCP page A
+    When the client requests DOM for "#box" and queries "#box"
+    Then the DOM includes the box and query returns a visible element
+
+  @mcp-stdio
+  Scenario: Missing DOM selector is a tool error over stdio
+    Given glide is started in MCP mode on MCP page A
+    When the client requests DOM for "#missing"
+    Then the tool result is an error naming the selector
+
+  @mcp-stdio
+  Scenario: Missing file navigation is a tool error over stdio
+    Given glide is started in MCP mode on MCP page A
+    When the client navigates to a missing local file
+    Then navigation is a tool error and page title remains "Page A"
+
+  @mcp-stdio
+  Scenario: Screenshot over stdio returns 1100x760 PNG
+    Given glide is started in MCP mode on MCP page A
+    When the client takes a screenshot
+    Then the PNG dimensions are 1100 by 760
+
+  @mcp-stdio
+  Scenario: MCP with JavaScript disabled still reads static text
+    Given glide is started in MCP mode with JavaScript disabled
+    When the client navigates to MCP page A and snapshots text
+    Then the snapshot includes "MCP Page A" and not the script marker prefix
+
+  @mcp-stdio
+  Scenario: Missing required tool arguments are JSON-RPC errors
+    Given glide is started in MCP mode
+    When the client calls glide_navigate without a url
+    Then the response is a JSON-RPC error and a later call still works
+
+  @mcp-stdio
+  Scenario: Stdin EOF exits cleanly
+    Given glide is started in MCP mode
+    When the client closes stdin
+    Then glide exits with code 0 within 10 seconds
+
+  @mcp-stdio
+  Scenario: Attach is not supported yet
+    When glide is started as glide --mcp --attach
+    Then it exits with code 2 and a clear stderr message

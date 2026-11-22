@@ -1067,7 +1067,7 @@ fn css_supports_escape_and_custom_elements_registry() {
       try {
         customElements.define('x-ce-test', function () {});
       } catch (e) {
-        dup = e.name === 'SyntaxError';
+        dup = e.name === 'NotSupportedError';
       }
       var got = !!customElements.get('x-ce-test');
       var p = customElements.whenDefined('x-ce-when');

@@ -40,7 +40,7 @@
         try {
           customElements.define('x-obs-test', function X() {});
         } catch (e) {
-          dup = e.name === 'SyntaxError';
+          dup = e.name === 'NotSupportedError';
         }
         var p = customElements.whenDefined('x-obs-other');
         return customElements.get('x-obs-test') && dup && p instanceof Promise;

@@ -753,7 +753,10 @@
         throw err;
       }
       if (ceRegistry.has(n)) {
-        const err = new SyntaxError('Custom element already defined');
+        const err = typeof DOMException !== 'undefined' && DOMException.NOT_SUPPORTED_ERR != null
+          ? new DOMException(DOMException.NOT_SUPPORTED_ERR)
+          : new Error('Custom element already defined');
+        err.name = 'NotSupportedError';
         throw err;
       }
       if (typeof ctor !== 'function') throw new TypeError('Constructor must be a function');

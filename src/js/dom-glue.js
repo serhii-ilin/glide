@@ -168,6 +168,8 @@
     return !!options.subtree && recordTarget && isDescendant(recordTarget, target);
   }
 
+  // Domino's mutation hooks do not expose previous attribute/character values;
+  // attributeOldValue/characterDataOldValue options are accepted but oldValue stays null.
   function dominoToMutationRecords(rec) {
     const out = [];
     if (!rec) return out;

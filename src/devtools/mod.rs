@@ -143,6 +143,8 @@ pub struct DevToolsSession {
     elements_last_computed_html: String,
     elements_last_highlight: Option<highlight::HighlightRect>,
     pub inspect_mode: bool,
+    /// Swallow the next left-button release after a pick press (even if inspect mode already ended).
+    pub swallow_pointer_up: bool,
     pub repl_ui: repl::ConsoleReplUi,
 }
 
@@ -185,11 +187,22 @@ impl DevToolsSession {
         }
     }
 
+    /// Leave inspect mode after a pick; keeps `swallow_pointer_up` until the release is consumed.
+    pub fn exit_inspect_mode_after_pick(&mut self, doc: &mut BaseDocument) {
+        if !self.inspect_mode {
+            return;
+        }
+        self.inspect_mode = false;
+        crate::chrome::set_inspect_toggle_active(doc, false);
+        inspect::exit_inspect_visuals(doc);
+    }
+
     pub fn exit_inspect_mode(&mut self, doc: &mut BaseDocument) {
         if !self.inspect_mode {
             return;
         }
         self.inspect_mode = false;
+        self.swallow_pointer_up = false;
         crate::chrome::set_inspect_toggle_active(doc, false);
         inspect::exit_inspect_visuals(doc);
     }

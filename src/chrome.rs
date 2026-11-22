@@ -1635,6 +1635,24 @@ pub fn set_ui_scale(doc: &mut BaseDocument, ui: f32) {
         .set_attribute(root, qual_name!("style"), &style);
 }
 
+/// Chrome `--ui` scale factor from the root element style (defaults to `1.0`).
+pub fn chrome_ui_scale(chrome: &BaseDocument) -> f32 {
+    let root = chrome.root_element().id;
+    chrome
+        .get_node(root)
+        .and_then(|n| n.attr(local_name!("style")))
+        .and_then(|style| {
+            style.split(';').find_map(|part| {
+                let part = part.trim();
+                part.strip_prefix("--ui:")
+                    .or_else(|| part.strip_prefix("--ui :"))
+                    .and_then(|v| v.trim().parse::<f32>().ok())
+            })
+        })
+        .filter(|ui| *ui > 0.0)
+        .unwrap_or(1.0)
+}
+
 use crate::devtools::{DevToolsDock, DevToolsState, DevToolsTab};
 
 pub fn devtools_open(doc: &BaseDocument) -> bool {

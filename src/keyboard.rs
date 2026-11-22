@@ -659,6 +659,24 @@ pub fn try_browser_shortcut(
     browser_shortcut(code, modifiers, text_focused, find_open)
 }
 
+/// Esc while element inspect mode is active (before find/DevTools panel handlers).
+pub fn dispatch_inspect_mode_escape(
+    inspect_mode: bool,
+    event: &KeyEvent,
+) -> Option<BrowserShortcut> {
+    if !inspect_mode || !event.state.is_pressed() {
+        return None;
+    }
+    let PhysicalKey::Code(code) = event.physical_key else {
+        return None;
+    };
+    if matches!(code, KeyCode::Escape) {
+        Some(BrowserShortcut::DevToolsInspectCancel)
+    } else {
+        None
+    }
+}
+
 /// Find-field keys (Enter, Shift+Enter, Esc) before Blitz handles them.
 /// DevTools panel keys before Blitz handles them.
 pub fn dispatch_devtools_field_keys(
@@ -1921,6 +1939,36 @@ mod tests {
         crate::chrome::set_find_bar_open(&mut doc, true);
         crate::chrome::focus_find_input(&mut doc);
         doc
+    }
+
+    #[test]
+    fn inspect_mode_escape_exits_inspect_not_devtools() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        layout_doc(&mut doc);
+        crate::chrome::apply_devtools_state(
+            &mut doc,
+            &crate::devtools::DevToolsState {
+                open: true,
+                tab: crate::devtools::DevToolsTab::Elements,
+                ..Default::default()
+            },
+        );
+        layout_doc(&mut doc);
+        crate::chrome::focus_devtools_panel(&mut doc);
+        let esc = test_key_event(
+            KeyCode::Escape,
+            ElementState::Pressed,
+            WinitKey::Named(winit::keyboard::NamedKey::Escape),
+        );
+        assert_eq!(
+            dispatch_inspect_mode_escape(true, &esc),
+            Some(BrowserShortcut::DevToolsInspectCancel)
+        );
+        assert_eq!(
+            dispatch_devtools_field_keys(&doc, &esc, true),
+            Some(BrowserShortcut::DevToolsClose)
+        );
     }
 
     #[test]

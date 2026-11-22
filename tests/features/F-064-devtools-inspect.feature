@@ -24,8 +24,11 @@ Feature: F-064 DevTools click-to-inspect
   #            devtools::inspect::tests::overlay_uses_layout_mapping
 
   Scenario: Click selects the node and exits inspect mode without navigating
-  # Automated: devtools::inspect::tests::pick_does_not_follow_link
+  # Automated: devtools::inspect::tests::pick_does_not_follow_link,
+  #            devtools::inspect::tests::pointer_gate_cases
 
   Scenario: Inspect mode exits on Esc, tab change, and navigation
   # Automated: devtools::inspect::tests::exit_clears_overlay,
+  #            devtools::inspect::tests::navigation_exits_inspect_mode_on_commit_effects,
+  #            keyboard::tests::inspect_mode_escape_exits_inspect_not_devtools,
   #            devtools::tests::inspect_exits_when_devtools_tab_changes

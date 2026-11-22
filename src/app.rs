@@ -354,6 +354,7 @@ struct Glide {
     bookmarks: BookmarksState,
     bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
     history_log: HistoryLogState,
+    ime_composing: bool,
 }
 
 fn chrome_view_state(
@@ -553,6 +554,7 @@ impl Glide {
             history_log: init.history_log,
             devtools: init.devtools,
             devtools_drag: None,
+            ime_composing: false,
         }
     }
 
@@ -806,6 +808,7 @@ impl Glide {
                             tab.console.clear();
                             console_feed::discard_pending_for_tab(tab.id);
                         }
+                        self.devtools.repl_ui.reset_after_submit();
                         sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                     }
                     NavCommand::ZoomIn | NavCommand::ZoomOut | NavCommand::ZoomReset => {
@@ -1219,6 +1222,48 @@ impl Glide {
                     view.request_redraw();
                     true
                 }
+                keyboard::BrowserShortcut::DevToolsConsoleSubmit => {
+                    {
+                        let mut chrome = view.doc.inner_mut();
+                        let source = crate::chrome::devtools_console_input_value(&chrome)
+                            .unwrap_or_default();
+                        let ts = self.js.now_ms();
+                        let _ = crate::devtools::repl::submit_repl_expression(
+                            &mut self.tabs,
+                            &mut self.js,
+                            source,
+                            ts,
+                        );
+                        crate::chrome::clear_devtools_console_input(&mut chrome);
+                        self.devtools.repl_ui.reset_after_submit();
+                        let _ = self.js.pump(&mut chrome, std::time::Instant::now());
+                        let wire = self.js.drain_console_wire();
+                        let _ = apply_console_wire(&mut self.tabs, &wire);
+                        sync_active_tab_console(&mut self.devtools, &self.tabs, &mut chrome);
+                    }
+                    view.request_redraw();
+                    true
+                }
+                keyboard::BrowserShortcut::DevToolsConsoleHistoryPrev
+                | keyboard::BrowserShortcut::DevToolsConsoleHistoryNext => {
+                    let older = matches!(
+                        shortcut,
+                        keyboard::BrowserShortcut::DevToolsConsoleHistoryPrev
+                    );
+                    {
+                        let mut chrome = view.doc.inner_mut();
+                        if let Some(tab) = self.tabs.active() {
+                            let _ = crate::devtools::repl::apply_history_to_input(
+                                &mut chrome,
+                                &tab.console_repl_history,
+                                &mut self.devtools.repl_ui,
+                                older,
+                            );
+                        }
+                    }
+                    view.request_redraw();
+                    true
+                }
                 other => {
                     if let Some(command) = keyboard::nav_from_shortcut(other) {
                         self.bus.push(command);
@@ -1303,7 +1348,18 @@ impl ApplicationHandler for Glide {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let WindowEvent::Ime(ime) = &event {
+            self.ime_composing = matches!(ime, winit::event::Ime::Preedit(..));
+            if matches!(
+                ime,
+                winit::event::Ime::Commit(_) | winit::event::Ime::Disabled
+            ) {
+                self.ime_composing = false;
+            }
+        }
+
         let chrome_shortcut = if let WindowEvent::KeyboardInput { event, .. } = &event {
+            let ime_composing = self.ime_composing;
             self.inner.windows.get_mut(&window_id).and_then(|view| {
                 let find_open = crate::chrome::find_bar_open(&view.doc.inner());
                 let devtools_open = crate::chrome::devtools_open(&view.doc.inner());
@@ -1312,9 +1368,24 @@ impl ApplicationHandler for Glide {
                     let mut chrome = view.doc.inner_mut();
                     keyboard::dispatch_find_field_keys(&mut chrome, event, mods, find_open)
                 };
-                find_shortcut.or_else(|| {
-                    keyboard::dispatch_devtools_field_keys(&view.doc.inner(), event, devtools_open)
-                })
+                let console_tab_active = self.devtools.state.tab == DevToolsTab::Console;
+                find_shortcut
+                    .or_else(|| {
+                        keyboard::dispatch_devtools_console_keys(
+                            &view.doc.inner(),
+                            event,
+                            devtools_open,
+                            console_tab_active,
+                            ime_composing,
+                        )
+                    })
+                    .or_else(|| {
+                        keyboard::dispatch_devtools_field_keys(
+                            &view.doc.inner(),
+                            event,
+                            devtools_open,
+                        )
+                    })
             })
         } else {
             None

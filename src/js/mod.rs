@@ -8,6 +8,7 @@ pub mod diagnostics;
 mod host;
 mod paint_prune;
 mod promise_console;
+mod repl_eval;
 pub mod scripts;
 mod snapshot;
 mod tap;

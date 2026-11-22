@@ -1,6 +1,7 @@
 //! DevTools panel shell state: dock side, size, active tab, and chrome commands.
 
 pub mod console;
+pub mod repl;
 
 use blitz_dom::BaseDocument;
 use serde::{Deserialize, Serialize};
@@ -130,6 +131,7 @@ pub struct DevToolsSession {
     console_rendered_len: usize,
     console_rendered_total: u64,
     console_last_tab: Option<crate::tabs::TabId>,
+    pub repl_ui: repl::ConsoleReplUi,
 }
 
 impl DevToolsSession {
@@ -195,6 +197,7 @@ impl DevToolsSession {
             self.console_rendered_len = 0;
             self.console_rendered_total = 0;
             self.console_last_tab = Some(tab_id);
+            self.repl_ui.reset_after_submit();
         }
         if self.state.open && self.state.tab == DevToolsTab::Console {
             console::render_devtools_console(
@@ -349,5 +352,25 @@ mod tests {
         assert!(!state.open);
         assert_eq!(state.dock, DevToolsDock::Right);
         assert_eq!(state.size_px, 320);
+    }
+
+    #[test]
+    fn sync_console_pane_resets_repl_ui_on_tab_change() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse_chrome(&html);
+        doc.resolve(0.0);
+        let journal = console::ConsoleJournal::default();
+        let mut session = DevToolsSession {
+            console_last_tab: Some(1),
+            state: DevToolsState {
+                open: true,
+                tab: DevToolsTab::Console,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        session.repl_ui.test_set_cursor(Some(0), "draft");
+        session.sync_console_pane(&mut doc, &journal, 2);
+        assert!(session.repl_ui.test_cursor_cleared());
     }
 }

@@ -716,6 +716,18 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     padding: calc(4px * var(--ui)) 0;
     box-sizing: border-box;
   }}
+  #devtools-console-input {{
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: calc(11px * var(--ui));
+    flex: none;
+    margin: calc(4px * var(--ui));
+    padding: calc(4px * var(--ui)) calc(6px * var(--ui));
+    border: calc(1px * var(--ui)) solid #c9c2b6;
+    border-radius: calc(4px * var(--ui));
+    background: #fff;
+    color: #1c1915;
+    box-sizing: border-box;
+  }}
   #devtools-pane-console {{
     display: none;
     flex-direction: column;
@@ -812,6 +824,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
           <a id="devtools-console-clear" href="glide://devtools-console-clear">Clear</a>
         </div>
         <div id="devtools-console-log"></div>
+        <input id="devtools-console-input" type="text" spellcheck="false" autocomplete="off" placeholder="Evaluate JavaScript">
       </div>
       <div id="devtools-pane-elements" class="devtools-pane"><p class="devtools-placeholder">DOM tree will appear here.</p></div>
       <div id="devtools-pane-network" class="devtools-pane"><p class="devtools-placeholder">Network log will appear here.</p></div>
@@ -1229,6 +1242,42 @@ pub fn find_bar_open(doc: &BaseDocument) -> bool {
             .and_then(|n| n.attr(local_name!("class")))
             .is_some_and(|c| c.split_whitespace().any(|part| part == "open"))
     })
+}
+
+pub fn devtools_console_input_focused(doc: &BaseDocument) -> bool {
+    let Some(id) = doc.get_element_by_id("devtools-console-input") else {
+        return false;
+    };
+    doc.get_focussed_node_id() == Some(id)
+}
+
+pub fn devtools_console_input_value(doc: &BaseDocument) -> Option<String> {
+    let id = doc.get_element_by_id("devtools-console-input")?;
+    let input = doc.get_node(id)?.element_data()?.text_input_data()?;
+    Some(input.editor.text().to_string())
+}
+
+pub fn set_devtools_console_input_value(doc: &mut BaseDocument, value: &str) {
+    let Some(id) = doc.get_element_by_id("devtools-console-input") else {
+        return;
+    };
+    if let Some(node) = doc.get_node_mut(id)
+        && let Some(input) = node
+            .element_data_mut()
+            .and_then(|el| el.text_input_data_mut())
+    {
+        input.editor.set_text(value);
+    }
+}
+
+pub fn clear_devtools_console_input(doc: &mut BaseDocument) {
+    set_devtools_console_input_value(doc, "");
+}
+
+pub fn focus_devtools_console_input(doc: &mut BaseDocument) {
+    if let Some(id) = doc.get_element_by_id("devtools-console-input") {
+        doc.set_focus_to(id);
+    }
 }
 
 pub fn find_input_focused(doc: &BaseDocument) -> bool {
@@ -1927,6 +1976,14 @@ mod tests {
         assert!(html.contains("id=\"devtools\""));
         assert!(html.contains("id=\"inspect-hl\""));
         assert!(html.contains("id=\"page\""));
+    }
+
+    #[test]
+    fn devtools_console_input_exists_when_console_tab_active() {
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse::document_from_html(&html, DocumentConfig::default(), false);
+        doc.resolve(0.0);
+        assert!(doc.get_element_by_id("devtools-console-input").is_some());
     }
 
     #[test]

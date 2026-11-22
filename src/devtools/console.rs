@@ -18,6 +18,8 @@ pub enum ConsoleLevel {
     Debug,
     Uncaught,
     UnhandledRejection,
+    ReplInput,
+    ReplResult,
 }
 
 impl ConsoleLevel {
@@ -29,6 +31,8 @@ impl ConsoleLevel {
             "debug" | "trace" => Self::Debug,
             "uncaught" => Self::Uncaught,
             "rejection" => Self::UnhandledRejection,
+            "repl-input" => Self::ReplInput,
+            "repl-result" => Self::ReplResult,
             _ => Self::Log,
         }
     }
@@ -39,6 +43,7 @@ impl ConsoleLevel {
             Self::Info => "level-info",
             Self::Warn => "level-warn",
             Self::Error | Self::Uncaught | Self::UnhandledRejection => "level-error",
+            Self::ReplInput | Self::ReplResult => "level-debug",
             Self::Debug => "level-debug",
         }
     }
@@ -52,6 +57,8 @@ impl ConsoleLevel {
             Self::Debug => "DEBUG",
             Self::Uncaught => "EXCEPTION",
             Self::UnhandledRejection => "REJECTION",
+            Self::ReplInput => "IN",
+            Self::ReplResult => "OUT",
         }
     }
 }
@@ -808,6 +815,24 @@ mod tests {
                 .entries()
                 .any(|e| e.message == "for-tab-b")
         );
+    }
+
+    #[test]
+    fn clear_keeps_repl_history() {
+        let mut tab = crate::tabs::Tab::new(1, "https://ex.test".into());
+        tab.console_repl_history.push("1+1");
+        tab.console.push(ConsoleEntry {
+            level: ConsoleLevel::Log,
+            message: "row".into(),
+            source: None,
+            line: None,
+            timestamp_ms: 0,
+            promise_id: None,
+        });
+        tab.console.clear();
+        assert!(tab.console.is_empty());
+        assert_eq!(tab.console_repl_history.len(), 1);
+        assert_eq!(tab.console_repl_history.get(0), Some("1+1"));
     }
 
     #[test]

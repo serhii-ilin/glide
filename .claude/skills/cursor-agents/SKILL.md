@@ -48,7 +48,8 @@ code on its branch. Runs are **sequential in the main checkout** (no worktrees).
    on `main` only if the user wants that tracked separately; otherwise the agent does it.
 2. **Write the prompt** in the scratchpad (never inside the repo): goal, out of scope,
    files and existing functions to reuse (paths), tests to write first, acceptance
-   criteria, and the registry rows to update. The agent has no conversation context.
+   criteria, the registry rows to update, and the feature's `MCP` exposure (tool to add or
+   extend, or why it is `n/a`). The agent has no conversation context.
 3. **Launch** as one background Bash call (`run_in_background: true`):
    ```bash
    .claude/skills/cursor-agents/scripts/ca-run.sh -n feat/<task> -p <scratchpad>/<task>.md
@@ -62,7 +63,8 @@ code on its branch. Runs are **sequential in the main checkout** (no worktrees).
      (+ `cargo build --release` for user-facing changes);
    - spawn the review subagent (Sonnet or Opus per routing) with the diff range and the
      task's acceptance criteria; ask for correctness bugs, scope creep, weakened tests,
-     missing registry update;
+     missing registry update, and an `MCP` column / tool that ignores the
+     "Agent control (MCP)" rules in `AGENTS.md`;
    - loop new tests 10× to catch flakes (`for i in $(seq 10); do cargo test <name> -q || break; done`).
 6. **Fix rounds:** write concrete findings to `<task>-fix<N>.md` and run
    `ca-run.sh -n feat/<task> -p <fix-file> -r <chat-id>`. Escalate per the routing table.

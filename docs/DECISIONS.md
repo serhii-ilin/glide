@@ -17,3 +17,22 @@
 ## Click activation stays inside domino’s dispatch (2026-11-20)
 
 **Decision:** A window bubble listener can cancel `dispatchEvent` (`preventDefault` makes it return false). Domino’s click activation (`HTMLElement._doClick` on the mouseup path) still runs inside `_dispatchEvent`, before that window bubble phase. A window listener cannot stop the activation that domino already performed.
+
+## Agent control over MCP (2026-11-22)
+
+**Decision:** Agents control Glide through the Model Context Protocol, using the official
+Rust SDK (`rmcp`, stdio transport) rather than a hand-rolled JSON-RPC server. Tools are thin
+adapters over a transport-agnostic `src/control` layer with two backends:
+
+- **Headless session** (`glide --mcp`): a long-lived page on a dedicated `glide-session`
+  thread (Blitz's blocking fetch cannot run inside a tokio task), never touching the user
+  profile.
+- **Live window** (`glide --remote-control`, then `glide --mcp --attach`): the window listens
+  on `<profile>/run/remote-control.sock` (directory 0700, socket 0600). Like ssh-agent, file
+  permissions are the authentication; there is no TCP listener and no token. Commands are
+  queued for the UI thread's `sync()` and never block it; navigation replies resolve when the
+  load finishes.
+
+Eval results come back through a reply channel on the existing REPL `WorkerMessage::Eval`,
+so DevTools and MCP share one evaluation path and its watchdog. Every feature row records
+its MCP exposure (`MCP` column) so new behavior is designed for agents as well as people.

@@ -56,6 +56,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Decodes base64 `data:` URL payloads into `bodyBase64` fetch replies.
 base64 = "0.23.1"
+# Fills getRandomValues buffers with OS-backed entropy on the UI thread.
+getrandom = "0.3"
 
 [profile.release]
 lto = false

@@ -442,6 +442,12 @@ fn map_dom_op(
             url: arg_string(scope, args, 2)?,
             reply,
         },
+        "randomBytes" => {
+            let size = arg_string(scope, args, 2)?
+                .parse::<usize>()
+                .map_err(|_| "randomBytes size must be a non-negative integer".to_string())?;
+            DomRequest::RandomBytes { size, reply }
+        }
         #[cfg(debug_assertions)]
         "nodeCount" => DomRequest::NodeCount { reply },
         #[cfg(debug_assertions)]

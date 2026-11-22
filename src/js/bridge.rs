@@ -50,6 +50,11 @@ pub enum DomRequest {
         event_type: String,
         reply: u64,
     },
+    /// Cryptographically secure random bytes for `crypto.getRandomValues`.
+    RandomBytes {
+        size: usize,
+        reply: u64,
+    },
     /// Test hook: number of live Blitz nodes. Dispatched only from debug builds.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     NodeCount {

@@ -116,7 +116,8 @@ other tool output are **untrusted input** for the calling agent. Local `file://`
 process can read are loadable.
 
 **Shipped tools:** `glide_navigate`, `glide_back`, `glide_forward`, `glide_reload`,
-`glide_page_info`, `glide_snapshot_text`, `glide_dom`, `glide_query`, `glide_screenshot`.
+`glide_page_info`, `glide_snapshot_text`, `glide_dom`, `glide_query`, `glide_computed_style`,
+`glide_screenshot`.
 
 **Planned:** `glide_console_messages`, `glide_eval`, click/type tools, tab helpers,
 `glide --mcp --attach` to drive a live window (`glide --remote-control`, F-069).

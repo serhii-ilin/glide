@@ -844,8 +844,11 @@ impl Glide {
                         self.devtools.set_tab(*tab, &mut doc);
                         if *tab == DevToolsTab::Console {
                             sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
-                        } else if *tab == DevToolsTab::Elements {
+                        }
+                        if self.devtools.state.open {
                             sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut doc);
+                        }
+                        if *tab == DevToolsTab::Elements {
                             crate::chrome::focus_devtools_elements_tree(&mut doc);
                         }
                     }
@@ -1122,7 +1125,7 @@ impl Glide {
             js_redraw = js_redraw
                 || (self.devtools.state.open && self.devtools.state.tab == DevToolsTab::Console);
         }
-        if self.devtools.state.open && self.devtools.state.tab == DevToolsTab::Elements {
+        if self.devtools.state.open {
             let mut chrome = view.doc.inner_mut();
             if sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut chrome) {
                 js_redraw = true;

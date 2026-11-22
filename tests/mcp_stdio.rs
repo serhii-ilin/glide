@@ -225,6 +225,7 @@ fn initialize_and_list_tools() {
         "glide_snapshot_text",
         "glide_dom",
         "glide_query",
+        "glide_computed_style",
         "glide_screenshot",
     ] {
         assert!(
@@ -326,6 +327,23 @@ fn dom_and_query_over_stdio() {
                 .is_some_and(|w| w > 100.0 && w < 140.0)
     });
     assert!(visible, "expected visible #box: {elements:?}");
+}
+
+#[test]
+fn computed_style_over_stdio() {
+    let mut client = McpClient::spawn();
+    client.initialize();
+    client.call_tool(
+        "glide_navigate",
+        json!({ "url": fixture_url("devtools-computed-sample.html") }),
+    );
+    let styles = client.call_tool("glide_computed_style", json!({ "selector": "#box" }));
+    assert!(!is_tool_error(&styles));
+    let map: serde_json::Map<String, Value> =
+        serde_json::from_str(&tool_text(&styles)).expect("computed json");
+    assert_eq!(map.get("display").and_then(|v| v.as_str()), Some("flex"));
+    let missing = client.call_tool("glide_computed_style", json!({ "selector": "#missing" }));
+    assert!(is_tool_error(&missing));
 }
 
 #[test]

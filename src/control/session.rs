@@ -194,6 +194,7 @@ fn request_method_name(request: &ControlRequest) -> String {
         ControlRequest::Dom(_) => "dom",
         ControlRequest::Query(_) => "query",
         ControlRequest::Screenshot => "screenshot",
+        ControlRequest::ComputedStyle(_) => "computed_style",
     }
     .to_string()
 }
@@ -276,6 +277,15 @@ impl HeadlessSession {
                 doc.0.resolve(0.0);
                 let png = page_ops::paint_png(&mut doc.0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)?;
                 Ok(ControlResult::Png(png))
+            }
+            ControlRequest::ComputedStyle(p) => {
+                let doc = self.document.as_mut().ok_or_else(no_page_loaded)?;
+                doc.0.resolve(0.0);
+                let map = crate::devtools::computed::computed_style_map_for_selector(
+                    &doc.0,
+                    &p.selector,
+                )?;
+                Ok(ControlResult::ComputedStyle(map))
             }
         }
     }

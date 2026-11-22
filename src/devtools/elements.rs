@@ -8,11 +8,11 @@ use blitz_traits::node_id::NodeId;
 
 use crate::find::page_iframe_id;
 
-fn node_to_handle(id: NodeId) -> u64 {
+pub(crate) fn node_to_handle(id: NodeId) -> u64 {
     id.as_u64()
 }
 
-fn handle_to_node(raw: u64) -> NodeId {
+pub(crate) fn handle_to_node(raw: u64) -> NodeId {
     NodeId::from_u64(raw)
 }
 
@@ -434,6 +434,7 @@ pub struct ElementsRenderPlan {
     pub rows: Vec<TreeRow>,
     pub tree_html: String,
     pub detail_html: String,
+    pub computed_html: String,
 }
 
 pub fn prepare_elements_render(
@@ -453,11 +454,13 @@ pub fn prepare_elements_render(
     }
     let tree_html = render_tree_rows_html(&rows, state.selected);
     let detail_html = render_detail_html(page, state.selected);
+    let computed_html = crate::devtools::computed::render_computed_pane_html(page, state.selected);
     Some(ElementsRenderPlan {
         stamp,
         rows,
         tree_html,
         detail_html,
+        computed_html,
     })
 }
 
@@ -468,9 +471,13 @@ pub fn paint_elements_render(chrome: &mut BaseDocument, plan: &ElementsRenderPla
     let Some(detail_id) = chrome.get_element_by_id("devtools-elements-detail") else {
         return false;
     };
+    let Some(computed_id) = chrome.get_element_by_id("devtools-elements-computed") else {
+        return false;
+    };
     let mut m = chrome.mutate();
     replace_inner_html_tree(&mut m, tree_id, &plan.tree_html);
     replace_inner_html_tree(&mut m, detail_id, &plan.detail_html);
+    replace_inner_html_tree(&mut m, computed_id, &plan.computed_html);
     true
 }
 

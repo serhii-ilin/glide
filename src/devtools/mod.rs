@@ -1,7 +1,9 @@
 //! DevTools panel shell state: dock side, size, active tab, and chrome commands.
 
+pub mod computed;
 pub mod console;
 pub mod elements;
+pub mod highlight;
 pub mod repl;
 
 use blitz_dom::BaseDocument;
@@ -137,6 +139,8 @@ pub struct DevToolsSession {
     elements_last_ui_generation: u64,
     elements_last_tree_html: String,
     elements_last_detail_html: String,
+    elements_last_computed_html: String,
+    elements_last_highlight: Option<highlight::HighlightRect>,
     pub repl_ui: repl::ConsoleReplUi,
 }
 
@@ -171,6 +175,8 @@ impl DevToolsSession {
         }
         self.state.close();
         self.sync_chrome(doc);
+        highlight::apply_inspect_highlight(doc, None);
+        self.elements_last_highlight = None;
         if let Some(saved) = self.focus_restore.take() {
             restore_devtools_focus(doc, saved);
         }
@@ -188,6 +194,10 @@ impl DevToolsSession {
         self.state.set_tab(tab);
         if self.state.open {
             self.sync_chrome(doc);
+            if tab != DevToolsTab::Elements {
+                highlight::apply_inspect_highlight(doc, None);
+                self.elements_last_highlight = None;
+            }
         }
     }
 
@@ -202,11 +212,19 @@ impl DevToolsSession {
             self.elements_last_ui_generation = u64::MAX;
             self.elements_last_tree_html.clear();
             self.elements_last_detail_html.clear();
+            self.elements_last_computed_html.clear();
+            self.elements_last_highlight = None;
             self.elements_last_tab = Some(tab.id);
         }
         if !(self.state.open && self.state.tab == DevToolsTab::Elements) {
+            highlight::apply_inspect_highlight(chrome, None);
+            self.elements_last_highlight = None;
             return false;
         }
+        chrome.resolve(0.0);
+        let _ = crate::find::with_page_document_mut(chrome, |page| {
+            page.resolve(0.0);
+        });
         let plan = match elements::with_page_document(chrome, |page| {
             if tab.elements.expanded.is_empty() {
                 tab.elements.apply_default_expansion(page);
@@ -222,21 +240,36 @@ impl DevToolsSession {
             )
         }) {
             Some(Some(plan)) => plan,
-            _ => return false,
+            _ => {
+                highlight::apply_inspect_highlight(chrome, None);
+                self.elements_last_highlight = None;
+                return false;
+            }
         };
-        if plan.tree_html == self.elements_last_tree_html
-            && plan.detail_html == self.elements_last_detail_html
+        let mut painted = false;
+        if plan.tree_html != self.elements_last_tree_html
+            || plan.detail_html != self.elements_last_detail_html
+            || plan.computed_html != self.elements_last_computed_html
         {
-            return false;
+            painted = elements::paint_elements_render(chrome, &plan);
+            if painted {
+                self.elements_last_stamp = Some(plan.stamp);
+                self.elements_last_ui_generation = tab.elements.ui_generation;
+                self.elements_last_tree_html = plan.tree_html.clone();
+                self.elements_last_detail_html = plan.detail_html.clone();
+                self.elements_last_computed_html = plan.computed_html.clone();
+            }
         }
-        let painted = elements::paint_elements_render(chrome, &plan);
-        if painted {
-            self.elements_last_stamp = Some(plan.stamp);
-            self.elements_last_ui_generation = tab.elements.ui_generation;
-            self.elements_last_tree_html = plan.tree_html.clone();
-            self.elements_last_detail_html = plan.detail_html.clone();
+        let highlight = elements::with_page_document(chrome, |page| {
+            highlight::highlight_for_selected(chrome, page, tab.elements.selected)
+        })
+        .flatten();
+        let highlight_changed = highlight != self.elements_last_highlight;
+        if highlight_changed {
+            highlight::apply_inspect_highlight(chrome, highlight);
+            self.elements_last_highlight = highlight;
         }
-        painted
+        painted || highlight_changed
     }
 
     pub fn sync_console_pane(
@@ -409,6 +442,31 @@ mod tests {
     }
 
     #[test]
+    fn sync_elements_pane_includes_computed_styles() {
+        let html = include_str!("../../tests/fixtures/devtools-computed-sample.html");
+        let mut page = parse::document_from_html(html, DocumentConfig::default(), true);
+        page.resolve(0.0);
+        let mut tab = crate::tabs::Tab::new(1, "about:blank".into());
+        tab.elements.apply_default_expansion(&page);
+        let p = page.get_element_by_id("box").expect("box");
+        tab.elements
+            .set_selected_handle(Some(elements::node_to_handle(p)));
+        let stamp = elements::page_tree_stamp(&page, tab.elements_epoch);
+        let plan = elements::prepare_elements_render(
+            &page,
+            &mut tab.elements,
+            stamp,
+            &None,
+            u64::MAX,
+            true,
+        )
+        .expect("plan");
+        assert!(plan.computed_html.contains("display"));
+        assert!(plan.computed_html.contains("flex"));
+        assert!(plan.computed_html.contains("devtools-computed-row"));
+    }
+
+    #[test]
     fn sync_elements_pane_renders_tree() {
         let page = parse::document_from_html(
             r#"<!DOCTYPE html><html><body><p id="t" class="ok">hi</p></body></html>"#,
@@ -440,6 +498,38 @@ mod tests {
                 .map(|n| !n.children.is_empty())
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn highlight_hidden_when_devtools_tab_leaves_elements() {
+        use blitz_dom::local_name;
+
+        let mut chrome = parse_chrome(&chrome_document("about:blank", true, false));
+        chrome.resolve(0.0);
+        let mut session = DevToolsSession {
+            state: DevToolsState {
+                open: true,
+                tab: DevToolsTab::Elements,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        highlight::apply_inspect_highlight(
+            &mut chrome,
+            Some(highlight::HighlightRect {
+                left: 12.0,
+                top: 34.0,
+                width: 40.0,
+                height: 20.0,
+            }),
+        );
+        session.set_tab(DevToolsTab::Console, &mut chrome);
+        let hl = chrome.get_element_by_id("inspect-hl").expect("hl");
+        let style = chrome
+            .get_node(hl)
+            .and_then(|n| n.attr(local_name!("style")))
+            .unwrap_or_default();
+        assert!(style.contains("display:none"), "{style}");
     }
 
     #[test]

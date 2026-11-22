@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use glide::control::ControlBackend;
 use glide::control::protocol::{
-    ControlRequest, ControlResult, DomParams, NavigateParams, QueryParams, TextParams, WaitParams,
+    ComputedStyleParams, ControlRequest, ControlResult, DomParams, NavigateParams, QueryParams,
+    TextParams, WaitParams,
 };
 use glide::control::session::{SessionOptions, spawn_session};
 
@@ -511,6 +512,37 @@ fn failed_back_leaves_history_and_page_untouched() {
     assert_eq!(back_to_b.title, "Page B");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn computed_style_returns_display_and_errors_on_missing_selector() {
+    let backend = session_js_on();
+    call(
+        &backend,
+        ControlRequest::Navigate(NavigateParams {
+            url: fixture_url("devtools-computed-sample.html"),
+            timeout_ms: None,
+        }),
+    )
+    .expect("navigate");
+    let ControlResult::ComputedStyle(map) = call(
+        &backend,
+        ControlRequest::ComputedStyle(ComputedStyleParams {
+            selector: "#box".into(),
+        }),
+    )
+    .expect("computed style") else {
+        panic!("expected computed style map");
+    };
+    assert_eq!(map.get("display").map(String::as_str), Some("flex"));
+    let err = call(
+        &backend,
+        ControlRequest::ComputedStyle(ComputedStyleParams {
+            selector: "#no-such-element".into(),
+        }),
+    )
+    .expect_err("missing selector");
+    assert!(!err.is_empty());
 }
 
 #[test]

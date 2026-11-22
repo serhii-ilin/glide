@@ -260,6 +260,64 @@ enum DevToolsPointerOutcome {
     ConsumedSaveSettings,
 }
 
+fn handle_inspect_pointer(
+    devtools: &mut DevToolsSession,
+    tabs: &mut TabManager,
+    view: &mut blitz_shell::View<Renderer>,
+    event: &WindowEvent,
+) -> bool {
+    if !devtools.inspect_mode {
+        return false;
+    }
+    use winit::event::{ButtonSource, ElementState, MouseButton};
+    match event {
+        WindowEvent::PointerMoved { position, .. } => {
+            let coords = view.pointer_coords(*position);
+            {
+                let mut chrome = view.doc.inner_mut();
+                let _ =
+                    devtools.update_inspect_hover(&mut chrome, coords.client_x, coords.client_y);
+            }
+            view.request_redraw();
+            true
+        }
+        WindowEvent::PointerButton {
+            button,
+            state,
+            position,
+            ..
+        } if *state == ElementState::Pressed
+            && matches!(button, ButtonSource::Mouse(MouseButton::Left)) =>
+        {
+            let coords = view.pointer_coords(*position);
+            let mut chrome = view.doc.inner_mut();
+            if !crate::devtools::inspect::chrome_pointer_targets_page(
+                &chrome,
+                coords.client_x,
+                coords.client_y,
+            ) {
+                return false;
+            }
+            let picked = tabs.active_mut().and_then(|tab| {
+                crate::devtools::inspect::pick_at_chrome_point(
+                    &mut chrome,
+                    tab,
+                    coords.client_x,
+                    coords.client_y,
+                )
+            });
+            devtools.exit_inspect_mode(&mut chrome);
+            if let (Some(_), Some(tab)) = (picked, tabs.active_mut()) {
+                let _ = devtools.sync_elements_pane(&mut chrome, tab);
+            }
+            drop(chrome);
+            view.request_redraw();
+            true
+        }
+        _ => false,
+    }
+}
+
 fn handle_devtools_pointer(
     devtools: &mut DevToolsSession,
     drag: &mut Option<DevToolsSplitDrag>,
@@ -725,6 +783,7 @@ impl Glide {
                             if let Some(tab) = self.tabs.active_mut() {
                                 reset_tab_console_for_navigation(tab, &mut self.js);
                             }
+                            self.devtools.exit_inspect_mode(&mut doc);
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             set_address(&mut doc, &url);
@@ -744,6 +803,7 @@ impl Glide {
                         }
                     }
                     NavCommand::ToggleJs => {
+                        self.devtools.exit_inspect_mode(&mut doc);
                         self.session.defer_session_save = false;
                         pending_history = Some(PendingHistoryCommand::Reload);
                         capture_active_tab(
@@ -764,6 +824,7 @@ impl Glide {
                             if let Some(tab) = self.tabs.active_mut() {
                                 reset_tab_console_for_navigation(tab, &mut self.js);
                             }
+                            self.devtools.exit_inspect_mode(&mut doc);
                             self.js.on_navigation(&doc, &url);
                             load_iframe(&mut doc, &url);
                             set_js_indicator(&mut doc, new);
@@ -796,6 +857,7 @@ impl Glide {
                         if let Some(tab) = self.tabs.active_mut() {
                             reset_tab_console_for_navigation(tab, &mut self.js);
                         }
+                        self.devtools.exit_inspect_mode(&mut doc);
                         self.js.on_navigation(&doc, &url);
                         load_iframe(&mut doc, &url);
                         if let Some(tab) = self.tabs.active_mut() {
@@ -825,12 +887,17 @@ impl Glide {
                         }
                     }
                     NavCommand::DevToolsToggle => {
+                        self.devtools.exit_inspect_mode(&mut doc);
                         self.devtools.toggle(&mut doc);
                         sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         if self.devtools.state.tab == DevToolsTab::Elements {
                             sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut doc);
                         }
                         save_settings_after = true;
+                    }
+                    NavCommand::DevToolsInspectToggle => {
+                        self.devtools.toggle_inspect_mode(&mut doc);
+                        sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut doc);
                     }
                     NavCommand::DevToolsDockBottom => {
                         self.devtools.set_dock(DevToolsDock::Bottom, &mut doc);
@@ -1293,9 +1360,19 @@ impl Glide {
                 keyboard::BrowserShortcut::ToggleDevTools => {
                     {
                         let mut chrome = view.doc.inner_mut();
+                        self.devtools.exit_inspect_mode(&mut chrome);
                         self.devtools.toggle(&mut chrome);
                     }
                     save_devtools_settings = true;
+                    view.request_redraw();
+                    true
+                }
+                keyboard::BrowserShortcut::DevToolsInspectToggle => {
+                    {
+                        let mut chrome = view.doc.inner_mut();
+                        self.devtools.toggle_inspect_mode(&mut chrome);
+                        sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut chrome);
+                    }
                     view.request_redraw();
                     true
                 }
@@ -1509,6 +1586,39 @@ impl ApplicationHandler for Glide {
         };
         if let Some(shortcut) = chrome_shortcut {
             self.handle_browser_shortcut_value(event_loop, window_id, shortcut);
+            return;
+        }
+
+        let inspect_pointer_handled = if self.devtools.inspect_mode {
+            if let Some(view) = self.inner.windows.get_mut(&window_id) {
+                if handle_inspect_pointer(&mut self.devtools, &mut self.tabs, view, &event) {
+                    true
+                } else if let WindowEvent::KeyboardInput { event: key, .. } = &event {
+                    use winit::event::ElementState;
+                    use winit::keyboard::{KeyCode, PhysicalKey};
+                    if key.state == ElementState::Pressed
+                        && matches!(key.physical_key, PhysicalKey::Code(KeyCode::Escape))
+                    {
+                        {
+                            let mut chrome = view.doc.inner_mut();
+                            self.devtools.exit_inspect_mode(&mut chrome);
+                        }
+                        view.request_redraw();
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if inspect_pointer_handled {
+            self.sync();
             return;
         }
 

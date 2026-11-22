@@ -51,6 +51,8 @@ pub enum BrowserShortcut {
     DevToolsElementsDown,
     DevToolsElementsExpand,
     DevToolsElementsCollapse,
+    DevToolsInspectToggle,
+    DevToolsInspectCancel,
     MenuClose,
     Scroll(ScrollAction),
 }
@@ -113,6 +115,9 @@ pub fn browser_shortcut(
         KeyCode::Digit8 if primary && !shift => return Some(BrowserShortcut::SelectTab(7)),
         KeyCode::Digit9 if primary && !shift => return Some(BrowserShortcut::SelectTab(8)),
         KeyCode::KeyJ if primary && shift => return Some(BrowserShortcut::ToggleJs),
+        KeyCode::KeyC if primary && shift && !alt => {
+            return Some(BrowserShortcut::DevToolsInspectToggle);
+        }
         KeyCode::KeyD if primary && !shift => return Some(BrowserShortcut::ToggleBookmark),
         KeyCode::F12 if !primary && !alt && !shift => return Some(BrowserShortcut::ToggleDevTools),
         KeyCode::KeyI
@@ -623,7 +628,9 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         | BrowserShortcut::DevToolsElementsUp
         | BrowserShortcut::DevToolsElementsDown
         | BrowserShortcut::DevToolsElementsExpand
-        | BrowserShortcut::DevToolsElementsCollapse => None,
+        | BrowserShortcut::DevToolsElementsCollapse
+        | BrowserShortcut::DevToolsInspectToggle
+        | BrowserShortcut::DevToolsInspectCancel => None,
         BrowserShortcut::Scroll(_) => None,
     }
 }
@@ -965,6 +972,13 @@ mod tests {
             ModifiersState::CONTROL | ModifiersState::SHIFT,
             Some(BrowserShortcut::ToggleDevTools),
             Some(BrowserShortcut::ToggleDevTools),
+        ));
+        cases.extend(both(
+            "Ctrl+Shift+C toggle inspect mode",
+            KeyCode::KeyC,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            Some(BrowserShortcut::DevToolsInspectToggle),
+            Some(BrowserShortcut::DevToolsInspectToggle),
         ));
         cases.extend(both(
             "Enter (not a browser shortcut)",

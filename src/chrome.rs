@@ -25,6 +25,7 @@ pub enum NavCommand {
     DevToolsConsoleClear,
     DevToolsElementsSelect(u64),
     DevToolsElementsToggle(u64),
+    DevToolsInspectToggle,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -147,6 +148,7 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
             Some("devtools-elements-toggle") => query_value(url, "node")
                 .and_then(|n| n.parse().ok())
                 .map(NavCommand::DevToolsElementsToggle),
+            Some("devtools-inspect-toggle") => Some(NavCommand::DevToolsInspectToggle),
             Some("zoom-in") => Some(NavCommand::ZoomIn),
             Some("zoom-out") => Some(NavCommand::ZoomOut),
             Some("zoom-reset") => Some(NavCommand::ZoomReset),
@@ -234,6 +236,7 @@ const CLOSE_ICON: &str = "<svg class=\"icon\" width=\"10\" height=\"10\" viewBox
 const SEARCH_ICON: &str = "<svg class=\"icon\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10.5\" cy=\"10.5\" r=\"6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\"/><path d=\"M15.5 15.5 20.5 20.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\"/></svg>";
 const CHEVRON_UP_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5.5 15.5 12 9l6.5 6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
 const CHEVRON_DOWN_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5.5 8.5 12 15l6.5-6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
+const INSPECT_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M14 14h2v2h-2zm4 0h2v2h-2zm-4 4h2v2h-2zm4 0h2v2h-2z\" fill=\"currentColor\"/></svg>";
 
 /// Render the chrome from the window's current view of tabs, menus and page.
 pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
@@ -960,6 +963,26 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     background: rgba(0, 122, 255, 0.12);
     z-index: 2147483646;
   }}
+  #inspect-label {{
+    position: fixed;
+    display: none;
+    pointer-events: none;
+    z-index: 2147483647;
+    padding: calc(2px * var(--ui)) calc(6px * var(--ui));
+    font-family: ui-monospace, monospace;
+    font-size: calc(11px * var(--ui));
+    color: #fff;
+    background: rgba(0, 122, 255, 0.92);
+    border-radius: calc(3px * var(--ui));
+    white-space: nowrap;
+    max-width: calc(420px * var(--ui));
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  a.devtools-inspect-toggle.active {{
+    background: var(--btn-pressed);
+    box-shadow: inset 0 0 0 calc(1px * var(--ui)) rgba(0, 122, 255, 0.45);
+  }}
   iframe#page {{
     flex: 1;
     width: 100%;
@@ -1015,6 +1038,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     <div id="devtools-split"></div>
     <aside id="devtools" tabindex="-1">
       <div class="devtools-tabs">
+        <a id="devtools-inspect-toggle" class="icon-btn devtools-inspect-toggle" href="glide://devtools-inspect-toggle" title="Select an element" aria-label="Select an element">{INSPECT_ICON}</a>
         <a id="devtools-tab-console" class="devtools-tab active" href="glide://devtools-tab?tab=console">Console</a>
         <a id="devtools-tab-elements" class="devtools-tab" href="glide://devtools-tab?tab=elements">Elements</a>
         <a id="devtools-tab-network" class="devtools-tab" href="glide://devtools-tab?tab=network">Network</a>
@@ -1035,6 +1059,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     </aside>
   </div>
   <div id="inspect-hl"></div>
+  <div id="inspect-label"></div>
 </body>
 </html>
 "#
@@ -1767,6 +1792,18 @@ pub fn focus_devtools_panel(doc: &mut BaseDocument) {
     if let Some(id) = doc.get_element_by_id("devtools") {
         doc.set_focus_to(id);
     }
+}
+
+pub fn set_inspect_toggle_active(doc: &mut BaseDocument, active: bool) {
+    let Some(id) = doc.get_element_by_id("devtools-inspect-toggle") else {
+        return;
+    };
+    let class = if active {
+        "icon-btn devtools-inspect-toggle active"
+    } else {
+        "icon-btn devtools-inspect-toggle"
+    };
+    doc.mutate().set_attribute(id, qual_name!("class"), class);
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2646,6 +2683,10 @@ mod tests {
             Some(NavCommand::DevToolsElementsToggle(7))
         );
         assert_eq!(parse("glide://devtools-elements-toggle?node=bad"), None);
+        assert_eq!(
+            parse("glide://devtools-inspect-toggle"),
+            Some(NavCommand::DevToolsInspectToggle)
+        );
     }
 
     #[test]

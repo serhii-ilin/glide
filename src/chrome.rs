@@ -684,6 +684,11 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   div.devtools-pane.active {{
     display: block;
   }}
+  p.devtools-placeholder {{
+    margin: calc(8px * var(--ui));
+    font-size: calc(12px * var(--ui));
+    color: #6b6358;
+  }}
   #inspect-hl {{
     display: none;
     pointer-events: none;
@@ -744,9 +749,9 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
         <a id="devtools-tab-elements" class="devtools-tab" href="glide://devtools-tab?tab=elements">Elements</a>
         <a id="devtools-tab-network" class="devtools-tab" href="glide://devtools-tab?tab=network">Network</a>
       </div>
-      <div id="devtools-pane-console" class="devtools-pane active"></div>
-      <div id="devtools-pane-elements" class="devtools-pane"></div>
-      <div id="devtools-pane-network" class="devtools-pane"></div>
+      <div id="devtools-pane-console" class="devtools-pane active"><p class="devtools-placeholder">Console output will appear here.</p></div>
+      <div id="devtools-pane-elements" class="devtools-pane"><p class="devtools-placeholder">DOM tree will appear here.</p></div>
+      <div id="devtools-pane-network" class="devtools-pane"><p class="devtools-placeholder">Network log will appear here.</p></div>
     </aside>
   </div>
   <div id="inspect-hl"></div>
@@ -1296,14 +1301,25 @@ fn is_ancestor_of(doc: &BaseDocument, ancestor: NodeId, node: NodeId) -> bool {
     false
 }
 
-pub fn stage_layout_axis_px(doc: &BaseDocument, dock: DevToolsDock) -> Option<i32> {
+pub fn stage_layout_axis_css_px(doc: &BaseDocument, dock: DevToolsDock) -> Option<f32> {
     let id = doc.get_element_by_id("stage")?;
     let layout = doc.get_node(id)?.final_layout();
     let axis = match dock {
         DevToolsDock::Bottom => layout.size.height,
         DevToolsDock::Right => layout.size.width,
     };
-    Some(axis.round().max(0.0) as i32)
+    if axis <= 0.0 {
+        return None;
+    }
+    Some(axis)
+}
+
+/// Logical pixels for clamping: CSS layout size times page zoom (matches `calc(Npx * var(--ui))`).
+pub fn stage_axis_budget_logical_px(doc: &BaseDocument, dock: DevToolsDock) -> Option<i32> {
+    let css = stage_layout_axis_css_px(doc, dock)?;
+    let zoom = doc.viewport().zoom();
+    let logical = (css * zoom).round() as i32;
+    Some((logical - crate::devtools::SPLITTER_PX).max(0))
 }
 
 pub fn apply_devtools_state(doc: &mut BaseDocument, state: &DevToolsState) {
@@ -1378,6 +1394,63 @@ pub fn focus_devtools_panel(doc: &mut BaseDocument) {
     if let Some(id) = doc.get_element_by_id("devtools") {
         doc.set_focus_to(id);
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DevToolsFocusRestore {
+    pub chrome_focus: Option<NodeId>,
+    pub page_inner_focus: Option<NodeId>,
+}
+
+pub fn capture_devtools_focus_restore(doc: &BaseDocument) -> DevToolsFocusRestore {
+    let chrome_focus = doc.get_focussed_node_id();
+    let page_inner_focus = (|| {
+        let page_id = doc.get_element_by_id("page")?;
+        if doc.get_focussed_node_id() != Some(page_id) {
+            return None;
+        }
+        doc.get_node(page_id)?
+            .subdoc()?
+            .inner()
+            .get_focussed_node_id()
+    })();
+    DevToolsFocusRestore {
+        chrome_focus,
+        page_inner_focus,
+    }
+}
+
+pub fn restore_devtools_focus(doc: &mut BaseDocument, saved: DevToolsFocusRestore) {
+    let devtools_id = doc.get_element_by_id("devtools");
+    if let Some(inner_id) = saved.page_inner_focus {
+        let Some(page_id) = doc.get_element_by_id("page") else {
+            return;
+        };
+        if doc.get_node(inner_id).is_some() {
+            doc.set_focus_to(page_id);
+            if let Some(sub) = doc.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
+                sub.inner_mut().set_focus_to(inner_id);
+            }
+            return;
+        }
+    }
+    if let Some(id) = saved.chrome_focus
+        && doc.get_node(id).is_some()
+        && devtools_id != Some(id)
+        && !devtools_id.is_some_and(|devtools| is_ancestor_of(doc, devtools, id))
+    {
+        doc.set_focus_to(id);
+        return;
+    }
+    if let Some(page_id) = doc.get_element_by_id("page") {
+        doc.set_focus_to(page_id);
+    }
+}
+
+pub fn node_layout_size(doc: &BaseDocument, element_id: &str) -> Option<(f32, f32)> {
+    let id = doc.get_element_by_id(element_id)?;
+    let layout = doc.get_node(id)?.final_layout();
+    Some((layout.size.width, layout.size.height))
 }
 
 pub fn toolbar_layout_height(doc: &BaseDocument) -> Option<f32> {
@@ -1816,13 +1889,24 @@ mod tests {
     #[test]
     fn closed_devtools_leaves_stage_without_open_class() {
         let mut doc = parse_chrome(&chrome_document("about:blank", true, false));
+        let open = crate::devtools::DevToolsState {
+            open: true,
+            size_px: 240,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &open);
         doc.resolve(0.0);
-        let state = crate::devtools::DevToolsState::default();
-        assert!(!state.open);
-        crate::chrome::apply_devtools_state(&mut doc, &state);
+        let closed = crate::devtools::DevToolsState::default();
+        crate::chrome::apply_devtools_state(&mut doc, &closed);
+        doc.resolve(0.0);
         let stage = doc.get_element_by_id("stage").expect("stage");
         let class = class_of(&doc, stage);
         assert!(!class.contains("devtools-open"));
+        let (stage_w, stage_h) = crate::chrome::node_layout_size(&doc, "stage").expect("stage box");
+        let (iframe_w, iframe_h) =
+            crate::chrome::node_layout_size(&doc, "page").expect("iframe box");
+        assert!((stage_w - iframe_w).abs() < 2.0);
+        assert!((stage_h - iframe_h).abs() < 2.0);
         let split = doc.get_element_by_id("devtools-split").expect("split");
         assert!(
             doc.get_node(split)

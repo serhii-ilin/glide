@@ -265,7 +265,16 @@ fn handle_devtools_pointer(
     event: &WindowEvent,
 ) -> DevToolsPointerOutcome {
     match event {
-        WindowEvent::PointerButton { button, state, .. } => {
+        WindowEvent::PointerLeft { .. } if drag.is_some() => {
+            *drag = None;
+            DevToolsPointerOutcome::ConsumedSaveSettings
+        }
+        WindowEvent::PointerButton {
+            button,
+            state,
+            position,
+            ..
+        } => {
             if *state == ElementState::Released {
                 if drag.is_some() {
                     *drag = None;
@@ -279,7 +288,7 @@ fn handle_devtools_pointer(
             if !devtools.state.open {
                 return DevToolsPointerOutcome::NotConsumed;
             }
-            let coords = view.pointer_coords(view.pointer_pos);
+            let coords = view.pointer_coords(*position);
             let mut chrome = view.doc.inner_mut();
             let Some(node_id) =
                 crate::chrome::hit_test_chrome(&mut chrome, coords.client_x, coords.client_y)
@@ -309,7 +318,11 @@ fn handle_devtools_pointer(
                 DevToolsDock::Bottom => coords.client_y,
                 DevToolsDock::Right => coords.client_x,
             };
-            let size_px = (start_size as f32 + axis - start_axis).round() as i32;
+            let zoom = {
+                let chrome = view.doc.inner();
+                chrome.viewport().zoom()
+            };
+            let size_px = crate::devtools::panel_size_from_drag(start_size, start_axis, axis, zoom);
             let resized = {
                 let mut chrome = view.doc.inner_mut();
                 devtools.resize_from_drag(&mut chrome, size_px).is_some()
@@ -901,6 +914,11 @@ impl Glide {
                     self.last_title = window_title.clone();
                     doc.shell_provider.set_window_title(window_title);
                 }
+            }
+
+            if self.devtools.reclamp_open_panel(&mut doc) {
+                changed = true;
+                save_settings_after = true;
             }
 
             // Chrome rebuilds (tab strip, menu bar, address text, loading icon) drop

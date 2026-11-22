@@ -10,7 +10,7 @@ Feature: F-059 DevTools panel shell
   #        chrome::tests::open_bottom_dock_sets_height_with_ui_var,
   #        chrome::tests::open_right_dock_sets_width_with_ui_var,
   #        chrome::tests::devtools_tab_switch_updates_active_pane,
-  #        keyboard::tests::{readme_shortcut_table,dispatch_devtools_esc_closes_panel},
+  #        keyboard::tests::{readme_shortcut_table,dispatch_devtools_esc_closes_panel,devtools_toggle_restores_page_input_focus},
   #        profile::tests::{settings_round_trip,devtools_settings_default_on_legacy_file},
   #        manual M-041..M-043
 

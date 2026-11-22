@@ -861,28 +861,25 @@ mod tests {
             ));
         }
         cases.extend(zoom_cases());
-        cases.push(case(
+        cases.extend(both(
             "F12 toggle DevTools",
             KeyCode::F12,
             none,
-            false,
-            false,
+            Some(BrowserShortcut::ToggleDevTools),
             Some(BrowserShortcut::ToggleDevTools),
         ));
-        cases.push(case(
+        cases.extend(both(
             "Meta+Alt+I toggle DevTools",
             KeyCode::KeyI,
             ModifiersState::META | ModifiersState::ALT,
-            false,
-            false,
+            Some(BrowserShortcut::ToggleDevTools),
             Some(BrowserShortcut::ToggleDevTools),
         ));
-        cases.push(case(
+        cases.extend(both(
             "Ctrl+Shift+I toggle DevTools",
             KeyCode::KeyI,
             ModifiersState::CONTROL | ModifiersState::SHIFT,
-            false,
-            false,
+            Some(BrowserShortcut::ToggleDevTools),
             Some(BrowserShortcut::ToggleDevTools),
         ));
         cases.extend(both(
@@ -1824,6 +1821,40 @@ mod tests {
             dispatch_find_field_keys(&mut doc, &enter, shift, true),
             Some(BrowserShortcut::FindPrev)
         );
+    }
+
+    #[test]
+    fn devtools_toggle_restores_page_input_focus() {
+        let mut doc = chrome_with_page_srcdoc();
+        let page_id = doc.get_element_by_id("page").expect("page");
+        let field_id = doc
+            .get_node(page_id)
+            .and_then(|n| n.subdoc())
+            .and_then(|sub| sub.inner().get_element_by_id("field"))
+            .expect("field");
+        doc.set_focus_to(page_id);
+        if let Some(sub) = doc.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
+            sub.inner_mut().set_focus_to(field_id);
+        }
+        let mut session = crate::devtools::DevToolsSession::default();
+        session.toggle(&mut doc);
+        session.toggle(&mut doc);
+        let modifiers = ModifiersState::empty();
+        let event = test_key_event(
+            char_code('a'),
+            ElementState::Pressed,
+            WinitKey::Character("a".into()),
+        );
+        assert_eq!(
+            forward_page_iframe_key(&mut doc, &event, modifiers),
+            Some(true)
+        );
+        let value = doc
+            .get_node(page_id)
+            .and_then(|n| n.subdoc())
+            .and_then(|sub| text_value_in_doc(&sub.inner(), "field"))
+            .expect("value");
+        assert_eq!(value, "a");
     }
 
     #[test]

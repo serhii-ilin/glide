@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Form</title>
+</head>
+<body>
+  <h1>MCP Form</h1>
+  <button id="btn" onclick="document.getElementById('out').textContent='clicked'">Go</button>
+  <p id="out"></p>
+  <input id="name">
+  <p id="echo"></p>
+  <form id="f" action="mcp-page-b.html">
+    <input id="q" name="q">
+  </form>
+  <p id="key"></p>
+  <a id="link" href="mcp-page-b.html" style="display:inline-block">to B</a>
+  <button id="hidden" style="display:none">Hidden</button>
+  <script>
+    document.getElementById("name").addEventListener("input", function (event) {
+      var value = event.target.value;
+      document.getElementById("echo").textContent = value === "" ? event.type : value;
+    });
+    document.getElementById("q").addEventListener("keydown", function (event) {
+      document.getElementById("key").textContent = event.key || event.type;
+    });
+  </script>
+</body>
+</html>

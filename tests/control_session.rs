@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use glide::control::ControlBackend;
 use glide::control::protocol::{
-    ControlRequest, ControlResult, DomParams, NavigateParams, QueryParams, TextParams, WaitParams,
+    ClickParams, ControlRequest, ControlResult, DomParams, InputOutcome, NavigateParams,
+    QueryParams, TextParams, TypeParams, WaitParams,
 };
 use glide::control::session::{SessionOptions, spawn_session};
 
@@ -533,4 +534,217 @@ fn js_disabled_session_reads_static_text() {
     };
     assert!(text.contains("MCP Page A"));
     assert!(!text.contains("script ran"));
+}
+
+fn load_form<B: ControlBackend>(backend: &B) {
+    call(
+        backend,
+        ControlRequest::Navigate(NavigateParams {
+            url: fixture_url("mcp-form.html"),
+            timeout_ms: None,
+        }),
+    )
+    .expect("navigate form");
+}
+
+fn input_outcome<B: ControlBackend>(
+    backend: &B,
+    request: ControlRequest,
+) -> Result<InputOutcome, String> {
+    match call(backend, request)? {
+        ControlResult::Input(outcome) => Ok(outcome),
+        other => panic!("expected input outcome, got {other:?}"),
+    }
+}
+
+fn element_html<B: ControlBackend>(backend: &B, selector: &str) -> String {
+    let ControlResult::Html { html, .. } = call(
+        backend,
+        ControlRequest::Dom(DomParams {
+            selector: Some(selector.into()),
+            all: false,
+            max_chars: None,
+        }),
+    )
+    .expect("dom") else {
+        panic!("expected html");
+    };
+    html
+}
+
+fn button_click_params<B: ControlBackend>(backend: &B) -> ClickParams {
+    let ControlResult::Elements(elements) = call(
+        backend,
+        ControlRequest::Query(QueryParams {
+            selector: "#btn".into(),
+            limit: None,
+        }),
+    )
+    .expect("query button") else {
+        panic!("expected elements");
+    };
+    let button = elements.into_iter().next().expect("button");
+    assert!(button.visible, "{:?}", button.rect);
+    ClickParams {
+        selector: None,
+        x: Some(button.rect.x + button.rect.width / 2.0),
+        y: Some(button.rect.y + button.rect.height / 2.0),
+        timeout_ms: None,
+    }
+}
+
+#[test]
+fn click_selector_runs_onclick() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#btn".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect("click");
+    let target = outcome.target.expect("target");
+    assert_eq!(target.id.as_deref(), Some("btn"));
+    assert!(target.visible);
+    assert!(!outcome.navigated);
+    assert_eq!(outcome.page.title, "Form");
+    assert!(element_html(&backend, "#out").contains("clicked"));
+}
+
+#[test]
+fn click_coordinates_hit_the_button() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let params = button_click_params(&backend);
+    let outcome =
+        input_outcome(&backend, ControlRequest::Click(params)).expect("click coordinates");
+    assert!(!outcome.navigated);
+    assert!(element_html(&backend, "#out").contains("clicked"));
+}
+
+#[test]
+fn click_link_navigates() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#link".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect("click link");
+    assert!(outcome.navigated, "link click should navigate");
+    assert_eq!(outcome.page.title, "Page B");
+    assert!(outcome.page.url.contains("mcp-page-b.html"));
+    assert!(outcome.page.can_go_back);
+}
+
+#[test]
+fn type_text_updates_input_listener() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Type(TypeParams {
+            text: "Alice".into(),
+            selector: Some("#name".into()),
+            submit: false,
+            timeout_ms: None,
+        }),
+    )
+    .expect("type");
+    assert!(!outcome.navigated);
+    assert_eq!(outcome.page.title, "Form");
+    assert_eq!(outcome.target.expect("target").id.as_deref(), Some("name"));
+    let echo = element_html(&backend, "#echo");
+    assert!(
+        echo.contains("input") || echo.contains("Alice"),
+        "input listener did not run: {echo}"
+    );
+}
+
+#[test]
+fn type_submit_presses_enter() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let outcome = input_outcome(
+        &backend,
+        ControlRequest::Type(TypeParams {
+            text: "query".into(),
+            selector: Some("#q".into()),
+            submit: true,
+            timeout_ms: None,
+        }),
+    )
+    .expect("type submit");
+    // Blitz reports implicit form submission but its form code only navigates for
+    // http(s)/data GET and http(s) POST, so a file:// action is not followed yet.
+    if outcome.navigated {
+        assert_eq!(outcome.page.title, "Page B");
+    } else {
+        assert_eq!(outcome.page.title, "Form");
+        let key = element_html(&backend, "#key");
+        assert!(
+            key.contains("Enter") || key.contains("keydown"),
+            "keydown did not reach the page: {key}"
+        );
+    }
+}
+
+#[test]
+fn click_unknown_selector_is_error() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let err = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#nope".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect_err("unknown selector");
+    assert!(err.contains("no element matches selector"), "{err}");
+}
+
+#[test]
+fn click_hidden_element_is_error() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let err = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: Some("#hidden".into()),
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect_err("hidden element");
+    assert!(err.contains("is not visible"), "{err}");
+}
+
+#[test]
+fn click_without_target_is_error() {
+    let backend = session_js_on();
+    load_form(&backend);
+    let err = input_outcome(
+        &backend,
+        ControlRequest::Click(ClickParams {
+            selector: None,
+            x: None,
+            y: None,
+            timeout_ms: None,
+        }),
+    )
+    .expect_err("no target");
+    assert_eq!(err, "give a selector or both x and y");
 }

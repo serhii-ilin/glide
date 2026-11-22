@@ -20,33 +20,142 @@ use crate::parse;
 pub const VIEWPORT_WIDTH: u32 = 1100;
 pub const VIEWPORT_HEIGHT: u32 = 760;
 
+/// Limits for the headless settle loop (network quiet, JS quiet, maximum wait).
+#[derive(Debug, Clone)]
+pub struct SettleOptions {
+    pub min_js: Duration,
+    pub max: Duration,
+    pub quiet_ticks: u32,
+}
+
+impl Default for SettleOptions {
+    fn default() -> Self {
+        Self {
+            min_js: Duration::from_secs(1),
+            max: Duration::from_secs(12),
+            quiet_ticks: 20,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettleOutcome {
+    pub timed_out: bool,
+}
+
+/// Fetch document bytes for a URL without building a DOM.
+pub fn fetch_page(
+    url: &str,
+    js_enabled: bool,
+    handle: &tokio::runtime::Handle,
+    net: &Arc<Provider>,
+) -> Result<(String, Vec<u8>), String> {
+    if let Ok(parsed) = url::Url::parse(url)
+        && parsed.scheme() == "file"
+    {
+        let path = parsed
+            .to_file_path()
+            .map_err(|_| format!("invalid file URL `{url}`"))?;
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        let mut canonical = parsed;
+        canonical.set_fragment(None);
+        return Ok((canonical.to_string(), bytes));
+    }
+    let parsed = url::Url::parse(url).map_err(|err| err.to_string())?;
+    if parsed.scheme() == "http" || parsed.scheme() == "https" {
+        match handle.block_on(crate::http::fetch_document(
+            Request::get(parsed),
+            js_enabled,
+        )) {
+            crate::http::DocumentFetch::Page { url, body } => Ok((url, body.to_vec())),
+            crate::http::DocumentFetch::Failed { url, reason } => {
+                Err(format!("fetch {url}: {reason}"))
+            }
+        }
+    } else {
+        handle
+            .block_on(net.fetch_async(Request::get(parsed)))
+            .map(|(final_url, bytes)| (final_url, bytes.into()))
+            .map_err(|err| format!("fetch {url}: {err}"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettleBreak {
+    Settled,
+    TimedOut,
+}
+
+/// Pure settle-loop exit condition (unit-tested).
+pub fn settle_decision(
+    net_done: bool,
+    js_done: bool,
+    elapsed: Duration,
+    min_js: Duration,
+    max: Duration,
+) -> Option<SettleBreak> {
+    let min_js = min_js.min(max);
+    if net_done && js_done && elapsed >= min_js {
+        return Some(SettleBreak::Settled);
+    }
+    if elapsed > max {
+        return Some(SettleBreak::TimedOut);
+    }
+    None
+}
+
+/// Pump layout, network, and JS until the page quiets or `opts.max` elapses.
+pub fn settle<F>(
+    doc: &mut BaseDocument,
+    js_host: &mut JsHost,
+    net: &Provider,
+    js_enabled: bool,
+    opts: SettleOptions,
+    mut on_tick: F,
+) -> SettleOutcome
+where
+    F: FnMut(),
+{
+    let start = Instant::now();
+    let min_js = if js_enabled {
+        opts.min_js.min(opts.max)
+    } else {
+        Duration::ZERO
+    };
+    let mut js_quiet_ticks = 0_u32;
+    loop {
+        doc.resolve(0.0);
+        let js_redraw = js_host.pump(doc, Instant::now());
+        if js_redraw {
+            doc.resolve(0.0);
+            js_quiet_ticks = 0;
+        } else if js_enabled {
+            js_quiet_ticks = js_quiet_ticks.saturating_add(1);
+        }
+        let elapsed = start.elapsed();
+        let net_done = net.is_empty();
+        let js_done = !js_enabled || js_quiet_ticks > opts.quiet_ticks;
+        match settle_decision(net_done, js_done, elapsed, min_js, opts.max) {
+            Some(SettleBreak::TimedOut) => {
+                doc.resolve(0.0);
+                return SettleOutcome { timed_out: true };
+            }
+            Some(SettleBreak::Settled) => {
+                doc.resolve(0.0);
+                return SettleOutcome { timed_out: false };
+            }
+            None => {}
+        }
+        on_tick();
+        thread::sleep(Duration::from_millis(30));
+    }
+}
+
 /// Load a page headlessly and wait until subresources and scripts (when enabled) settle.
 pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     let net_impl = Arc::new(Provider::new(None));
     let handle = tokio::runtime::Handle::current();
-    let (final_url, bytes) = if url.starts_with("file://") {
-        let path = url.trim_start_matches("file://");
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        (url.to_string(), bytes)
-    } else {
-        let parsed = url::Url::parse(url).map_err(|err| err.to_string())?;
-        if parsed.scheme() == "http" || parsed.scheme() == "https" {
-            match handle.block_on(crate::http::fetch_document(
-                Request::get(parsed),
-                js_enabled,
-            )) {
-                crate::http::DocumentFetch::Page { url, body } => (url, body.to_vec()),
-                crate::http::DocumentFetch::Failed { url, reason } => {
-                    return Err(format!("fetch {url}: {reason}"));
-                }
-            }
-        } else {
-            let (final_url, bytes) = handle
-                .block_on(net_impl.fetch_async(Request::get(parsed)))
-                .map_err(|err| format!("fetch {url}: {err}"))?;
-            (final_url, bytes.into())
-        }
-    };
+    let (final_url, bytes) = fetch_page(url, js_enabled, &handle, &net_impl)?;
     let html = String::from_utf8_lossy(&bytes);
 
     let net_provider: Arc<dyn NetProvider> = net_impl.clone();
@@ -76,34 +185,16 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     let mut document = HtmlPageDocument(parse::document_from_html(&html, config, js_enabled));
 
     js_host.set_console_route(0, 1);
-    let start = Instant::now();
     js_host.maybe_start_page(&document.0, &final_url, &handle);
-    let mut js_quiet_ticks = 0_u32;
-    loop {
-        document.0.resolve(0.0);
-        let js_redraw = js_host.pump(&mut document.0, Instant::now());
-        if js_redraw {
-            document.0.resolve(0.0);
-            js_quiet_ticks = 0;
-        } else if js_enabled {
-            js_quiet_ticks = js_quiet_ticks.saturating_add(1);
-        }
-        let net_done = net_impl.is_empty();
-        let js_done = !js_enabled || js_quiet_ticks > 20;
-        let min_js = if js_enabled {
-            Duration::from_secs(1)
-        } else {
-            Duration::ZERO
-        };
-        if (net_done && js_done && start.elapsed() >= min_js)
-            || start.elapsed() > Duration::from_secs(12)
-        {
-            document.0.resolve(0.0);
-            let _ = crate::js::console_feed::drain_pending();
-            break;
-        }
-        thread::sleep(Duration::from_millis(30));
-    }
+    let _outcome = settle(
+        &mut document.0,
+        &mut js_host,
+        &net_impl,
+        js_enabled,
+        SettleOptions::default(),
+        || {},
+    );
+    let _ = crate::js::console_feed::drain_pending();
 
     if js_enabled {
         let _ = js_host.drain_console_wire();
@@ -345,6 +436,61 @@ mod tests {
             true,
         );
         assert_eq!(format_dump_text(&doc, true), "a\nb\n");
+    }
+
+    #[test]
+    fn settle_decision_times_out_only_past_max() {
+        let max = Duration::from_secs(12);
+        assert_eq!(
+            settle_decision(
+                false,
+                true,
+                max + Duration::from_millis(1),
+                Duration::ZERO,
+                max
+            ),
+            Some(SettleBreak::TimedOut)
+        );
+        assert_eq!(
+            settle_decision(true, true, max, Duration::ZERO, max),
+            Some(SettleBreak::Settled)
+        );
+        let short_max = Duration::from_millis(800);
+        assert_eq!(
+            settle_decision(
+                true,
+                true,
+                Duration::from_millis(830),
+                Duration::from_secs(1),
+                short_max
+            ),
+            Some(SettleBreak::Settled)
+        );
+    }
+
+    #[test]
+    fn fetch_page_decodes_percent_encoded_file_path() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _enter = rt.enter();
+        let dir = std::env::temp_dir().join(format!("glide-fetch-space-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let nested = dir.join("with space");
+        std::fs::create_dir_all(&nested).expect("nested");
+        let file = nested.join("page.html");
+        std::fs::write(&file, b"<html><body>space ok</body></html>").expect("write");
+        let file_url = url::Url::from_file_path(&file).expect("file url");
+        let net = Arc::new(Provider::new(None));
+        let (url, body) = fetch_page(file_url.as_str(), false, rt.handle(), &net).expect("fetch");
+        assert!(!url.contains('#'));
+        assert!(body.windows(8).any(|w| w == b"space ok"));
+        let with_frag = format!("{}#frag", file_url);
+        let (_, body2) = fetch_page(&with_frag, false, rt.handle(), &net).expect("fetch frag");
+        assert!(body2.windows(8).any(|w| w == b"space ok"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

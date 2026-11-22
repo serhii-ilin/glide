@@ -49,7 +49,7 @@ fn worker_timestamp_ms() -> u64 {
     })
 }
 
-fn truncate_field(value: &str, max_len: usize) -> String {
+pub(crate) fn truncate_field(value: &str, max_len: usize) -> String {
     if value.len() <= max_len {
         return value.to_string();
     }
@@ -170,6 +170,22 @@ pub fn drain_pending() -> Vec<ConsoleWireEvent> {
     lock_queue_mut().drain(..).collect()
 }
 
+/// Remove and return only events for `tab_id`, leaving other tabs queued.
+pub fn drain_for_tab(tab_id: TabId) -> Vec<ConsoleWireEvent> {
+    let mut q = lock_queue_mut();
+    let mut taken = Vec::new();
+    let mut kept = VecDeque::new();
+    for ev in q.drain(..) {
+        if ev.tab_id == tab_id {
+            taken.push(ev);
+        } else {
+            kept.push_back(ev);
+        }
+    }
+    *q = kept;
+    taken
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +228,25 @@ mod tests {
         assert_eq!(batch.len(), 1);
         assert!(batch[0].message.len() <= MAX_MESSAGE_LEN + 4);
         assert!(batch[0].message.ends_with('…'));
+    }
+
+    #[test]
+    fn drain_for_tab_keeps_other_tabs() {
+        let _lock = test_console_serial_lock();
+        drain_pending();
+        set_worker_route(1, 1);
+        publish("log", "a", None, None);
+        set_worker_route(2, 1);
+        publish("log", "b", None, None);
+        set_worker_route(3, 1);
+        publish("log", "c", None, None);
+        let batch = drain_for_tab(2);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].message, "b");
+        let rest = drain_pending();
+        assert_eq!(rest.len(), 2);
+        assert!(rest.iter().any(|e| e.tab_id == 1));
+        assert!(rest.iter().any(|e| e.tab_id == 3));
     }
 
     #[test]

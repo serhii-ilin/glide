@@ -327,6 +327,42 @@ impl JsHost {
         redraw | self.drain_dom_rpc(chrome)
     }
 
+    /// Drain DOM RPC until `idle` passes with no messages or `max` elapses (headless session).
+    pub fn flush_dom_rpc_until_idle(
+        &mut self,
+        chrome: &mut BaseDocument,
+        max: Duration,
+        idle: Duration,
+    ) -> bool {
+        if !self.is_enabled() {
+            return false;
+        }
+        let deadline = Instant::now() + max;
+        let mut last_rpc = Instant::now();
+        let mut redraw = false;
+        while Instant::now() < deadline {
+            self.try_finish_pending_sources();
+            match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
+                Ok(rpc) => {
+                    let response = self.apply_dom_rpc(chrome, rpc.request);
+                    let _ = rpc.reply.send(response);
+                    redraw = true;
+                    last_rpc = Instant::now();
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if last_rpc.elapsed() >= idle {
+                        break;
+                    }
+                    if let Some(worker) = &self.worker {
+                        worker.pump(self.now_ms());
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        redraw | self.drain_dom_rpc(chrome)
+    }
+
     fn drain_dom_rpc(&mut self, chrome: &mut BaseDocument) -> bool {
         let mut redraw = false;
         while let Ok(rpc) = self.dom_rx.try_recv() {

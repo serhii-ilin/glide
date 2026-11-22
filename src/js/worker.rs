@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -20,6 +20,9 @@ static V8_INIT: OnceCell<()> = OnceCell::new();
 
 thread_local! {
     static DOM_TX: std::cell::RefCell<Option<Sender<DomRpc>>> = const { std::cell::RefCell::new(None) };
+    static DOM_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static WORKER_RETIRED: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Reply channel for one eval request; the worker sends the preview or the error text.
@@ -27,7 +30,20 @@ pub type EvalReply = crossbeam_channel::Sender<Result<String, String>>;
 
 pub struct JsWorker {
     tx: Sender<WorkerMessage>,
+    retired: Arc<AtomicBool>,
+    wake_deadline_ms: Arc<AtomicU64>,
+    wake_epoch: Arc<AtomicU64>,
     _join: Option<thread::JoinHandle<()>>,
+}
+
+impl JsWorker {
+    pub fn wake_deadline_ms(&self) -> u64 {
+        self.wake_deadline_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn wake_epoch(&self) -> u64 {
+        self.wake_epoch.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Debug)]
@@ -69,15 +85,33 @@ enum WorkerMessage {
 }
 
 impl JsWorker {
-    pub fn spawn(dom_tx: Sender<DomRpc>) -> Self {
+    pub fn spawn(dom_tx: Sender<DomRpc>, generation: u64) -> Self {
         init_v8();
         let (tx, rx) = unbounded();
+        let retired = Arc::new(AtomicBool::new(false));
+        let wake_deadline_ms = Arc::new(AtomicU64::new(0));
+        let wake_epoch = Arc::new(AtomicU64::new(0));
+        let retired_for_thread = Arc::clone(&retired);
+        let wake_deadline_for_thread = Arc::clone(&wake_deadline_ms);
+        let wake_epoch_for_thread = Arc::clone(&wake_epoch);
         let join = thread::Builder::new()
             .name("glide-js".into())
-            .spawn(move || worker_main(dom_tx, rx))
+            .spawn(move || {
+                worker_main(
+                    dom_tx,
+                    generation,
+                    rx,
+                    retired_for_thread,
+                    wake_deadline_for_thread,
+                    wake_epoch_for_thread,
+                )
+            })
             .expect("spawn js worker");
         Self {
             tx,
+            retired,
+            wake_deadline_ms,
+            wake_epoch,
             _join: Some(join),
         }
     }
@@ -145,6 +179,7 @@ impl JsWorker {
 
 impl Drop for JsWorker {
     fn drop(&mut self) {
+        self.retired.store(true, Ordering::Relaxed);
         let _ = self.tx.send(WorkerMessage::Shutdown);
         // Detach the worker; do not join from the UI thread.
         self._join = None;
@@ -159,8 +194,19 @@ fn init_v8() {
     });
 }
 
-fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
+fn worker_main(
+    dom_tx: Sender<DomRpc>,
+    generation: u64,
+    cmd_rx: Receiver<WorkerMessage>,
+    retired: Arc<AtomicBool>,
+    wake_deadline_ms: Arc<AtomicU64>,
+    wake_epoch: Arc<AtomicU64>,
+) {
     DOM_TX.with(|slot| *slot.borrow_mut() = Some(dom_tx));
+    DOM_GENERATION.with(|g| g.set(generation));
+    WORKER_RETIRED.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&retired)));
+
+    let mut last_now_ms = 0u64;
 
     let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
     isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 16);
@@ -202,6 +248,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let url = v8::String::new(scope, &page_url).unwrap();
                 call_global_fn(scope, "__glide_init_page", &[snap.into(), url.into()]);
                 settle_task(scope);
+                publish_next_wake(scope, last_now_ms, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::RunScripts { sources, kind } => {
                 scripts_run = scripts_run.saturating_add(sources.len() as u64);
@@ -231,6 +278,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 }
                 let cleared = v8::String::new(scope, "").unwrap();
                 call_global_fn(scope, "__glide_set_script_kind", &[cleared.into()]);
+                publish_next_wake(scope, last_now_ms, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::FireDomContentLoaded => {
                 v8::scope!(let hs, isolate);
@@ -238,15 +286,18 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_fire_dom_content_loaded", &[]);
                 settle_task(scope);
+                publish_next_wake(scope, last_now_ms, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::PageSettled => diagnostics::log_page_summary(scripts_run),
             WorkerMessage::Pump { now_ms } => {
+                last_now_ms = now_ms;
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 let n = v8::Number::new(scope, now_ms as f64);
                 call_global_fn(scope, "__glide_pump_timers", &[n.into()]);
                 settle_task(scope);
+                publish_next_wake(scope, last_now_ms, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::FlushRaf => {
                 v8::scope!(let hs, isolate);
@@ -254,6 +305,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_flush_raf", &[]);
                 settle_task(scope);
+                publish_next_wake(scope, last_now_ms, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::SetConsoleRoute { tab_id, page_epoch } => {
                 super::console_feed::set_worker_route(tab_id, page_epoch);
@@ -272,6 +324,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 if let Some(reply) = reply {
                     let _ = reply.send(outcome);
                 }
+                publish_next_wake(scope, last_now_ms, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::DispatchBubble { path, event_type } => {
                 v8::scope!(let hs, isolate);
@@ -285,11 +338,43 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let ty = v8::String::new(scope, &event_type).unwrap();
                 call_global_fn(scope, "__glide_dispatch_bubble", &[array.into(), ty.into()]);
                 settle_task(scope);
+                publish_next_wake(scope, last_now_ms, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::Shutdown => break,
         }
     }
     DOM_TX.with(|slot| *slot.borrow_mut() = None);
+    WORKER_RETIRED.with(|slot| *slot.borrow_mut() = None);
+}
+
+fn worker_retired() -> bool {
+    WORKER_RETIRED.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    })
+}
+
+fn publish_next_wake(
+    scope: &mut v8::PinScope<'_, '_>,
+    last_now_ms: u64,
+    wake_deadline_ms: &AtomicU64,
+    wake_epoch: &AtomicU64,
+) {
+    let n = v8::Number::new(scope, last_now_ms as f64);
+    let deadline = call_global_fn(scope, "__glide_next_wake", &[n.into()])
+        .and_then(|value| v8_wake_ms(scope, value))
+        .unwrap_or(0);
+    wake_deadline_ms.store(deadline, Ordering::Relaxed);
+    wake_epoch.fetch_add(1, Ordering::Relaxed);
+}
+
+fn v8_wake_ms(scope: &mut v8::PinScope<'_, '_>, value: v8::Local<v8::Value>) -> Option<u64> {
+    if !value.is_number() {
+        return None;
+    }
+    let ms = value.number_value(scope)?.max(0.0);
+    Some(ms as u64)
 }
 
 fn load_embedded_script_in_scope<'s>(
@@ -381,20 +466,29 @@ fn dom_sync_callback(
         }
     };
 
+    if worker_retired() {
+        rv.set(v8_undefined(scope));
+        return;
+    }
+
     let (resp_tx, resp_rx) = bounded(1);
+    let generation = DOM_GENERATION.with(|g| g.get());
     let sent = DOM_TX.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(|tx| {
-                tx.send(DomRpc {
-                    request: dom_req,
-                    reply: resp_tx,
-                })
+        slot.borrow().as_ref().is_some_and(|tx| {
+            tx.send(DomRpc {
+                generation,
+                request: dom_req,
+                reply: resp_tx,
             })
-            .unwrap_or(Ok(()))
+            .is_ok()
+        })
     });
-    if sent.is_err() {
-        rv.set(v8_error_object(scope, "dom channel closed"));
+    if !sent {
+        if worker_retired() {
+            rv.set(v8_undefined(scope));
+        } else {
+            rv.set(v8_error_object(scope, "dom channel closed"));
+        }
         return;
     }
     let Ok(resp) = resp_rx.recv_timeout(Duration::from_secs(30)) else {
@@ -459,6 +553,9 @@ fn console_caller_line(scope: &mut v8::PinScope<'_, '_>) -> Option<usize> {
 
 extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {
     use v8::PromiseRejectEvent;
+    if worker_retired() {
+        return;
+    }
     v8::callback_scope!(unsafe scope, &msg);
     let promise = msg.get_promise();
     match msg.get_event() {
@@ -499,6 +596,9 @@ extern "C" fn v8_message_listener(
     message: v8::Local<v8::Message>,
     _exception: v8::Local<v8::Value>,
 ) {
+    if worker_retired() {
+        return;
+    }
     let scope = pin!(unsafe { v8::CallbackScope::new(message) });
     let scope = &mut scope.init();
     v8::scope!(let scope, scope);
@@ -806,6 +906,10 @@ fn url_parse_callback(
     };
     set("origin", &origin);
     rv.set(obj.into());
+}
+
+fn v8_undefined<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Value> {
+    v8::undefined(scope).into()
 }
 
 fn v8_error_object<'s>(scope: &mut v8::PinScope<'s, '_>, msg: &str) -> v8::Local<'s, v8::Value> {

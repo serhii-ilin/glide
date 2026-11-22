@@ -24,6 +24,7 @@ use crate::logging;
 use crate::tabs::TabId;
 
 pub struct DomRpc {
+    pub generation: u64,
     pub request: DomRequest,
     pub reply: Sender<DomResponse>,
 }
@@ -31,7 +32,9 @@ pub struct DomRpc {
 pub struct JsHost {
     enabled: Arc<AtomicBool>,
     worker: Option<JsWorker>,
+    dom_tx: Sender<DomRpc>,
     dom_rx: Receiver<DomRpc>,
+    dom_generation: u64,
     tap: JsTap,
     base_url: String,
     net: Option<Arc<Provider>>,
@@ -47,10 +50,13 @@ pub struct JsHost {
 
 impl JsHost {
     pub fn new(enabled: bool, tap: JsTap, net: Option<Arc<Provider>>) -> Self {
+        let (dom_tx, dom_rx) = unbounded();
         Self {
             enabled: Arc::new(AtomicBool::new(enabled)),
             worker: None,
-            dom_rx: unbounded().1,
+            dom_tx,
+            dom_rx,
+            dom_generation: 1,
             tap,
             base_url: String::new(),
             net,
@@ -81,6 +87,28 @@ impl JsHost {
 
     pub fn page_js_active(&self) -> bool {
         self.is_enabled() && self.worker.is_some()
+    }
+
+    /// When the page has a pending timer or animation frame, time until the earliest deadline.
+    pub fn next_wake_in(&self) -> Option<Duration> {
+        if !self.page_js_active() {
+            return None;
+        }
+        let worker = self.worker.as_ref()?;
+        if worker.wake_epoch() == 0 {
+            return None;
+        }
+        let deadline = worker.wake_deadline_ms();
+        if deadline == 0 {
+            return None;
+        }
+        let now = self.now_ms();
+        Some(Duration::from_millis(deadline.saturating_sub(now)))
+    }
+
+    /// Bumps when the worker publishes a new earliest-timer deadline (`0` means no report yet).
+    pub fn wake_epoch(&self) -> u64 {
+        self.worker.as_ref().map(JsWorker::wake_epoch).unwrap_or(0)
     }
 
     pub fn submit_console_eval(&self, source: &str) -> Result<(), String> {
@@ -160,6 +188,7 @@ impl JsHost {
     }
 
     fn reset_page_js_state(&mut self) {
+        self.dom_generation = self.dom_generation.wrapping_add(1);
         self.worker = None;
         self.started_for = None;
         self.pending_sources = None;
@@ -202,9 +231,7 @@ impl JsHost {
         self.stale_page_doc_id = None;
         self.clock = Instant::now();
 
-        let (dom_tx, dom_rx) = unbounded();
-        self.dom_rx = dom_rx;
-        let worker = JsWorker::spawn(dom_tx);
+        let worker = JsWorker::spawn(self.dom_tx.clone(), self.dom_generation);
         let snapshot_json = serde_json::to_string(
             &with_page_subdoc(chrome, snapshot::snapshot_tree)
                 .unwrap_or_else(|| snapshot::snapshot_tree(chrome)),
@@ -320,8 +347,7 @@ impl JsHost {
             self.try_finish_pending_sources();
             match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(rpc) => {
-                    self.handle_dom_rpc(chrome, rpc);
-                    redraw = true;
+                    redraw |= self.handle_dom_rpc(chrome, rpc);
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if let Some(worker) = &self.worker {
@@ -351,8 +377,7 @@ impl JsHost {
             self.try_finish_pending_sources();
             match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(rpc) => {
-                    self.handle_dom_rpc(chrome, rpc);
-                    redraw = true;
+                    redraw |= self.handle_dom_rpc(chrome, rpc);
                     last_rpc = Instant::now();
                 }
                 Err(RecvTimeoutError::Timeout) => {
@@ -372,8 +397,7 @@ impl JsHost {
     fn drain_dom_rpc(&mut self, chrome: &mut BaseDocument) -> bool {
         let mut redraw = false;
         while let Ok(rpc) = self.dom_rx.try_recv() {
-            self.handle_dom_rpc(chrome, rpc);
-            redraw = true;
+            redraw |= self.handle_dom_rpc(chrome, rpc);
         }
         redraw
     }
@@ -388,14 +412,21 @@ impl JsHost {
 
     /// Dispatch one DOM request. `Fetch` goes to tokio and replies later, so a
     /// slow page request never stops the UI thread (or the winit event loop).
-    fn handle_dom_rpc(&self, chrome: &mut BaseDocument, rpc: DomRpc) {
+    fn handle_dom_rpc(&self, chrome: &mut BaseDocument, rpc: DomRpc) -> bool {
+        if rpc.generation != self.dom_generation {
+            let reply_id = dom_request_reply(&rpc.request);
+            let _ = rpc.reply.send(DomResponse::err(reply_id, "page detached"));
+            return false;
+        }
         match rpc.request {
             DomRequest::Fetch(fetch) => {
                 super::apply::start_fetch(self.net.clone(), &self.base_url, fetch, rpc.reply);
+                false
             }
             request => {
                 let response = self.apply_dom_rpc(chrome, request);
                 let _ = rpc.reply.send(response);
+                true
             }
         }
     }
@@ -538,6 +569,25 @@ fn log_discovered_scripts(page_url: &str, specs: &[ScriptSpec]) {
     );
 }
 
+fn dom_request_reply(request: &DomRequest) -> u64 {
+    match request {
+        DomRequest::Fetch(f) => f.reply,
+        DomRequest::SnapshotTree { reply, .. }
+        | DomRequest::BatchMutate { reply, .. }
+        | DomRequest::BoundingRect { reply, .. }
+        | DomRequest::ComputedStyle { reply, .. }
+        | DomRequest::LayoutField { reply, .. }
+        | DomRequest::PageUrl { reply }
+        | DomRequest::Navigate { reply, .. }
+        | DomRequest::SubmitForm { reply, .. }
+        | DomRequest::ListenTarget { reply, .. }
+        | DomRequest::RandomBytes { reply, .. }
+        | DomRequest::NodeCount { reply, .. } => *reply,
+        #[cfg(debug_assertions)]
+        DomRequest::TestResize { reply, .. } => *reply,
+    }
+}
+
 fn page_document_id(chrome: &BaseDocument) -> usize {
     with_page_subdoc(chrome, |doc| doc.id()).unwrap_or_else(|| chrome.id())
 }
@@ -567,6 +617,7 @@ fn page_subdoc_mut(chrome: &mut BaseDocument) -> Option<&mut BaseDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::js::bridge::DomValue;
     use blitz_dom::DocumentConfig;
 
     use crate::parse;
@@ -691,6 +742,111 @@ mod tests {
 
         host.maybe_start_page(&doc_b, url, handle);
         assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
+    }
+
+    #[test]
+    fn stale_dom_rpc_is_rejected() {
+        let mut doc = page_doc(true);
+        let url = "https://example.test/page";
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, url, handle);
+        let stale_generation = host.dom_generation;
+        host.on_navigation(&doc, url);
+        assert!(host.worker.is_none());
+
+        let (reply_tx, reply_rx) = bounded(1);
+        let rpc = DomRpc {
+            generation: stale_generation,
+            request: DomRequest::Navigate {
+                url: "https://stale.example/".into(),
+                reply: 1,
+            },
+            reply: reply_tx,
+        };
+        assert!(host.dom_tx.send(rpc).is_ok());
+        assert!(!host.drain_dom_rpc(&mut doc));
+        let response = reply_rx.try_recv().expect("stale rpc reply");
+        assert!(matches!(response.value, DomValue::Error(_)));
+    }
+
+    #[test]
+    fn current_dom_rpc_is_applied() {
+        let mut doc = page_doc(true);
+        let url = "https://example.test/page";
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, url, handle);
+        host.pump(&mut doc, Instant::now());
+
+        let (reply_tx, reply_rx) = bounded(1);
+        let rpc = DomRpc {
+            generation: host.dom_generation,
+            request: DomRequest::Navigate {
+                url: "https://current.example/".into(),
+                reply: 1,
+            },
+            reply: reply_tx,
+        };
+        assert!(host.dom_tx.send(rpc).is_ok());
+        host.drain_dom_rpc(&mut doc);
+        let response = reply_rx.try_recv().expect("current rpc reply");
+        assert!(!matches!(response.value, DomValue::Error(_)));
+    }
+
+    #[test]
+    fn page_without_timers_reports_no_wake() {
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<p id=\"t\">ok</p><script>document.getElementById('t').textContent='still';</script>",
+            "</body></html>"
+        );
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        for _ in 0..100 {
+            host.pump(&mut doc, Instant::now());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(host.wake_epoch() > 0);
+        assert!(host.next_wake_in().is_none());
+    }
+
+    #[test]
+    fn page_with_timer_reports_next_wake() {
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<script>setTimeout(function(){}, 500);</script>",
+            "</body></html>"
+        );
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        for _ in 0..100 {
+            host.pump(&mut doc, Instant::now());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let epoch = host.wake_epoch();
+        let deadline = host
+            .worker
+            .as_ref()
+            .map(JsWorker::wake_deadline_ms)
+            .unwrap_or(0);
+        assert!(epoch > 0, "wake not published (epoch={epoch})");
+        assert!(
+            deadline > 0 || host.next_wake_in().is_some(),
+            "expected a pending timer deadline (deadline={deadline})"
+        );
     }
 
     #[test]

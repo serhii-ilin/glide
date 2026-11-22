@@ -51,6 +51,10 @@ enum WorkerMessage {
         path: Vec<u64>,
         event_type: String,
     },
+    SetConsoleRoute {
+        tab_id: u64,
+        page_epoch: u64,
+    },
     Shutdown,
 }
 
@@ -105,6 +109,12 @@ impl JsWorker {
             path,
             event_type: event_type.into(),
         });
+    }
+
+    pub fn set_console_route(&self, tab_id: u64, page_epoch: u64) {
+        let _ = self
+            .tx
+            .send(WorkerMessage::SetConsoleRoute { tab_id, page_epoch });
     }
 }
 
@@ -214,6 +224,9 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_flush_raf", &[]);
                 settle_task(scope);
+            }
+            WorkerMessage::SetConsoleRoute { tab_id, page_epoch } => {
+                super::console_feed::set_worker_route(tab_id, page_epoch);
             }
             WorkerMessage::DispatchBubble { path, event_type } => {
                 v8::scope!(let hs, isolate);
@@ -375,7 +388,24 @@ fn console_callback(
         _ => Level::Info,
     };
     diagnostics::record_console(level, &msg);
-    super::console_feed::publish_console_level(&level_str, &msg);
+    let caller_line = console_caller_line(scope);
+    super::console_feed::publish_console_level(&level_str, &msg, caller_line);
+}
+
+fn console_caller_line(scope: &mut v8::PinScope<'_, '_>) -> Option<usize> {
+    let stack = v8::StackTrace::current_stack_trace(scope, 8)?;
+    for index in 0..stack.get_frame_count() {
+        let frame = stack.get_frame(scope, index)?;
+        let name = frame
+            .get_script_name_or_source_url(scope)
+            .map(|name| name.to_rust_string_lossy(scope))
+            .unwrap_or_default();
+        if name.starts_with('<') {
+            continue;
+        }
+        return Some(frame.get_line_number());
+    }
+    None
 }
 
 extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {

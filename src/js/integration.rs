@@ -1125,6 +1125,24 @@ fn console_log_reaches_console_feed() {
 }
 
 #[test]
+fn console_log_includes_line_number_from_stack() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      console.log('line-numbered');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, std::time::Duration::from_millis(120));
+    let log = result
+        .console_wire
+        .iter()
+        .find(|e| e.level == "log" && e.message.contains("line-numbered"))
+        .expect("console log wire");
+    assert!(
+        log.line.is_some(),
+        "expected line number on console log, got {log:?}"
+    );
+}
+
+#[test]
 fn uncaught_exception_reaches_console_feed() {
     let html = r#"<!DOCTYPE html><html><body>
     <script>

@@ -491,13 +491,19 @@ fn sync_active_tab_console(
     devtools.sync_console_pane(doc, &tab.console, tab.id)
 }
 
-fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &mut JsHost) {
+fn apply_active_tab_to_doc(
+    tabs: &mut TabManager,
+    doc: &mut BaseDocument,
+    js: &mut JsHost,
+    tab_switched: bool,
+) {
     let url = tabs
         .active()
         .map(Tab::url)
         .unwrap_or("about:blank")
         .to_string();
     let observed = page_url(doc);
+    let reload = observed.as_deref() != Some(url.as_str());
     if let Some(tab) = tabs.active_mut() {
         tab.nav.switch_to(&url, observed.as_deref());
         tab.address_written = url.clone();
@@ -507,7 +513,19 @@ fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &m
         tab.find.restore(doc, find_open, &find_query);
         tab.zoom.apply_to_chrome(doc);
     }
-    if observed.as_deref() != Some(url.as_str()) {
+    if tab_switched {
+        if reload {
+            if let Some(tab) = tabs.active_mut() {
+                bump_tab_console_epoch_for_switch(tab, js);
+            }
+        } else if let Some(tab) = tabs.active() {
+            js.set_console_route(tab.id, tab.console_epoch);
+        }
+    }
+    if reload {
+        if !tab_switched && let Some(tab) = tabs.active() {
+            js.set_console_route(tab.id, tab.console_epoch);
+        }
         js.on_navigation(doc, &url);
         load_iframe(doc, &url);
     }
@@ -814,7 +832,7 @@ impl Glide {
                         if let Some(tab) = self.tabs.active_mut() {
                             tab.zoom = self.session.default_zoom;
                         }
-                        apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                        apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, false);
                         sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         structure_changed = true;
                     }
@@ -829,7 +847,7 @@ impl Glide {
                         );
                         if let Some(tab) = self.tabs.active().cloned() {
                             self.tabs.insert(tab);
-                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, false);
                             sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
@@ -858,7 +876,7 @@ impl Glide {
                                     .send_event(BlitzShellEvent::CloseWindow { window_id });
                                 break;
                             }
-                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, false);
                             sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                         } else {
                             self.tabs.close(id);
@@ -880,10 +898,7 @@ impl Glide {
                             _ => false,
                         };
                         if selected {
-                            if let Some(tab) = self.tabs.active_mut() {
-                                bump_tab_console_epoch_for_switch(tab, &mut self.js);
-                            }
-                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, true);
                             sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
@@ -903,10 +918,7 @@ impl Glide {
                             self.tabs.select_previous()
                         };
                         if moved {
-                            if let Some(tab) = self.tabs.active_mut() {
-                                bump_tab_console_epoch_for_switch(tab, &mut self.js);
-                            }
-                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js, true);
                             sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }

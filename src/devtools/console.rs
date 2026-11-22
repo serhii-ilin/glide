@@ -684,7 +684,9 @@ mod tests {
             promise_id: None,
         });
         let old_epoch = tab.console_epoch;
-        tab.console_epoch = old_epoch.saturating_add(1);
+        let mut js = crate::js::JsHost::new(false, crate::js::JsTap::new_disabled(), None);
+        let tab = tabs.tab_mut(id).expect("tab");
+        bump_tab_console_epoch_for_switch(tab, &mut js);
         let stale = ConsoleWireEvent {
             tab_id: id,
             page_epoch: old_epoch,
@@ -726,18 +728,86 @@ mod tests {
             promise_id: None,
         });
         let mut js = crate::js::JsHost::new(false, crate::js::JsTap::new_disabled(), None);
-        observe_navigation_console_effect(
+        let mut reset = |t: &mut crate::tabs::Tab, host: &mut crate::js::JsHost| {
+            t.console.clear();
+            t.console_epoch = t.console_epoch.saturating_add(1);
+            host.set_console_route(t.id, t.console_epoch);
+        };
+        for effect in [
             crate::nav::ObserveEffect::LinkNavigation,
-            &mut tab,
-            &mut js,
-            &mut |t, host| {
-                t.console.clear();
-                t.console_epoch = t.console_epoch.saturating_add(1);
-                host.set_console_route(t.id, t.console_epoch);
-            },
+            crate::nav::ObserveEffect::Redirect,
+        ] {
+            tab.console.push(ConsoleEntry {
+                level: ConsoleLevel::Log,
+                message: "gone".into(),
+                source: None,
+                line: None,
+                timestamp_ms: 0,
+                promise_id: None,
+            });
+            let epoch_before = tab.console_epoch;
+            observe_navigation_console_effect(effect, &mut tab, &mut js, &mut reset);
+            assert!(tab.console.is_empty(), "{effect:?}");
+            assert_eq!(
+                tab.console_epoch,
+                epoch_before.saturating_add(1),
+                "{effect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reselect_active_tab_keeps_epoch_and_applies_following_wire() {
+        let mut tabs = crate::tabs::TabManager::new();
+        let id = tabs.add("https://a.test/");
+        let epoch = tabs.tab_mut(id).expect("tab").console_epoch;
+        assert!(!tabs.select(id));
+        assert_eq!(tabs.tab_mut(id).expect("tab").console_epoch, epoch);
+        let wire = ConsoleWireEvent {
+            tab_id: id,
+            page_epoch: epoch,
+            timestamp_ms: 1,
+            level: "log".into(),
+            message: "still".into(),
+            source: None,
+            line: None,
+            promise_id: None,
+        };
+        apply_console_wire(&mut tabs, &[wire]);
+        let tab = tabs.tab_mut(id).expect("tab");
+        assert_eq!(tab.console.len(), 1);
+        assert_eq!(tab.console.entries().next().expect("row").message, "still");
+    }
+
+    #[test]
+    fn same_url_tab_switch_routes_new_lines_to_active_tab() {
+        let _lock = crate::js::console_feed::test_console_serial_lock();
+        crate::js::console_feed::drain_pending();
+        crate::js::console_feed::set_worker_route(0, 1);
+        crate::js::console_feed::publish("log", "for-tab-a", None, None);
+        crate::js::console_feed::set_worker_route(1, 1);
+        crate::js::console_feed::publish("log", "for-tab-b", None, None);
+        let batch = crate::js::console_feed::drain_pending();
+        let mut tabs = crate::tabs::TabManager::new();
+        let tab_a = tabs.add("https://same.test/");
+        let tab_b = tabs.add("https://same.test/");
+        assert!(tabs.select(tab_a));
+        assert!(tabs.select(tab_b));
+        apply_console_wire(&mut tabs, &batch);
+        assert!(
+            tabs.tab_mut(tab_a)
+                .expect("tab a")
+                .console
+                .entries()
+                .any(|e| e.message == "for-tab-a")
         );
-        assert!(tab.console.is_empty());
-        assert_eq!(tab.console_epoch, 2);
+        assert!(
+            tabs.tab_mut(tab_b)
+                .expect("tab b")
+                .console
+                .entries()
+                .any(|e| e.message == "for-tab-b")
+        );
     }
 
     #[test]

@@ -66,8 +66,12 @@ impl JsHost {
     }
 
     pub fn set_console_route(&mut self, tab_id: TabId, page_epoch: u64) {
+        let changed = self.console_tab_id != tab_id || self.console_page_epoch != page_epoch;
         self.console_tab_id = tab_id;
         self.console_page_epoch = page_epoch;
+        if changed && let Some(worker) = &self.worker {
+            worker.set_console_route(tab_id, page_epoch);
+        }
     }
 
     /// Console messages and exceptions from the worker, not yet merged into a tab journal.

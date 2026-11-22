@@ -109,20 +109,15 @@ pub fn publish(level: &str, message: &str, source: Option<&str>, line: Option<us
 fn console_source_from_ctx(
     ctx: &super::diagnostics::ScriptContext,
 ) -> (Option<String>, Option<usize>) {
-    let source = ctx.page_url.clone().or_else(|| {
-        ctx.script_name
-            .as_ref()
-            .filter(|name| !name.starts_with("script-"))
-            .cloned()
-    });
+    let source = ctx.script_name.clone().or_else(|| ctx.page_url.clone());
     (source, None)
 }
 
 /// Source label from the current script context when the page called `console.*`.
-pub fn publish_console_level(level: &str, message: &str) {
+pub fn publish_console_level(level: &str, message: &str, caller_line: Option<usize>) {
     let ctx = super::diagnostics::current();
-    let (source, line) = console_source_from_ctx(&ctx);
-    publish(level, message, source.as_deref(), line);
+    let (source, _) = console_source_from_ctx(&ctx);
+    publish(level, message, source.as_deref(), caller_line);
 }
 
 pub fn publish_uncaught(message: &str, line: Option<usize>, resource: Option<&str>) {
@@ -167,7 +162,7 @@ mod tests {
         let _lock = test_console_serial_lock();
         while !drain_pending().is_empty() {}
         set_worker_route(7, 2);
-        publish_console_level("log", "hello feed");
+        publish_console_level("log", "hello feed", None);
         let batch = drain_pending();
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].level, "log");

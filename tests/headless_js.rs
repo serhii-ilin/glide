@@ -247,6 +247,24 @@ fn network_apis_work() {
 }
 
 #[test]
+fn timing_history_crypto_work() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("timing-history.html"), true).expect("load");
+    assert!(text.contains("TIMING-OK"), "{text}");
+    assert!(!text.contains("TIMING-FAIL"), "{text}");
+}
+
+#[test]
+fn navigator_languages_work() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("navigator-languages.html"), true).expect("load");
+    assert!(text.contains("NAV-OK"), "{text}");
+    assert!(text.contains("en-US|en-US,en"), "{text}");
+}
+
+#[test]
 fn common_web_api_shims_work() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

@@ -90,7 +90,155 @@
   };
 
   global.Promise = Promise;
-  global.performance = { now: () => nowMs };
+
+  const performanceTimeOrigin = Date.now() - nowMs;
+  const perfEntries = [];
+  const perfMarks = new Map();
+  const PERF_ENTRY_MAX = 250;
+  const PERF_MARK_MAX = 250;
+  let cachedTiming = null;
+  let cachedNavigationEntry = null;
+
+  function capturePerformanceSnapshot() {
+    if (cachedTiming) return;
+    const nav = performanceTimeOrigin;
+    const stamp = nav + Math.max(0, nowMs);
+    cachedTiming = Object.freeze({
+      navigationStart: nav,
+      unloadEventStart: nav,
+      unloadEventEnd: nav,
+      redirectStart: nav,
+      redirectEnd: nav,
+      fetchStart: nav,
+      domainLookupStart: nav,
+      domainLookupEnd: nav,
+      connectStart: nav,
+      connectEnd: nav,
+      secureConnectionStart: nav,
+      requestStart: nav,
+      responseStart: stamp,
+      responseEnd: stamp,
+      domLoading: stamp,
+      domInteractive: stamp,
+      domContentLoadedEventStart: stamp,
+      domContentLoadedEventEnd: stamp,
+      domComplete: stamp,
+      loadEventStart: stamp,
+      loadEventEnd: stamp,
+    });
+    const href = pageHref();
+    cachedNavigationEntry = Object.freeze({
+      name: href,
+      entryType: 'navigation',
+      startTime: 0,
+      duration: nowMs,
+    });
+  }
+
+  global.__glide_capture_performance_navigation = capturePerformanceSnapshot;
+
+  function pushPerfEntry(entry) {
+    perfEntries.push(entry);
+    while (perfEntries.length > PERF_ENTRY_MAX) perfEntries.shift();
+  }
+
+  function capPerfMarks() {
+    while (perfMarks.size > PERF_MARK_MAX) {
+      const oldest = perfMarks.keys().next().value;
+      if (oldest === undefined) break;
+      perfMarks.delete(oldest);
+      for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+        const e = perfEntries[i];
+        if (e.entryType === 'mark' && e.name === oldest) {
+          perfEntries.splice(i, 1);
+          break;
+        }
+      }
+    }
+  }
+
+  global.performance = {
+    get timeOrigin() { return performanceTimeOrigin; },
+    get timing() {
+      capturePerformanceSnapshot();
+      return cachedTiming;
+    },
+    navigation: { type: 0, redirectCount: 0 },
+    now: () => nowMs,
+    getEntries() {
+      capturePerformanceSnapshot();
+      const nav = cachedNavigationEntry;
+      return nav ? [nav, ...perfEntries.slice()] : perfEntries.slice();
+    },
+    getEntriesByType(type) {
+      const want = String(type);
+      return global.performance.getEntries().filter((e) => e.entryType === want);
+    },
+    getEntriesByName(name, type) {
+      const want = String(name);
+      const kind = type == null ? null : String(type);
+      return global.performance.getEntries().filter((e) => {
+        if (e.name !== want) return false;
+        if (kind != null && e.entryType !== kind) return false;
+        return true;
+      });
+    },
+    mark(name) {
+      const label = String(name);
+      perfMarks.set(label, nowMs);
+      capPerfMarks();
+      pushPerfEntry({ name: label, entryType: 'mark', startTime: nowMs, duration: 0 });
+    },
+    measure(name, startMark, endMark) {
+      const label = String(name);
+      let start = 0;
+      let end = nowMs;
+      if (startMark != null) {
+        const key = String(startMark);
+        if (perfMarks.has(key)) start = perfMarks.get(key);
+      }
+      if (endMark != null) {
+        const key = String(endMark);
+        if (perfMarks.has(key)) end = perfMarks.has(key) ? perfMarks.get(key) : end;
+      }
+      pushPerfEntry({
+        name: label,
+        entryType: 'measure',
+        startTime: start,
+        duration: Math.max(0, end - start),
+      });
+    },
+    clearMarks(name) {
+      if (name == null) {
+        perfMarks.clear();
+        for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+          if (perfEntries[i].entryType === 'mark') perfEntries.splice(i, 1);
+        }
+        return;
+      }
+      const label = String(name);
+      perfMarks.delete(label);
+      for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+        const e = perfEntries[i];
+        if (e.entryType === 'mark' && e.name === label) perfEntries.splice(i, 1);
+      }
+    },
+    clearMeasures(name) {
+      if (name == null) {
+        for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+          if (perfEntries[i].entryType === 'measure') perfEntries.splice(i, 1);
+        }
+        return;
+      }
+      const label = String(name);
+      for (let i = perfEntries.length - 1; i >= 0; i -= 1) {
+        const e = perfEntries[i];
+        if (e.entryType === 'measure' && e.name === label) perfEntries.splice(i, 1);
+      }
+    },
+    clearResourceTimings() {},
+    setResourceTimingBufferSize() {},
+  };
   global.console = console;
 
   function invalidCharacter() {
@@ -790,12 +938,212 @@
   XMLHttpRequest.DONE = XHR_DONE;
   global.XMLHttpRequest = XMLHttpRequest;
 
+  function cloneHistoryState(state) {
+    if (state === undefined) return null;
+    try {
+      return JSON.parse(JSON.stringify(state));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function pageHref() {
+    if (typeof global.__glide_get_page_url === 'function') {
+      return global.__glide_get_page_url();
+    }
+    return (global.location && global.location.href) || '';
+  }
+
+  function resolvePageUrl(url) {
+    const raw = String(url);
+    const base = pageHref();
+    const parsed = __glide_url_parse(raw, base);
+    if (!parsed) {
+      const err = new Error('The string did not match the expected pattern.');
+      err.name = 'SyntaxError';
+      throw err;
+    }
+    const current = __glide_url_parse(base);
+    if (!current) {
+      const err = new Error('The operation is insecure.');
+      err.name = 'SecurityError';
+      throw err;
+    }
+    if (parsed.origin !== current.origin) {
+      const err = new Error('The operation is insecure.');
+      err.name = 'SecurityError';
+      throw err;
+    }
+    return parsed.href;
+  }
+
+  function coerceHistoryUrl(url) {
+    if (url == null || url === '') return null;
+    return resolvePageUrl(url);
+  }
+
+  const HISTORY_ENTRY_MAX = 100;
+  const historyEntries = [];
+  let historyIndex = 0;
+
+  function activeHistoryUrl() {
+    const entry = historyEntries[historyIndex];
+    return (entry && entry.url) || pageHref();
+  }
+
+  function trimHistoryEntries() {
+    while (historyEntries.length > HISTORY_ENTRY_MAX) {
+      historyEntries.shift();
+      historyIndex -= 1;
+    }
+    if (historyIndex < 0) historyIndex = 0;
+  }
+
+  function applyHistoryUrl(href) {
+    if (href != null && typeof global.__glide_set_page_url === 'function') {
+      global.__glide_set_page_url(href);
+    }
+  }
+
+  function firePopState(state) {
+    const EventCtor = global.Event || function () {};
+    const ev = new EventCtor('popstate');
+    ev.state = state;
+    global.dispatchEvent(ev);
+    if (typeof global.onpopstate === 'function') {
+      try {
+        global.onpopstate.call(global, ev);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  }
+
+  function historyGo(target) {
+    if (!Number.isInteger(target) || target < 0 || target >= historyEntries.length) return;
+    historyIndex = target;
+    const entry = historyEntries[historyIndex];
+    applyHistoryUrl(entry.url);
+    firePopState(cloneHistoryState(entry.state));
+  }
+
+  global.__glide_reset_page_history = function () {
+    historyEntries.length = 0;
+    historyEntries.push({ url: pageHref(), state: null });
+    historyIndex = 0;
+  };
+
+  global.history = {
+    get state() {
+      const entry = historyEntries[historyIndex];
+      return cloneHistoryState(entry ? entry.state : null);
+    },
+    get length() {
+      return Math.max(1, historyEntries.length);
+    },
+    scrollRestoration: 'auto',
+    pushState(state, _unused, url) {
+      const resolved = coerceHistoryUrl(url);
+      const clone = cloneHistoryState(state);
+      historyEntries.length = historyIndex + 1;
+      const href = resolved || activeHistoryUrl();
+      historyEntries.push({ url: href, state: clone });
+      historyIndex = historyEntries.length - 1;
+      trimHistoryEntries();
+      if (resolved) applyHistoryUrl(href);
+    },
+    replaceState(state, _unused, url) {
+      const resolved = coerceHistoryUrl(url);
+      const clone = cloneHistoryState(state);
+      const entry = historyEntries[historyIndex];
+      if (resolved) {
+        entry.url = resolved;
+        applyHistoryUrl(resolved);
+      }
+      entry.state = clone;
+    },
+    back() { historyGo(historyIndex - 1); },
+    forward() { historyGo(historyIndex + 1); },
+    go(delta) {
+      const n = Number(delta);
+      const step = Number.isFinite(n) ? Math.trunc(n) : 0;
+      if (step === 0) return;
+      historyGo(historyIndex + step);
+    },
+  };
+
+  const CRYPTO_BYTE_QUOTA = 65536;
+
+  function hostRandomBytes(size) {
+    const n = Number(size);
+    if (!Number.isFinite(n) || n < 0) throw new TypeError('Invalid random byte size');
+    const raw = __glide_dom_sync('randomBytes', 0, String(Math.floor(n)));
+    if (raw && raw.__error) {
+      const err = new Error(String(raw.__error));
+      err.name = raw.__error === 'QuotaExceededError' ? 'QuotaExceededError' : 'Error';
+      throw err;
+    }
+    return raw;
+  }
+
+  const RANDOM_TYPED_ARRAYS = new Set([
+    'Int8Array', 'Uint8Array', 'Uint8ClampedArray',
+    'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+    'BigInt64Array', 'BigUint64Array',
+  ]);
+
+  function cryptoGetRandomValues(view) {
+    if (!view || !ArrayBuffer.isView(view)) {
+      throw new TypeError('Expected an ArrayBuffer view');
+    }
+    const name = view.constructor && view.constructor.name;
+    if (!name || !RANDOM_TYPED_ARRAYS.has(name)) {
+      throw new TypeError('Expected a typed array');
+    }
+    const len = view.byteLength;
+    if (len > CRYPTO_BYTE_QUOTA) {
+      const err = new Error('The requested length exceeds the quota.');
+      err.name = 'QuotaExceededError';
+      throw err;
+    }
+    const bytes = hostRandomBytes(len);
+    const u8 = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    for (let i = 0; i < len; i += 1) u8[i] = bytes[i];
+    return view;
+  }
+
+  function cryptoRandomUUID() {
+    const bytes = hostRandomBytes(16);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  global.crypto = {
+    getRandomValues: cryptoGetRandomValues,
+    randomUUID: cryptoRandomUUID,
+    get subtle() { return undefined; },
+  };
+
   function ensureNavigator() {
     if (global.navigator == null) global.navigator = {};
     return global.navigator;
   }
   const navigatorShim = ensureNavigator();
   if (navigatorShim.userAgent == null) navigatorShim.userAgent = 'Glide';
+  if (navigatorShim.languages == null) {
+    navigatorShim.languages = Object.freeze(['en-US', 'en']);
+  }
+  if (navigatorShim.language == null) navigatorShim.language = 'en-US';
+  if (navigatorShim.platform == null) {
+    navigatorShim.platform = global.__glide_platform || '';
+  }
+  if (navigatorShim.onLine == null) navigatorShim.onLine = true;
+  if (navigatorShim.hardwareConcurrency == null) {
+    const cores = global.__glide_hardware_concurrency;
+    navigatorShim.hardwareConcurrency = typeof cores === 'number' && cores >= 1 ? cores : 1;
+  }
   navigatorShim.sendBeacon = function (url, data) {
     const body = data == null ? '' : (typeof data === 'string' ? data : String(data));
     setTimeout(() => {

@@ -1221,6 +1221,7 @@ dependencies = [
  "blitz-traits",
  "crossbeam-channel",
  "directories",
+ "getrandom 0.4.3",
  "html5ever",
  "keyboard-types",
  "once_cell",

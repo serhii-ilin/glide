@@ -50,6 +50,7 @@ fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::PageUrl { reply }
         | DomRequest::Navigate { reply, .. }
         | DomRequest::ListenTarget { reply, .. }
+        | DomRequest::RandomBytes { reply, .. }
         | DomRequest::NodeCount { reply } => *reply,
         #[cfg(debug_assertions)]
         DomRequest::TestResize { reply, .. } => *reply,
@@ -84,6 +85,7 @@ fn apply_inner(
             let _ = url;
             DomResponse::ok(reply, DomValue::Null)
         }
+        DomRequest::RandomBytes { size, reply } => apply_random_bytes(size, reply),
         DomRequest::ListenTarget {
             node,
             event_type,
@@ -116,6 +118,20 @@ fn apply_inner(
             reply,
         } => apply_fetch(net, base_url, &url, &method, &headers, &body, reply),
     }
+}
+
+const MAX_RANDOM_BYTES: usize = 65_536;
+
+fn apply_random_bytes(size: usize, reply: u64) -> DomResponse {
+    if size > MAX_RANDOM_BYTES {
+        return DomResponse::err(reply, "QuotaExceededError");
+    }
+    let mut buf = vec![0u8; size];
+    if let Err(e) = getrandom::fill(&mut buf) {
+        return DomResponse::err(reply, format!("random failed: {e}"));
+    }
+    let bytes: Vec<serde_json::Value> = buf.iter().map(|b| serde_json::Value::from(*b)).collect();
+    DomResponse::ok(reply, DomValue::Json(serde_json::Value::Array(bytes)))
 }
 
 fn apply_fetch(

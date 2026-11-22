@@ -205,11 +205,23 @@ pub fn chrome_document(start_url: &str, js_enabled: bool, bookmarked: bool) -> S
     })
 }
 
-/// Render the chrome from the window's current view of tabs, menus and page.
-/// Reload glyph. The system fonts have no circular-arrow character, so the
-/// icon is inline SVG.
-const RELOAD_ICON: &str = "<svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"#3d3933\" d=\"M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-8 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z\"/></svg>";
+// Chrome icons. The system fonts have no matching line glyphs (no circular arrow, and
+// arrows/stars in different weights), so every chrome icon is inline SVG in one
+// SF Symbols-like line style: 24-unit grid, round caps, stroked in `currentColor` so
+// the stylesheet's colour tokens apply.
+const BACK_ICON: &str = "<svg class=\"icon\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M14.5 4.5 7 12l7.5 7.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
+const FORWARD_ICON: &str = "<svg class=\"icon\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M9.5 4.5 17 12l-7.5 7.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
+const RELOAD_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M19.5 12a7.5 7.5 0 1 1-2.2-5.3M18 3v4h-4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
+const STOP_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6.5 6.5l11 11M17.5 6.5l-11 11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\"/></svg>";
+const STAR_ICON: &str = "<svg class=\"icon icon-star\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 3.6l2.6 5.3 5.8.85-4.2 4.1 1 5.8L12 16.9l-5.2 2.75 1-5.8-4.2-4.1 5.8-.85z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linejoin=\"round\"/></svg>";
+const STAR_FILLED_ICON: &str = "<svg class=\"icon icon-star-filled\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 3.6l2.6 5.3 5.8.85-4.2 4.1 1 5.8L12 16.9l-5.2 2.75 1-5.8-4.2-4.1 5.8-.85z\" fill=\"currentColor\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linejoin=\"round\"/></svg>";
+const PLUS_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/></svg>";
+const CLOSE_ICON: &str = "<svg class=\"icon\" width=\"10\" height=\"10\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 5l14 14M19 5L5 19\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\"/></svg>";
+const SEARCH_ICON: &str = "<svg class=\"icon\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10.5\" cy=\"10.5\" r=\"6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\"/><path d=\"M15.5 15.5 20.5 20.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\"/></svg>";
+const CHEVRON_UP_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5.5 15.5 12 9l6.5 6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
+const CHEVRON_DOWN_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5.5 8.5 12 15l6.5-6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
 
+/// Render the chrome from the window's current view of tabs, menus and page.
 pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     let url = escape_attr(&view.url);
     let address_title = if view.title.trim().is_empty() {
@@ -218,16 +230,9 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
         escape_attr(&view.title)
     };
     let js_label = if view.js_enabled { "JS on" } else { "JS off" };
-    let star = if view.bookmarked {
-        "&#9733;"
-    } else {
-        "&#9734;"
-    };
-    let star_title = if view.bookmarked {
-        "Remove bookmark"
-    } else {
-        "Add bookmark"
-    };
+    let (star, star_title) = bookmark_star(view.bookmarked);
+    let (reload_href, reload_title, reload_icon) = reload_button(view.page_loading);
+    let loading_class = if view.page_loading { "active" } else { "" };
     let tab_strip = format!(
         "<div id=\"tab-strip\">\n{}</div>\n",
         tab_strip_inner_html(view)
@@ -236,7 +241,6 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
         "<nav id=\"menu-bar\">\n{}</nav>\n",
         menu_bar_inner_html(view)
     );
-    let reload_icon = RELOAD_ICON;
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -246,25 +250,88 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
 <style>
   html {{
     --ui: 1;
+    --chrome-bg: #f6f6f6;
+    --tabbar-bg: #e6e6e6;
+    --tab-hover: #ececec;
+    --hairline: rgba(0,0,0,0.12);
+    --field-fill: rgba(0,0,0,0.055);
+    --btn-hover: rgba(0,0,0,0.06);
+    --btn-pressed: rgba(0,0,0,0.11);
+    --text: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-tertiary: #a1a1a6;
+    --menu-secondary: #86868b;
+    --menu-disabled: #b0b0b5;
+    --icon: #5f5f64;
+    --accent: #007aff;
+    --focus-ring: 0 0 0 calc(3.5px * var(--ui)) rgba(0,122,255,0.4);
   }}
   html, body {{
     margin: 0;
     height: 100%;
-    background: #f4f1ea;
-    color: #1c1915;
-    font-family: "Segoe UI", Ubuntu, Cantarell, sans-serif;
+    background: var(--chrome-bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Apple Symbols", "Segoe UI", Ubuntu, Cantarell, sans-serif;
+    font-size: calc(13px * var(--ui));
   }}
   body {{
     display: flex;
     flex-direction: column;
   }}
+  a.icon-btn {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    min-width: calc(28px * var(--ui));
+    height: calc(28px * var(--ui));
+    padding: 0;
+    border: 0;
+    border-radius: calc(6px * var(--ui));
+    background: transparent;
+    color: var(--icon);
+    text-decoration: none;
+  }}
+  a.icon-btn:hover {{
+    background: var(--btn-hover);
+  }}
+  a.icon-btn:active {{
+    background: var(--btn-pressed);
+  }}
+  a.icon-btn svg {{
+    width: calc(18px * var(--ui));
+    height: calc(18px * var(--ui));
+  }}
+  a.icon-btn svg.icon-star-filled {{
+    color: var(--accent);
+  }}
+  a.text-btn {{
+    display: flex;
+    align-items: center;
+    flex: none;
+    height: calc(28px * var(--ui));
+    padding: 0 calc(8px * var(--ui));
+    border: 0;
+    border-radius: calc(6px * var(--ui));
+    background: transparent;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: calc(12px * var(--ui));
+    font-weight: 500;
+    white-space: nowrap;
+  }}
+  a.text-btn:hover {{
+    background: var(--btn-hover);
+  }}
+  a.text-btn:active {{
+    background: var(--btn-pressed);
+  }}
   #menu-bar {{
     display: flex;
     align-items: center;
-    gap: calc(1px * var(--ui));
-    padding: calc(4px * var(--ui)) calc(6px * var(--ui));
-    background: #f5f3ef;
-    border-bottom: calc(1px * var(--ui)) solid #d9d3c8;
+    height: calc(24px * var(--ui));
+    padding: 0 calc(8px * var(--ui));
+    background: var(--chrome-bg);
     flex: none;
   }}
   div.menu {{
@@ -272,35 +339,33 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   }}
   a.menu-trigger {{
     display: block;
-    padding: calc(4px * var(--ui)) calc(11px * var(--ui));
-    border-radius: calc(6px * var(--ui));
-    color: #23201c;
+    height: calc(20px * var(--ui));
+    padding: 0 calc(8px * var(--ui));
+    border-radius: calc(5px * var(--ui));
+    color: var(--text);
     text-decoration: none;
     font-size: calc(13px * var(--ui));
-    line-height: calc(16px * var(--ui));
-    letter-spacing: calc(0.01em * var(--ui));
+    line-height: calc(20px * var(--ui));
   }}
   a.menu-trigger:hover {{
-    background: #e8e4dc;
+    background: var(--btn-hover);
   }}
   a.menu-trigger.active {{
-    background: #3478f6;
+    background: var(--accent);
     color: #fff;
   }}
   div.menu-dropdown {{
     display: none;
     position: absolute;
-    top: calc(100% + calc(3px * var(--ui)));
+    top: calc(100% + calc(2px * var(--ui)));
     left: 0;
     z-index: 10;
     min-width: calc(230px * var(--ui));
-    padding: calc(6px * var(--ui)) 0;
-    background: #fcfbfa;
-    border: calc(1px * var(--ui)) solid #d8d2c7;
-    border-radius: calc(9px * var(--ui));
-    box-shadow:
-      0 calc(1px * var(--ui)) calc(1px * var(--ui)) rgba(0,0,0,0.06),
-      0 calc(8px * var(--ui)) calc(24px * var(--ui)) rgba(0,0,0,0.18);
+    padding: calc(5px * var(--ui));
+    background: var(--chrome-bg);
+    border: calc(1px * var(--ui)) solid var(--hairline);
+    border-radius: calc(10px * var(--ui));
+    box-shadow: 0 calc(10px * var(--ui)) calc(30px * var(--ui)) rgba(0,0,0,0.18);
   }}
   div.menu-dropdown.open {{
     display: block;
@@ -309,222 +374,111 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: calc(20px * var(--ui));
-    padding: calc(5px * var(--ui)) calc(12px * var(--ui));
-    color: #23201c;
+    gap: calc(24px * var(--ui));
+    height: calc(22px * var(--ui));
+    padding: 0 calc(10px * var(--ui));
+    border-radius: calc(5px * var(--ui));
+    color: var(--text);
     text-decoration: none;
     font-size: calc(13px * var(--ui));
-    line-height: calc(18px * var(--ui));
     white-space: nowrap;
   }}
   a.menu-item:hover {{
-    background: #3478f6;
+    background: var(--accent);
     color: #fff;
   }}
   a.menu-item:hover span.menu-shortcut {{
     color: rgba(255,255,255,0.85);
   }}
   span.menu-item.disabled {{
-    color: #b1ab9f;
+    color: var(--menu-disabled);
   }}
   span.menu-item.disabled span.menu-shortcut {{
-    color: #cdc7bb;
+    color: var(--menu-disabled);
   }}
   span.menu-label {{
     flex: 1;
   }}
   span.menu-shortcut {{
-    color: #8a8377;
-    font-size: calc(12px * var(--ui));
+    color: var(--menu-secondary);
+    font-size: calc(13px * var(--ui));
   }}
   span.menu-heading {{
     display: block;
-    padding: calc(8px * var(--ui)) calc(12px * var(--ui)) calc(3px * var(--ui));
-    color: #9a9285;
+    padding: calc(6px * var(--ui)) calc(10px * var(--ui)) calc(2px * var(--ui));
+    color: var(--menu-secondary);
     font-size: calc(11px * var(--ui));
-    letter-spacing: calc(0.03em * var(--ui));
+    font-weight: 600;
   }}
   span.menu-separator {{
     display: block;
     height: calc(1px * var(--ui));
-    margin: calc(6px * var(--ui)) calc(8px * var(--ui));
-    background: #e3ddd2;
-  }}
-  #tab-strip {{
-    display: flex;
-    align-items: flex-end;
-    gap: calc(4px * var(--ui));
-    padding: calc(6px * var(--ui)) calc(8px * var(--ui)) 0;
-    background: #e8e4dc;
-    flex: none;
-  }}
-  div.tab {{
-    display: flex;
-    align-items: center;
-    gap: calc(7px * var(--ui));
-    max-width: calc(230px * var(--ui));
-    min-width: calc(96px * var(--ui));
-    height: calc(28px * var(--ui));
-    padding: 0 calc(9px * var(--ui));
-    border-radius: calc(8px * var(--ui)) calc(8px * var(--ui)) 0 0;
-    background: #d4cfc5;
-    font-size: calc(12px * var(--ui));
-    color: #4d4841;
-    overflow: hidden;
-    box-shadow: inset 0 calc(-1px * var(--ui)) 0 rgba(0,0,0,0.06);
-  }}
-  div.tab:hover {{
-    background: #dcd7cd;
-  }}
-  div.tab.active {{
-    background: #f7f5f2;
-    color: #1c1915;
-    margin-bottom: calc(-1px * var(--ui));
-    box-shadow: inset 0 calc(1px * var(--ui)) 0 rgba(255,255,255,0.9);
-  }}
-  span.tab-favicon {{
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: calc(14px * var(--ui));
-    height: calc(14px * var(--ui));
-    border-radius: calc(4px * var(--ui));
-    background: #bdb7ac;
-    color: transparent;
-    font-size: calc(9px * var(--ui));
-  }}
-  span.tab-title {{
-    flex: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }}
-  div.tab.loading span.tab-favicon {{
-    background: #2f6fe0;
-  }}
-  a.tab-close {{
-    color: #6b665c;
-    text-decoration: none;
-    font-size: calc(15px * var(--ui));
-    line-height: 1;
-    border-radius: calc(4px * var(--ui));
-    padding: 0 calc(3px * var(--ui));
-    opacity: 0;
-    transition: opacity 80ms linear;
-  }}
-  div.tab:hover a.tab-close, div.tab.active a.tab-close {{
-    opacity: 1;
-  }}
-  a.tab-close:hover {{
-    background: #c8c3b9;
-    color: #1c1915;
-  }}
-  div.tab.active a.tab-close:hover {{
-    background: #d8d4cb;
-  }}
-  a#new-tab {{
-    min-width: calc(26px * var(--ui));
-    height: calc(26px * var(--ui));
-    margin-bottom: calc(2px * var(--ui));
-    border-radius: calc(7px * var(--ui));
-    background: transparent;
-    border-color: transparent;
-    color: #5a564d;
-  }}
-  a#new-tab:hover {{
-    background: #ded9cf;
-    color: #1c1915;
+    margin: calc(5px * var(--ui)) calc(10px * var(--ui));
+    background: var(--hairline);
   }}
   nav#toolbar {{
     display: flex;
     align-items: center;
     gap: calc(10px * var(--ui));
-    padding: calc(8px * var(--ui)) calc(12px * var(--ui));
-    background: #f7f5f2;
-    border-bottom: calc(1px * var(--ui)) solid #e0dbd1;
+    height: calc(44px * var(--ui));
+    padding: 0 calc(10px * var(--ui));
+    background: var(--chrome-bg);
     flex: none;
   }}
   .toolbar-side {{
     display: flex;
     align-items: center;
-    gap: calc(2px * var(--ui));
+    gap: calc(4px * var(--ui));
     flex: 1 1 0;
     min-width: 0;
   }}
   #toolbar-trailing {{
     justify-content: flex-end;
   }}
-  a.icon-btn {{
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-width: calc(30px * var(--ui));
-    height: calc(30px * var(--ui));
-    padding: 0 calc(6px * var(--ui));
-    border: 0;
-    border-radius: calc(8px * var(--ui));
-    background: transparent;
-    color: #3d3933;
-    text-decoration: none;
-    font-size: calc(19px * var(--ui));
-    line-height: 1;
-  }}
-  a.icon-btn:hover {{
-    background: rgba(0,0,0,0.07);
-  }}
-  a.icon-btn:active {{
-    background: rgba(0,0,0,0.12);
-  }}
-  a.chip {{
-    display: flex;
-    align-items: center;
-    height: calc(24px * var(--ui));
-    padding: 0 calc(9px * var(--ui));
-    border: calc(1px * var(--ui)) solid #d8d2c6;
-    border-radius: calc(12px * var(--ui));
-    background: #fffdfa;
-    color: #55504a;
-    text-decoration: none;
-    font-size: calc(11px * var(--ui));
-    letter-spacing: calc(0.02em * var(--ui));
-  }}
-  a.chip:hover {{
-    background: #f0ece4;
-  }}
   form.address {{
     position: relative;
     display: flex;
     align-items: center;
     flex: 0 1 auto;
-    width: calc(560px * var(--ui));
+    width: calc(600px * var(--ui));
     max-width: 55%;
-    height: calc(32px * var(--ui));
+    height: calc(30px * var(--ui));
     margin: 0;
     padding: 0;
-    background: #fff;
-    border: calc(1px * var(--ui)) solid #dcd6cb;
-    border-radius: calc(10px * var(--ui));
-    box-shadow: 0 calc(1px * var(--ui)) calc(2px * var(--ui)) rgba(0,0,0,0.05);
+    border: 0;
+    border-radius: calc(8px * var(--ui));
+    background: var(--field-fill);
   }}
   form.address:focus-within {{
-    border-color: #6f9df0;
-    box-shadow: 0 0 0 calc(3px * var(--ui)) rgba(52,120,246,0.16);
+    background: #fff;
+    box-shadow: var(--focus-ring);
+  }}
+  form.address.focused {{
+    background: #fff;
+    box-shadow: var(--focus-ring);
   }}
   form.address input {{
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
     width: 100%;
     height: 100%;
-    padding: 0 calc(34px * var(--ui));
+    margin: 0;
+    padding: 0 calc(4px * var(--ui)) 0 calc(30px * var(--ui));
     border: 0;
     border-radius: inherit;
     background: transparent;
     color: transparent;
     font-size: calc(13px * var(--ui));
     text-align: center;
+    box-sizing: border-box;
   }}
   form.address input:focus {{
     outline: none;
-    color: #1c1915;
+    color: var(--text);
+    text-align: left;
+  }}
+  form.address.focused input {{
+    color: var(--text);
     text-align: left;
   }}
   span.address-title {{
@@ -533,8 +487,8 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 0 calc(34px * var(--ui));
-    color: #35312b;
+    padding: 0 calc(36px * var(--ui));
+    color: var(--text);
     font-size: calc(13px * var(--ui));
     white-space: nowrap;
     overflow: hidden;
@@ -546,79 +500,181 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   form.address.focused span.address-title {{
     display: none;
   }}
-  form.address.focused input {{
-    color: #1c1915;
-    text-align: left;
-  }}
-  span.address-icon {{
+  span.search-icon {{
     position: absolute;
-    left: calc(12px * var(--ui));
-    width: calc(7px * var(--ui));
-    height: calc(7px * var(--ui));
-    border-radius: 50%;
-    background: #b8b2a7;
-    pointer-events: none;
-  }}
-  a.btn {{
-    min-width: calc(32px * var(--ui));
-    height: calc(32px * var(--ui));
-    padding: 0 calc(8px * var(--ui));
+    color: var(--menu-secondary);
+    top: 0;
+    bottom: 0;
+    left: calc(10px * var(--ui));
     display: flex;
     align-items: center;
-    justify-content: center;
-    border-radius: calc(8px * var(--ui));
-    background: #fff;
-    border: calc(1px * var(--ui)) solid #e4ddd0;
-    color: #1c1915;
-    text-decoration: none;
-    font-size: calc(16px * var(--ui));
+    pointer-events: none;
+  }}
+  span.search-icon svg {{
+    width: calc(14px * var(--ui));
+    height: calc(14px * var(--ui));
+  }}
+  form.address a#reload {{
+    min-width: calc(24px * var(--ui));
+    height: calc(24px * var(--ui));
+    margin-right: calc(3px * var(--ui));
+    border-radius: calc(5px * var(--ui));
+  }}
+  form.address a#reload svg {{
+    width: calc(15px * var(--ui));
+    height: calc(15px * var(--ui));
   }}
   #zoom-label {{
-    min-width: calc(44px * var(--ui));
-    text-align: center;
-    font-size: calc(12px * var(--ui));
-    color: #6b6358;
     display: none;
+    padding: calc(2px * var(--ui)) calc(8px * var(--ui));
+    border-radius: calc(9px * var(--ui));
+    background: var(--field-fill);
+    color: var(--text-secondary);
+    font-size: calc(11px * var(--ui));
+    font-weight: 500;
   }}
   #zoom-label.visible {{
     display: block;
   }}
-  form {{
-    flex: 1;
+  #tab-strip {{
     display: flex;
-    margin: 0;
+    align-items: stretch;
+    height: calc(28px * var(--ui));
+    background: var(--tabbar-bg);
+    border-top: calc(1px * var(--ui)) solid var(--hairline);
+    border-bottom: calc(1px * var(--ui)) solid var(--hairline);
+    flex: none;
   }}
-  input {{
-    width: 100%;
-    height: calc(32px * var(--ui));
-    border: calc(1px * var(--ui)) solid #e4ddd0;
-    border-radius: 999px;
-    padding: 0 calc(14px * var(--ui));
-    background: #fff;
-    color: #1c1915;
-    font-size: calc(14px * var(--ui));
+  div.tab {{
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(6px * var(--ui));
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 calc(28px * var(--ui));
+    border-right: calc(1px * var(--ui)) solid var(--hairline);
+    color: var(--text-secondary);
+    font-size: calc(12px * var(--ui));
+    overflow: hidden;
+  }}
+  div.tab:hover {{
+    background: var(--tab-hover);
+  }}
+  div.tab.active {{
+    background: var(--chrome-bg);
+    color: var(--text);
+  }}
+  span.tab-favicon {{
+    display: none;
+  }}
+  div.tab.loading span.tab-favicon {{
+    display: block;
+    flex: none;
+    width: calc(6px * var(--ui));
+    height: calc(6px * var(--ui));
+    border-radius: 50%;
+    background: var(--accent);
+  }}
+  span.tab-title {{
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  a.tab-close {{
+    position: absolute;
+    color: var(--text-secondary);
+    top: calc(5px * var(--ui));
+    left: calc(6px * var(--ui));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(18px * var(--ui));
+    height: calc(18px * var(--ui));
+    border-radius: calc(4px * var(--ui));
+    text-decoration: none;
+    opacity: 0;
+  }}
+  div.tab:hover a.tab-close, div.tab.active a.tab-close {{
+    opacity: 1;
+  }}
+  a.tab-close:hover {{
+    background: var(--btn-hover);
+  }}
+  a.tab-close svg {{
+    width: calc(9px * var(--ui));
+    height: calc(9px * var(--ui));
+  }}
+  a#new-tab {{
+    width: calc(28px * var(--ui));
+    min-width: calc(28px * var(--ui));
+    height: auto;
+    border-radius: 0;
+  }}
+  a#new-tab svg {{
+    width: calc(15px * var(--ui));
+    height: calc(15px * var(--ui));
   }}
   #find-bar {{
     display: none;
     align-items: center;
+    justify-content: flex-end;
     gap: calc(6px * var(--ui));
-    padding: calc(6px * var(--ui)) calc(10px * var(--ui));
-    background: #faf7f0;
-    border-bottom: calc(1px * var(--ui)) solid #e4ddd0;
+    height: calc(36px * var(--ui));
+    padding: 0 calc(10px * var(--ui));
+    background: var(--chrome-bg);
+    border-bottom: calc(1px * var(--ui)) solid var(--hairline);
     flex: none;
   }}
   #find-bar.open {{
     display: flex;
   }}
+  div.find-field {{
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 0 1 calc(420px * var(--ui));
+    min-width: 0;
+    height: calc(26px * var(--ui));
+    border-radius: calc(7px * var(--ui));
+    background: var(--field-fill);
+  }}
+  div.find-field:focus-within {{
+    background: #fff;
+    box-shadow: var(--focus-ring);
+  }}
   #find-input {{
-    flex: 1;
-    width: auto;
+    flex: 1 1 0;
+    min-width: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0 calc(8px * var(--ui)) 0 calc(30px * var(--ui));
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    color: var(--text);
+    font-size: calc(13px * var(--ui));
+    box-sizing: border-box;
+  }}
+  #find-input:focus {{
+    outline: none;
   }}
   #find-count {{
+    min-width: calc(56px * var(--ui));
+    color: var(--text-secondary);
     font-size: calc(12px * var(--ui));
-    color: #6b6358;
-    min-width: calc(72px * var(--ui));
     text-align: center;
+  }}
+  #find-bar a.icon-btn svg {{
+    width: calc(16px * var(--ui));
+    height: calc(16px * var(--ui));
+  }}
+  #find-bar a.text-btn {{
+    color: var(--text);
+    font-size: calc(13px * var(--ui));
   }}
   #stage {{
     flex: 1;
@@ -638,7 +694,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   }}
   #stage.devtools-open #devtools-split {{
     display: block;
-    background: #d9d3c8;
+    background: #e3e3e3;
     flex: none;
   }}
   #stage.devtools-open.dock-bottom #devtools-split {{
@@ -652,34 +708,40 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   #stage.devtools-open #devtools {{
     display: flex;
     flex-direction: column;
-    background: #f0ece4;
+    background: #fff;
     overflow: hidden;
     flex: none;
   }}
   #stage.devtools-open.dock-bottom #devtools {{
-    border-top: calc(1px * var(--ui)) solid #d9d3c8;
+    border-top: calc(1px * var(--ui)) solid var(--hairline);
   }}
   #stage.devtools-open.dock-right #devtools {{
-    border-left: calc(1px * var(--ui)) solid #d9d3c8;
+    border-left: calc(1px * var(--ui)) solid var(--hairline);
   }}
   div.devtools-tabs {{
     display: flex;
+    align-items: center;
     gap: calc(2px * var(--ui));
-    padding: calc(4px * var(--ui)) calc(6px * var(--ui));
-    background: #e8e4dc;
-    border-bottom: calc(1px * var(--ui)) solid #d9d3c8;
+    height: calc(28px * var(--ui));
+    padding: 0 calc(6px * var(--ui));
+    background: var(--chrome-bg);
+    border-bottom: calc(1px * var(--ui)) solid var(--hairline);
     flex: none;
   }}
   a.devtools-tab {{
-    padding: calc(4px * var(--ui)) calc(10px * var(--ui));
-    border-radius: calc(6px * var(--ui));
-    font-size: calc(12px * var(--ui));
-    color: #4d4841;
+    padding: calc(3px * var(--ui)) calc(10px * var(--ui));
+    border-radius: calc(5px * var(--ui));
+    color: var(--text-secondary);
     text-decoration: none;
+    font-size: calc(12px * var(--ui));
+    font-weight: 500;
+  }}
+  a.devtools-tab:hover {{
+    color: var(--text);
   }}
   a.devtools-tab.active {{
-    background: #f7f5f2;
-    color: #1c1915;
+    background: var(--btn-hover);
+    color: var(--text);
   }}
   div.devtools-pane {{
     display: none;
@@ -692,23 +754,21 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   }}
   p.devtools-placeholder {{
     margin: calc(8px * var(--ui));
+    color: var(--text-secondary);
     font-size: calc(12px * var(--ui));
-    color: #6b6358;
   }}
   div.devtools-console-toolbar {{
     display: flex;
+    align-items: center;
     justify-content: flex-end;
-    padding: calc(4px * var(--ui)) calc(6px * var(--ui));
-    border-bottom: calc(1px * var(--ui)) solid #d9d3c8;
+    height: calc(24px * var(--ui));
+    padding: 0 calc(4px * var(--ui));
+    border-bottom: calc(1px * var(--ui)) solid var(--hairline);
     flex: none;
   }}
   a#devtools-console-clear {{
-    font-size: calc(12px * var(--ui));
-    color: #4d4841;
-    text-decoration: none;
-    padding: calc(2px * var(--ui)) calc(8px * var(--ui));
-    border-radius: calc(4px * var(--ui));
-    background: #e4ddd0;
+    height: calc(20px * var(--ui));
+    padding: 0 calc(8px * var(--ui));
   }}
   #devtools-console-log {{
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -717,20 +777,26 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: calc(4px * var(--ui)) 0;
+    padding: 0;
     box-sizing: border-box;
   }}
   #devtools-console-input {{
+    flex: none;
+    box-sizing: border-box;
+    width: 100%;
+    height: calc(26px * var(--ui));
+    margin: 0;
+    padding: 0 calc(8px * var(--ui));
+    border: 0;
+    border-top: calc(1px * var(--ui)) solid var(--hairline);
+    border-radius: 0;
+    background: #fff;
+    color: var(--text);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: calc(11px * var(--ui));
-    flex: none;
-    margin: calc(4px * var(--ui));
-    padding: calc(4px * var(--ui)) calc(6px * var(--ui));
-    border: calc(1px * var(--ui)) solid #c9c2b6;
-    border-radius: calc(4px * var(--ui));
-    background: #fff;
-    color: #1c1915;
-    box-sizing: border-box;
+  }}
+  #devtools-console-input:focus {{
+    outline: none;
   }}
   #devtools-pane-console {{
     display: none;
@@ -794,29 +860,34 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     color: #6b6358;
   }}
   div.devtools-console-line {{
-    padding: calc(2px * var(--ui)) calc(8px * var(--ui));
-    border-bottom: calc(1px * var(--ui)) solid #ebe6dc;
+    padding: calc(3px * var(--ui)) calc(8px * var(--ui));
+    border-bottom: calc(1px * var(--ui)) solid rgba(0,0,0,0.06);
     white-space: pre-wrap;
     word-break: break-word;
   }}
+  div.devtools-console-line .console-ts,
+  div.devtools-console-line .console-level,
+  span.console-source {{
+    display: inline-block;
+  }}
   div.devtools-console-line .console-ts {{
-    color: #8a8278;
+    color: var(--text-tertiary);
     margin-right: calc(6px * var(--ui));
   }}
   div.devtools-console-line .console-level {{
     font-weight: 600;
     margin-right: calc(6px * var(--ui));
   }}
-  div.devtools-console-line.level-log .console-level {{ color: #2f6f3a; }}
-  div.devtools-console-line.level-info .console-level {{ color: #1d5a8a; }}
-  div.devtools-console-line.level-warn .console-level {{ color: #9a6700; }}
-  div.devtools-console-line.level-error .console-level {{ color: #b42318; }}
-  div.devtools-console-line.level-debug .console-level {{ color: #5f6473; }}
+  div.devtools-console-line.level-log .console-level {{ color: #248a3d; }}
+  div.devtools-console-line.level-info .console-level {{ color: #0066cc; }}
+  div.devtools-console-line.level-warn .console-level {{ color: #a05a00; }}
+  div.devtools-console-line.level-error .console-level {{ color: #d70015; }}
+  div.devtools-console-line.level-debug .console-level {{ color: #6e6e73; }}
   span.console-source {{
-    color: #6b6358;
+    color: var(--text-secondary);
     margin-right: calc(6px * var(--ui));
   }}
-  span.console-msg {{ color: #1c1915; }}
+  span.console-msg {{ color: var(--text); }}
   #inspect-hl {{
     display: none;
     pointer-events: none;
@@ -831,7 +902,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   }}
   #loading {{
     height: calc(2px * var(--ui));
-    background: #3b82f6;
+    background: var(--accent);
     flex: none;
     display: none;
   }}
@@ -842,32 +913,35 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
 </head>
 <body>
   {menu_bar}
-  {tab_strip}
   <nav id="toolbar">
     <div id="toolbar-leading" class="toolbar-side">
-      <a id="back" class="icon-btn" href="glide://back" title="Back" aria-label="Back">&#8592;</a>
-      <a id="forward" class="icon-btn" href="glide://forward" title="Forward" aria-label="Forward">&#8594;</a>
-      <a id="reload" class="icon-btn" href="glide://reload" title="Reload" aria-label="Reload">{reload_icon}</a>
+      <a id="back" class="icon-btn" href="glide://back" title="Back" aria-label="Back">{BACK_ICON}</a>
+      <a id="forward" class="icon-btn" href="glide://forward" title="Forward" aria-label="Forward">{FORWARD_ICON}</a>
     </div>
     <form id="url-form" class="address" action="https://glide.invalid/go" method="get">
-      <span class="address-icon" aria-hidden="true"></span>
+      <span class="address-icon search-icon" aria-hidden="true">{SEARCH_ICON}</span>
       <span id="url-title" class="address-title">{address_title}</span>
       <input id="url" name="q" type="text" value="{url}" spellcheck="false" autocomplete="off" aria-label="Address">
+      <a id="reload" class="icon-btn" href="{reload_href}" title="{reload_title}" aria-label="Reload">{reload_icon}</a>
     </form>
     <div id="toolbar-trailing" class="toolbar-side">
-      <a id="js-toggle" class="chip" href="glide://toggle-js" title="Toggle JavaScript">{js_label}</a>
-      <a id="bookmark-star" class="icon-btn" href="glide://bookmark" title="{star_title}" aria-label="{star_title}">{star}</a>
       <span id="zoom-label"></span>
+      <a id="js-toggle" class="text-btn" href="glide://toggle-js" title="Toggle JavaScript">{js_label}</a>
+      <a id="bookmark-star" class="icon-btn" href="glide://bookmark" title="{star_title}" aria-label="{star_title}">{star}</a>
     </div>
   </nav>
+  {tab_strip}
   <div id="find-bar">
-    <input id="find-input" type="text" spellcheck="false" autocomplete="off" placeholder="Find in page">
+    <div class="find-field">
+      <span class="search-icon" aria-hidden="true">{SEARCH_ICON}</span>
+      <input id="find-input" type="text" spellcheck="false" autocomplete="off" placeholder="Find in page">
+    </div>
     <span id="find-count"></span>
-    <a class="btn" href="glide://find-prev" title="Previous match">&#8593;</a>
-    <a class="btn" href="glide://find-next" title="Next match">&#8595;</a>
-    <a class="btn" href="glide://find-close" title="Close find">&times;</a>
+    <a class="icon-btn" href="glide://find-prev" title="Previous match" aria-label="Previous match">{CHEVRON_UP_ICON}</a>
+    <a class="icon-btn" href="glide://find-next" title="Next match" aria-label="Next match">{CHEVRON_DOWN_ICON}</a>
+    <a class="text-btn" href="glide://find-close" title="Close find">Done</a>
   </div>
-  <div id="loading"></div>
+  <div id="loading" class="{loading_class}"></div>
   <div id="stage" class="dock-bottom">
     <iframe id="page" src="{url}"></iframe>
     <div id="devtools-split"></div>
@@ -879,7 +953,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
       </div>
       <div id="devtools-pane-console" class="devtools-pane active">
         <div class="devtools-console-toolbar">
-          <a id="devtools-console-clear" href="glide://devtools-console-clear">Clear</a>
+          <a id="devtools-console-clear" class="text-btn" href="glide://devtools-console-clear">Clear</a>
         </div>
         <div id="devtools-console-log"></div>
         <input id="devtools-console-input" type="text" spellcheck="false" autocomplete="off" placeholder="Evaluate JavaScript">
@@ -896,6 +970,24 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
 </html>
 "#
     )
+}
+
+/// Icon markup and title for the bookmark star.
+fn bookmark_star(bookmarked: bool) -> (&'static str, &'static str) {
+    if bookmarked {
+        (STAR_FILLED_ICON, "Remove bookmark")
+    } else {
+        (STAR_ICON, "Add bookmark")
+    }
+}
+
+/// Href, title and icon markup for the reload button, which turns into Stop while loading.
+fn reload_button(loading: bool) -> (&'static str, &'static str, &'static str) {
+    if loading {
+        ("glide://stop", "Stop", STOP_ICON)
+    } else {
+        ("glide://reload", "Reload", RELOAD_ICON)
+    }
 }
 
 fn tab_strip_inner_html(view: &ChromeViewState) -> String {
@@ -917,14 +1009,14 @@ fn tab_strip_inner_html(view: &ChromeViewState) -> String {
             escape_attr(&tab.title)
         };
         html.push_str(&format!(
-            r#"<div id="tab-{id}" class="{classes}"><span class="tab-favicon"></span><span class="tab-title">{title}</span><a class="tab-close" href="glide://close-tab?id={id}" title="Close tab" aria-label="Close tab">&times;</a></div>
+            r#"<div id="tab-{id}" class="{classes}"><a class="tab-close" href="glide://close-tab?id={id}" title="Close tab" aria-label="Close tab">{CLOSE_ICON}</a><span class="tab-favicon"></span><span class="tab-title">{title}</span></div>
 "#,
             id = tab.id,
         ));
     }
-    html.push_str(
-        "<a id=\"new-tab\" class=\"icon-btn\" href=\"glide://new-tab\" title=\"New tab\" aria-label=\"New tab\">+</a>\n",
-    );
+    html.push_str(&format!(
+        "<a id=\"new-tab\" class=\"icon-btn\" href=\"glide://new-tab\" title=\"New tab\" aria-label=\"New tab\">{PLUS_ICON}</a>\n"
+    ));
     html
 }
 
@@ -1275,25 +1367,15 @@ pub fn set_loading_ui(doc: &mut BaseDocument, loading: bool) {
         doc.mutate().set_attribute(id, qual_name!("class"), class);
     }
     if let Some(id) = doc.get_element_by_id("reload") {
+        let (href, title, icon) = reload_button(loading);
         let mut m = doc.mutate();
-        if loading {
-            m.set_attribute(id, qual_name!("href"), "glide://stop");
-            m.set_attribute(id, qual_name!("title"), "Stop");
-            let children: Vec<_> = m.child_ids(id).into_iter().collect();
-            for child in children {
-                m.remove_and_drop_node(child);
-            }
-            let text_id = m.create_text_node("■");
-            m.append_children(id, &[text_id]);
-        } else {
-            m.set_attribute(id, qual_name!("href"), "glide://reload");
-            m.set_attribute(id, qual_name!("title"), "Reload");
-            let children: Vec<_> = m.child_ids(id).into_iter().collect();
-            for child in children {
-                m.remove_and_drop_node(child);
-            }
-            crate::parse::parse_inner_html_into_mutator(&mut m, id, RELOAD_ICON, false);
+        m.set_attribute(id, qual_name!("href"), href);
+        m.set_attribute(id, qual_name!("title"), title);
+        let children: Vec<_> = m.child_ids(id).into_iter().collect();
+        for child in children {
+            m.remove_and_drop_node(child);
         }
+        crate::parse::parse_inner_html_into_mutator(&mut m, id, icon, false);
     }
 }
 
@@ -1430,20 +1512,15 @@ pub fn set_bookmark_star(doc: &mut BaseDocument, bookmarked: bool) {
     let Some(id) = doc.get_element_by_id("bookmark-star") else {
         return;
     };
-    let star = if bookmarked { "★" } else { "☆" };
-    let title = if bookmarked {
-        "Remove bookmark"
-    } else {
-        "Add bookmark"
-    };
+    let (icon, title) = bookmark_star(bookmarked);
     let mut m = doc.mutate();
     m.set_attribute(id, qual_name!("title"), title);
+    m.set_attribute(id, qual_name!("aria-label"), title);
     let children: Vec<_> = m.child_ids(id).into_iter().collect();
     for child in children {
         m.remove_and_drop_node(child);
     }
-    let text_id = m.create_text_node(star);
-    m.append_children(id, &[text_id]);
+    crate::parse::parse_inner_html_into_mutator(&mut m, id, icon, false);
 }
 
 pub fn set_ui_scale(doc: &mut BaseDocument, ui: f32) {
@@ -1658,8 +1735,9 @@ mod tests {
 
     use super::{
         ChromeViewState, MenuId, NavCommand, TabView, chrome_document_from_state,
-        command_closes_menu, command_from_url, render_menu_bar, set_address_focused, set_ui_scale,
-        should_write_committed_address, toolbar_layout_height,
+        command_closes_menu, command_from_url, render_menu_bar, set_address_focused,
+        set_bookmark_star, set_loading_ui, set_ui_scale, should_write_committed_address,
+        toolbar_layout_height,
     };
     use blitz_dom::{BaseDocument, DocumentConfig, local_name};
     use blitz_traits::node_id::NodeId;
@@ -2024,6 +2102,317 @@ mod tests {
             (visual_h100 - visual_h200).abs() < 2.0,
             "toolbar visual height should stay stable: {visual_h100} vs {visual_h200}"
         );
+    }
+
+    // Apple HIG: SF is the macOS system font; `system-ui` resolves to it in Blitz and
+    // "Apple Symbols" covers ⇥, which SF lacks.
+    #[test]
+    fn chrome_uses_the_system_font_stack() {
+        let html = chrome_document_from_state(&ChromeViewState::default());
+        assert!(html.contains(
+            "font-family: system-ui, -apple-system, \"Apple Symbols\", \"Segoe UI\", Ubuntu, Cantarell, sans-serif;"
+        ));
+    }
+
+    // Apple HIG toolbars: one consistent family of line icons (SF Symbols style).
+    #[test]
+    fn navigation_buttons_use_svg_icons() {
+        let doc = parse_chrome(&chrome_document_from_state(&ChromeViewState::default()));
+        for id in ["back", "forward", "reload", "bookmark-star", "new-tab"] {
+            assert_svg_icon_only(&doc, id);
+        }
+    }
+
+    // Safari for macOS keeps reload at the trailing edge of the address field.
+    #[test]
+    fn reload_sits_inside_the_address_field() {
+        let doc = parse_chrome(&chrome_document_from_state(&ChromeViewState::default()));
+        let form = doc.get_element_by_id("url-form").expect("address form");
+        let reload = doc.get_element_by_id("reload").expect("reload button");
+        assert_eq!(doc.get_node(reload).and_then(|n| n.parent), Some(form));
+        assert_eq!(element_children(&doc, form).last(), Some(&reload));
+        let leading = doc.get_element_by_id("toolbar-leading").expect("leading");
+        assert!(!element_children(&doc, leading).contains(&reload));
+    }
+
+    // Safari shows a thin ✕ line icon in place of reload while a page loads.
+    #[test]
+    fn stop_state_uses_an_svg_icon() {
+        let mut doc = parse_chrome(&chrome_document_from_state(&ChromeViewState::default()));
+        let reload = doc.get_element_by_id("reload").expect("reload button");
+        set_loading_ui(&mut doc, true);
+        assert_eq!(attr_of(&doc, reload, "href"), "glide://stop");
+        assert_eq!(attr_of(&doc, reload, "title"), "Stop");
+        assert_svg_icon_only(&doc, "reload");
+        set_loading_ui(&mut doc, false);
+        assert_eq!(attr_of(&doc, reload, "href"), "glide://reload");
+        assert_eq!(attr_of(&doc, reload, "title"), "Reload");
+        assert_svg_icon_only(&doc, "reload");
+    }
+
+    #[test]
+    fn bookmark_star_uses_svg_icons() {
+        let view = ChromeViewState {
+            bookmarked: true,
+            ..ChromeViewState::default()
+        };
+        let mut doc = parse_chrome(&chrome_document_from_state(&view));
+        assert_svg_icon_only(&doc, "bookmark-star");
+        assert!(star_icon_class(&doc).contains("icon-star-filled"));
+        set_bookmark_star(&mut doc, false);
+        assert_svg_icon_only(&doc, "bookmark-star");
+        assert!(!star_icon_class(&doc).contains("icon-star-filled"));
+        let star = doc.get_element_by_id("bookmark-star").expect("star");
+        assert_eq!(attr_of(&doc, star, "title"), "Add bookmark");
+        set_bookmark_star(&mut doc, true);
+        assert!(star_icon_class(&doc).contains("icon-star-filled"));
+        assert_eq!(attr_of(&doc, star, "title"), "Remove bookmark");
+    }
+
+    // Safari "separate" tab bar: equal-width flat segments, close at the leading edge,
+    // a fixed-width new-tab button at the end.
+    #[test]
+    fn tabs_are_equal_width_segments() {
+        let view = ChromeViewState {
+            tabs: vec![
+                TabView {
+                    id: 1,
+                    title: "A".into(),
+                    ..TabView::default()
+                },
+                TabView {
+                    id: 2,
+                    title: "A much longer tab title that has to be truncated".into(),
+                    loading: true,
+                },
+                TabView {
+                    id: 3,
+                    title: "Example Domain".into(),
+                    ..TabView::default()
+                },
+            ],
+            active_index: Some(0),
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        let rule = css_rule(&html, "div.tab");
+        assert!(rule.contains("flex: 1 1 0;"), "{rule}");
+        assert!(rule.contains("min-width: 0;"), "{rule}");
+        assert!(!rule.contains("border-radius"), "{rule}");
+        let strip = css_rule(&html, "#tab-strip");
+        assert!(!strip.contains("gap"), "{strip}");
+
+        let mut doc = parse_chrome(&html);
+        doc.resolve(0.0);
+        let widths: Vec<f32> = ["tab-1", "tab-2", "tab-3"]
+            .iter()
+            .map(|id| super::node_layout_size(&doc, id).expect("tab box").0)
+            .collect();
+        assert!(widths[0] > 100.0, "{widths:?}");
+        // Layout snaps boxes to whole pixels, so equal shares may differ by one pixel.
+        for width in &widths {
+            assert!((width - widths[0]).abs() <= 1.0, "{widths:?}");
+        }
+        let (new_tab_w, _) = super::node_layout_size(&doc, "new-tab").expect("new tab box");
+        assert!((new_tab_w - 28.0).abs() < 1.0, "new-tab width {new_tab_w}");
+
+        let tab = doc.get_element_by_id("tab-2").expect("tab");
+        let children = element_children(&doc, tab);
+        let close = children
+            .iter()
+            .position(|id| class_of(&doc, *id) == "tab-close")
+            .expect("close control");
+        let title = children
+            .iter()
+            .position(|id| class_of(&doc, *id) == "tab-title")
+            .expect("title");
+        assert!(close < title, "close control leads the title");
+    }
+
+    // Safari find banner: chevron buttons and a Done button instead of boxed glyphs.
+    #[test]
+    fn find_bar_has_chevrons_and_done() {
+        let html = chrome_document_from_state(&ChromeViewState::default());
+        assert!(!html.contains("class=\"btn\""));
+        let doc = parse_chrome(&html);
+        let bar = doc.get_element_by_id("find-bar").expect("find bar");
+        let links: Vec<NodeId> = descendants(&doc, bar)
+            .into_iter()
+            .filter(|id| tag_of(&doc, *id) == "a")
+            .collect();
+        let by_href = |href: &str| {
+            *links
+                .iter()
+                .find(|id| attr_of(&doc, **id, "href") == href)
+                .unwrap_or_else(|| panic!("{href} link"))
+        };
+        for href in ["glide://find-prev", "glide://find-next"] {
+            let id = by_href(href);
+            assert_eq!(class_of(&doc, id), "icon-btn");
+            assert_eq!(
+                element_children(&doc, id)
+                    .first()
+                    .map(|child| tag_of(&doc, *child)),
+                Some("svg".to_string())
+            );
+        }
+        let close = by_href("glide://find-close");
+        assert_eq!(text_of(&doc, close).trim(), "Done");
+        assert_eq!(attr_of(&doc, close, "title"), "Close find");
+        assert!(descendants(&doc, bar).iter().any(|id| {
+            class_of(&doc, *id)
+                .split_whitespace()
+                .any(|c| c == "search-icon")
+        }));
+    }
+
+    // Safari light appearance: neutral greys and white from one set of tokens.
+    #[test]
+    fn chrome_palette_is_neutral() {
+        let view = ChromeViewState {
+            open_menu: Some(MenuId::View),
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view).to_ascii_lowercase();
+        for warm in [
+            "#f4f1ea", "#e8e4dc", "#d4cfc5", "#f0ece4", "#f7f5f2", "#f5f3ef", "#d9d3c8", "#faf7f0",
+            "#e4ddd0", "#fcfbfa", "#dcd6cb", "#1c1915", "#3d3933", "#d8d2c7", "#b1ab9f", "#8a8377",
+        ] {
+            assert!(!html.contains(warm), "warm colour {warm} remains");
+        }
+        for token in [
+            "--chrome-bg: #f6f6f6;",
+            "--tabbar-bg: #e6e6e6;",
+            "--hairline: rgba(0,0,0,0.12);",
+            "--field-fill: rgba(0,0,0,0.055);",
+            "--text: #1d1d1f;",
+            "--accent: #007aff;",
+        ] {
+            assert!(html.contains(token), "missing token {token}");
+        }
+    }
+
+    // Apple HIG search fields: filled and borderless, with a focus ring while editing.
+    #[test]
+    fn address_field_is_borderless_with_a_focus_ring() {
+        let html = chrome_document_from_state(&ChromeViewState::default());
+        let rule = css_rule(&html, "form.address");
+        assert!(rule.contains("border: 0;"), "{rule}");
+        assert!(rule.contains("background: var(--field-fill);"), "{rule}");
+        for selector in ["form.address:focus-within", "form.address.focused"] {
+            let rule = css_rule(&html, selector);
+            assert!(rule.contains("box-shadow: var(--focus-ring);"), "{rule}");
+            assert!(rule.contains("background: #fff;"), "{rule}");
+        }
+        let doc = parse_chrome(&html);
+        let form = doc.get_element_by_id("url-form").expect("address form");
+        assert!(descendants(&doc, form).iter().any(|id| {
+            class_of(&doc, *id)
+                .split_whitespace()
+                .any(|c| c == "search-icon")
+        }));
+    }
+
+    #[test]
+    fn devtools_console_input_fits_the_panel() {
+        let html = chrome_document("about:blank", true, false);
+        let rule = css_rule(&html, "#devtools-console-input");
+        assert!(rule.contains("box-sizing: border-box;"), "{rule}");
+        let mut doc = parse_chrome(&html);
+        let state = crate::devtools::DevToolsState {
+            open: true,
+            size_px: 240,
+            ..Default::default()
+        };
+        crate::chrome::apply_devtools_state(&mut doc, &state);
+        doc.resolve(0.0);
+        let pane = doc
+            .get_element_by_id("devtools-pane-console")
+            .expect("console pane");
+        let input = doc
+            .get_element_by_id("devtools-console-input")
+            .expect("console input");
+        let pane_w = doc.get_node(pane).expect("pane").final_layout().size.width;
+        let layout = doc.get_node(input).expect("input").final_layout();
+        assert!(layout.size.width > 100.0, "{layout:?}");
+        assert!(
+            layout.location.x + layout.size.width <= pane_w + 0.5,
+            "input right edge {} overflows pane width {pane_w}",
+            layout.location.x + layout.size.width
+        );
+    }
+
+    fn assert_svg_icon_only(doc: &BaseDocument, id: &str) {
+        let node = doc.get_element_by_id(id).unwrap_or_else(|| panic!("#{id}"));
+        let children = element_children(doc, node);
+        assert_eq!(children.len(), 1, "#{id} has one icon child");
+        assert_eq!(tag_of(doc, children[0]), "svg", "#{id} icon is SVG");
+        assert!(
+            text_of(doc, node).trim().is_empty(),
+            "#{id} has no text glyph: {:?}",
+            text_of(doc, node)
+        );
+    }
+
+    fn star_icon_class(doc: &BaseDocument) -> String {
+        let star = doc.get_element_by_id("bookmark-star").expect("star");
+        let icon = *element_children(doc, star).first().expect("star icon");
+        class_of(doc, icon)
+    }
+
+    fn css_rule<'a>(html: &'a str, selector: &str) -> &'a str {
+        let start = html
+            .find(&format!("\n  {selector} {{"))
+            .unwrap_or_else(|| panic!("rule {selector}"));
+        let len = html[start..].find("\n  }").expect("rule end");
+        &html[start..start + len]
+    }
+
+    fn element_children(doc: &BaseDocument, id: NodeId) -> Vec<NodeId> {
+        doc.get_node(id)
+            .map(|node| {
+                node.children
+                    .iter()
+                    .copied()
+                    .filter(|child| doc.get_node(*child).is_some_and(|n| n.is_element()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn descendants(doc: &BaseDocument, id: NodeId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack = element_children(doc, id);
+        while let Some(next) = stack.pop() {
+            out.push(next);
+            stack.extend(element_children(doc, next));
+        }
+        out
+    }
+
+    fn tag_of(doc: &BaseDocument, id: NodeId) -> String {
+        doc.get_node(id)
+            .and_then(|node| node.element_data())
+            .map(|el| el.name.local.to_string())
+            .unwrap_or_default()
+    }
+
+    fn text_of(doc: &BaseDocument, id: NodeId) -> String {
+        doc.get_node(id)
+            .map(|node| node.text_content())
+            .unwrap_or_default()
+    }
+
+    fn attr_of(doc: &BaseDocument, id: NodeId, name: &str) -> String {
+        doc.get_node(id)
+            .and_then(|node| node.element_data())
+            .and_then(|el| {
+                el.attrs()
+                    .iter()
+                    .find(|attr| &*attr.name.local == name)
+                    .map(|attr| attr.value.to_string())
+            })
+            .unwrap_or_default()
     }
 
     fn parse_chrome(html: &str) -> BaseDocument {

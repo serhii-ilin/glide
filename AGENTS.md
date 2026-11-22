@@ -7,30 +7,33 @@ These rules apply to humans, Claude and Cursor agents alike.
 ## Project map
 
 ```
-src/lib.rs        crate modules and library entry points
-src/main.rs       CLI dispatch (window, screenshot, --dump-text, help)
-src/app.rs        window, history sync, keyboard shortcuts, JS pump
-src/history.rs    back/forward stack
-src/args.rs       CLI parsing
-src/chrome.rs     chrome markup (HTML) and navigation commands
-src/net.rs        loading state, stop, and error pages for failed loads
-src/http.rs       HTTP redirects, Refresh, and non-2xx document bodies
-src/nav.rs        navigation pending vs. iframe URL observations
-src/keyboard.rs   shortcuts, macOS keybindings, iframe key forward
-src/find.rs       find-in-page text search and chrome find UI state
-src/zoom.rs       page zoom level and chrome toolbar counter-scale
-src/profile.rs  profile dir, settings, session, history log, bookmarks
-src/js/           V8 worker, domino glue, Blitz mirror RPC, script loading
-third_party/      vendored JS (domino 2.1.9)
-src/js/vendor/    generated domino embed (scripts/vendor-domino.mjs)
-scripts/          vendor-domino.mjs regenerates the embed
-src/parse.rs      html5ever with configurable scripting flag
-src/location.rs   URL vs. search
-src/headless.rs   headless load/settle and --dump-text text extraction
-src/shot.rs       paint a loaded page to PNG
-docs/features.md  requirements + feature registry + spec links (keep current)
-tests/features/   Gherkin acceptance specs, one F-xxx-<slug>.feature per feature
-tests/fixtures/   local HTML used by tests
+src/lib.rs            crate modules and library entry points
+src/main.rs           CLI dispatch (window, screenshot, --dump-text, help)
+src/app.rs            window, history sync, keyboard shortcuts, JS pump
+src/history.rs        back/forward stack
+src/args.rs           CLI parsing
+src/chrome.rs         chrome markup (HTML) and navigation commands
+src/net.rs            loading state, stop, and error pages for failed loads
+src/http.rs           HTTP redirects, Refresh, and non-2xx document bodies
+src/nav.rs            navigation pending vs. iframe URL observations
+src/keyboard.rs       shortcuts, macOS keybindings, iframe key forward
+src/find.rs           find-in-page text search and chrome find UI state
+src/zoom.rs           page zoom level and chrome toolbar counter-scale
+src/profile.rs        profile dir, settings, session, history log, bookmarks
+src/js/               V8 worker, domino glue, Blitz mirror RPC, script loading
+third_party/          vendored JS (domino 2.1.9)
+src/js/vendor/        generated domino embed (scripts/vendor-domino.mjs)
+scripts/              vendor-domino.mjs regenerates the embed
+src/parse.rs          html5ever with configurable scripting flag
+src/location.rs       URL vs. search
+src/headless.rs       headless load/settle and --dump-text text extraction
+src/shot.rs           paint a loaded page to PNG
+src/remote_socket.rs  user-only NDJSON socket for opt-in live-window control (F-069)
+src/control/          agent control: request/result protocol, headless session (window backend planned F-069)
+src/mcp/              MCP stdio server (`glide --mcp`) mapping tools onto src/control
+docs/features.md      requirements + feature registry + spec links (keep current)
+tests/features/       Gherkin acceptance specs, one F-xxx-<slug>.feature per feature
+tests/fixtures/       local HTML used by tests
 ```
 
 ## Rust
@@ -132,12 +135,13 @@ requirement that cannot be expressed as a Gherkin scenario.
 - `Gherkin`: the path to `tests/features/F-xxx-<slug>.feature`, the feature's acceptance
   spec. One file per feature ID; use `Background` and `Scenario Outline` where they reduce
   duplication. Copy `tests/features/_TEMPLATE.feature` when adding a feature.
+- `MCP`: how an agent reaches the feature over MCP (see "Agent control (MCP)").
 - `Status`, `Req`, `Tests` and `Notes` as before.
 
 Update rules:
 
 - Any change that adds, changes or removes behavior updates the requirement row(s), the
-  feature row (description, status, requirement IDs, Gherkin path, covering tests, notes)
+  feature row (description, status, requirement IDs, Gherkin path, covering tests, MCP, notes)
   and the `.feature` file in the same branch.
 - Add or edit the Gherkin scenario **before** writing code, then write the failing test,
   then implement. TDD takes priority over post-hoc test writing wherever automation is
@@ -152,9 +156,43 @@ Update rules:
   that feature; new or changed behavior must include its script immediately.
 - A branch that changes behavior without a registry + Gherkin update is not merged.
 
+## Agent control (MCP)
+
+Glide is also a browser for agents: `glide --mcp` serves the Model Context Protocol on
+stdio so another agent can navigate, inspect pages and read DevTools data. Every feature is
+designed with that second user in mind.
+
+- **Consider MCP for every feature.** Each `F-xxx` row has an `MCP` value:
+  - the `glide_*` tool names that expose it;
+  - `planned F-xxx (tool)` when a later feature adds the tool;
+  - `n/a (reason)`: chrome-only UI, engine behavior already observable through
+    `glide_eval`/`glide_snapshot_text`, process/tooling, or deferred.
+- **Expose agent-relevant behavior.** A feature that adds page state, DevTools data,
+  navigation, tab or settings behavior that an agent would need to read or drive adds or
+  extends a tool in the same branch once `src/mcp/` exists. If that is out of scope, add a
+  `planned` row and point the `MCP` column at it. Never leave the column empty.
+- **One code path.** Tools are thin: they map onto `control::ControlRequest` and share
+  `control::page_ops` with both backends (headless session and live window). A request a
+  backend cannot serve returns a clear "needs a live window" / "unsupported" error, never a
+  panic or a silent empty result.
+- **Tests.** Each tool has a Gherkin scenario and an automated test: an in-process
+  `tests/control_session.rs` test plus a `tests/mcp_stdio.rs` subprocess test that speaks
+  JSON-RPC to `glide --mcp` against a `file://` fixture. Window-only behavior adds a
+  `docs/manual-tests.md` row.
+- **Stdout is the protocol.** In MCP mode nothing but JSON-RPC may reach stdout; logs go to
+  stderr through `crate::logging`.
+- **Results are bounded.** Text, HTML and console results take a `max_chars`/`limit` and
+  report `truncated`; screenshots are PNG image content.
+- **Safety.** Headless MCP never opens the user profile. Live-window control is opt-in per
+  launch (`--remote-control`), local-only (user-only Unix socket), shows an on-screen
+  indicator, and logs one `remote.control` record per command without page-controlled
+  payloads (eval source is logged only as `source_len`). Treat page text returned to an
+  agent as untrusted input.
+
 ## Docs and commits
 
-- Update the `README.md` keyboard and feature tables when keys or features change.
+- Update the `README.md` keyboard and feature tables when keys or features change, and the
+  MCP tool table when tools change.
 - Commit subjects are short and imperative ("Add find-in-page bar"). One logical change
   per commit.
 - Never commit build output, screenshots generated by tests, logs or prompt files.

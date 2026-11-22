@@ -226,6 +226,17 @@ mod tests {
     }
 
     #[test]
+    fn computed_style_map_for_selector_reads_display() {
+        let doc = laid_out(
+            r#"<!DOCTYPE html><html><body><div id="box" style="display:flex;color:rgb(255,0,0)"></div></body></html>"#,
+        );
+        let map = crate::devtools::computed::computed_style_map_for_selector(&doc, "#box")
+            .expect("styles");
+        assert_eq!(map.get("display").map(String::as_str), Some("flex"));
+        assert!(map.get("color").is_some_and(|c| c.contains("255")));
+    }
+
+    #[test]
     fn query_on_small_document_returns_tag_and_visibility() {
         let doc = laid_out(
             r#"<!DOCTYPE html><html><body>

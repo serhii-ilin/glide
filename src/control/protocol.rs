@@ -28,6 +28,7 @@ pub enum ControlRequest {
     Dom(DomParams),
     Query(QueryParams),
     Screenshot,
+    ComputedStyle(ComputedStyleParams),
 }
 
 /// Arguments for `glide_navigate`.
@@ -80,6 +81,13 @@ pub struct QueryParams {
     pub limit: Option<usize>,
 }
 
+/// Arguments for `glide_computed_style`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ComputedStyleParams {
+    /// CSS selector for the target element (first match).
+    pub selector: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlResult {
@@ -95,6 +103,7 @@ pub enum ControlResult {
     },
     Elements(Vec<ElementInfo>),
     Png(Vec<u8>),
+    ComputedStyle(std::collections::BTreeMap<String, String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

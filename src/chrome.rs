@@ -872,7 +872,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   }}
   #devtools-elements-detail {{
     flex: none;
-    max-height: 38%;
+    max-height: 28%;
     overflow: auto;
     border-top: calc(1px * var(--ui)) solid var(--hairline);
     padding: calc(6px * var(--ui));
@@ -887,6 +887,40 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   p.devtools-elements-detail-empty {{
     margin: 0;
     color: var(--text-secondary);
+  }}
+  #devtools-elements-computed {{
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    border-top: calc(1px * var(--ui)) solid var(--hairline);
+    padding: calc(6px * var(--ui));
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: calc(11px * var(--ui));
+  }}
+  p.devtools-computed-empty {{
+    margin: 0;
+    color: var(--text-secondary);
+    font-style: italic;
+  }}
+  div.devtools-computed-row {{
+    padding: calc(1px * var(--ui)) 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }}
+  span.computed-name {{ color: var(--accent); }}
+  span.computed-value {{ color: var(--text); }}
+  div.devtools-box-model {{
+    margin-bottom: calc(8px * var(--ui));
+    font-size: calc(10px * var(--ui));
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }}
+  div.bm-content {{
+    margin: calc(4px * var(--ui));
+    padding: calc(4px * var(--ui));
+    background: var(--field-fill);
+    text-align: center;
+    color: var(--text);
   }}
   div.devtools-console-line {{
     padding: calc(3px * var(--ui)) calc(8px * var(--ui));
@@ -918,8 +952,13 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   }}
   span.console-msg {{ color: var(--text); }}
   #inspect-hl {{
+    position: fixed;
     display: none;
     pointer-events: none;
+    box-sizing: border-box;
+    border: calc(1px * var(--ui)) solid rgba(0, 122, 255, 0.85);
+    background: rgba(0, 122, 255, 0.12);
+    z-index: 2147483646;
   }}
   iframe#page {{
     flex: 1;
@@ -990,6 +1029,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
       <div id="devtools-pane-elements" class="devtools-pane">
         <div id="devtools-elements-tree" tabindex="0"></div>
         <div id="devtools-elements-detail"></div>
+        <div id="devtools-elements-computed"></div>
       </div>
       <div id="devtools-pane-network" class="devtools-pane"><p class="devtools-placeholder">Network log will appear here.</p></div>
     </aside>
@@ -2704,6 +2744,12 @@ mod tests {
             .expect("link");
         doc.set_focus_to(link);
         assert!(super::devtools_elements_tree_focused(&doc));
+    }
+
+    #[test]
+    fn devtools_elements_computed_pane_markup() {
+        let html = chrome_document("about:blank", true, false);
+        assert!(html.contains("id=\"devtools-elements-computed\""));
     }
 
     #[test]

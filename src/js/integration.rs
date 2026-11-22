@@ -638,6 +638,93 @@ fn removed_positioned_child_stays_paintable() {
 }
 
 #[test]
+fn performance_timing_and_entries_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var ok = true;
+      var parts = [];
+      var to = performance.timeOrigin;
+      var ns = performance.timing.navigationStart;
+      if (!(to > 1e11)) ok = false;
+      if (!ns || ns > to) ok = false;
+      if (performance.navigation.type !== 0) ok = false;
+      var nav = performance.getEntriesByType('navigation');
+      if (nav.length !== 1) ok = false;
+      performance.mark('a');
+      performance.mark('b');
+      performance.measure('m', 'a', 'b');
+      var named = performance.getEntriesByName('m', 'measure');
+      if (named.length !== 1) ok = false;
+      parts.push(ok ? 'perf' : 'perf-fail');
+      parts.push(String(nav[0].duration >= 0));
+      document.getElementById('t').textContent = parts.join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "perf|true");
+}
+
+#[test]
+fn history_push_state_updates_location_and_state() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var log = [];
+      window.addEventListener('popstate', function (e) {
+        log.push('pop:' + (e.state && e.state.n) + ':' + location.pathname);
+      });
+      history.pushState({ n: 1 }, '', '/one');
+      history.pushState({ n: 2 }, '', '/two');
+      var lenAfterPush = history.length;
+      var urlOk = location.pathname === '/two'
+        && document.URL.indexOf('/two') >= 0
+        && history.state && history.state.n === 2;
+      history.replaceState({ n: 9 }, '', '/nine');
+      var replaceOk = location.pathname === '/nine'
+        && history.state.n === 9
+        && history.length === lenAfterPush;
+      var crossOk = false;
+      try {
+        history.pushState({}, '', 'https://evil.test/x');
+      } catch (e) {
+        crossOk = e.name === 'SecurityError' && location.pathname === '/nine';
+      }
+      history.back();
+      var popped = log.join(';');
+      document.getElementById('t').textContent =
+        [urlOk, replaceOk, crossOk, popped].join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "true|true|true|pop:1:/one");
+}
+
+#[test]
+fn crypto_get_random_values_and_uuid_work() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var a = new Uint8Array(32);
+      var r1 = crypto.getRandomValues(a);
+      var allZero = a.every(function (b) { return b === 0; });
+      var sameRef = r1 === a;
+      var a2 = new Uint8Array(32);
+      crypto.getRandomValues(a2);
+      var differ = a.some(function (b, i) { return b !== a2[i]; });
+      var quotaOk = false;
+      try {
+        crypto.getRandomValues(new Uint8Array(65537));
+      } catch (e) {
+        quotaOk = e.name === 'QuotaExceededError';
+      }
+      var u1 = crypto.randomUUID();
+      var u2 = crypto.randomUUID();
+      var re = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+      var uuidOk = re.test(u1) && re.test(u2) && u1 !== u2;
+      var ok = !allZero && sameRef && differ && quotaOk && uuidOk && crypto.subtle === undefined;
+      document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
 fn failed_external_script_does_not_panic() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

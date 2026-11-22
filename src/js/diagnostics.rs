@@ -73,7 +73,7 @@ pub fn hint(kind: ErrorKind, message: &str) -> &'static str {
     if lower.contains("atob") || lower.contains("btoa") {
         "Base64 helpers are bootstrap shims; check the input alphabet and padding."
     } else if lower.contains("mutationobserver") {
-        "Glide installs a no-op MutationObserver shim; real observation is tracked by F-038."
+        "MutationObserver delivery uses domino mutation hooks; see F-057."
     } else if lower.contains("matchmedia") {
         "matchMedia is a shim that always returns matches=false; real media evaluation is not wired."
     } else if lower.contains("console.info") || lower.contains("console.debug") {
@@ -423,8 +423,8 @@ mod tests {
             ErrorKind::MissingApi,
             "ReferenceError: MutationObserver is not defined",
         );
-        assert!(missing_hint.contains("no-op"));
-        assert!(missing_hint.contains("F-038"));
+        assert!(missing_hint.contains("F-057"));
+        assert!(missing_hint.contains("mutation"));
 
         let descriptor_hint = hint(
             ErrorKind::IncompatibleDescriptor,

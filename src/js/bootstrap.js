@@ -397,11 +397,384 @@
     abort(reason) { this.signal._fire(reason); }
   };
 
-  global.MutationRecord = function MutationRecord() {};
-  global.MutationObserver = function MutationObserver(callback) {
-    this.observe = function () {};
-    this.disconnect = function () {};
-    this.takeRecords = function () { return []; };
+  let nextIdleId = 1;
+  const idleHandles = new Map();
+
+  global.requestIdleCallback = function (cb, options) {
+    if (typeof cb !== 'function') throw new TypeError('Callback must be a function');
+    const id = nextIdleId++;
+    const timerId = setTimeout(function () {
+      idleHandles.delete(id);
+      const start = performance.now();
+      const budget = 50;
+      try {
+        cb({
+          didTimeout: !!(options && options.timeout != null),
+          timeRemaining() {
+            return Math.max(0, budget - (performance.now() - start));
+          },
+        });
+      } catch (e) { console.error(e); }
+    }, 1);
+    idleHandles.set(id, timerId);
+    return id;
+  };
+
+  global.cancelIdleCallback = function (id) {
+    const timerId = idleHandles.get(id);
+    if (timerId != null) {
+      clearTimeout(timerId);
+      idleHandles.delete(id);
+    }
+  };
+
+  function intersectRect(a, b) {
+    const left = Math.max(a.left, b.left);
+    const top = Math.max(a.top, b.top);
+    const right = Math.min(a.right, b.right);
+    const bottom = Math.min(a.bottom, b.bottom);
+    const w = Math.max(0, right - left);
+    const h = Math.max(0, bottom - top);
+    return { x: left, y: top, top, left, right, bottom, width: w, height: h };
+  }
+
+  function rectsOverlap(a, b) {
+    return a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0
+      && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  }
+
+  function overlapRatio(rect, root) {
+    if (!rectsOverlap(rect, root)) return 0;
+    const box = intersectRect(rect, root);
+    const area = rect.width * rect.height;
+    return area > 0 ? (box.width * box.height) / area : 0;
+  }
+
+  function viewportRootBounds() {
+    const docEl = document.documentElement;
+    const body = document.body;
+    let w = (docEl && docEl.clientWidth) || 0;
+    let h = (docEl && docEl.clientHeight) || 0;
+    if (!w && body && body.clientWidth) w = body.clientWidth;
+    if (!h && body && body.clientHeight) h = body.clientHeight;
+    if (!w && docEl) {
+      const r = docEl.getBoundingClientRect();
+      if (r.width > 0) w = r.width;
+    }
+    if (!h && docEl) {
+      const r = docEl.getBoundingClientRect();
+      if (r.height > 0) h = r.height;
+    }
+    if (!w) w = 800;
+    if (!h) h = 600;
+    return { x: 0, y: 0, top: 0, left: 0, width: w, height: h, right: w, bottom: h };
+  }
+
+  const ioObservers = new Set();
+  let ioCheckScheduled = false;
+  let ioResizeHooked = false;
+
+  function scheduleIntersectionChecks() {
+    if (ioCheckScheduled) return;
+    ioCheckScheduled = true;
+    setTimeout(function () {
+      ioCheckScheduled = false;
+      runIntersectionChecks();
+    }, 0);
+  }
+
+  function runIntersectionChecks() {
+  if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
+    const rootBounds = viewportRootBounds();
+    const time = performance.now();
+    for (const obs of ioObservers) {
+      if (!obs._targets.size) continue;
+      const entries = [];
+      for (const [el, state] of obs._targets) {
+        if (!el || el.nodeType !== 1) continue;
+        const rect = el.getBoundingClientRect();
+        let hidden = rect.width === 0 && rect.height === 0;
+        if (!hidden) {
+          let inline = String((el.getAttribute && el.getAttribute('style')) || '');
+          if (!inline && el.attributes) {
+            for (let ai = 0; ai < el.attributes.length; ai += 1) {
+              const a = el.attributes[ai];
+              const name = String(a.name || a.localName || '').toLowerCase();
+              if (name === 'style') {
+                inline = String(a.value || '');
+                break;
+              }
+            }
+          }
+          if (/display\s*:\s*none/i.test(inline)) hidden = true;
+        }
+        if (!hidden && el.style && String(el.style.display).toLowerCase() === 'none') {
+          hidden = true;
+        }
+        if (!hidden && typeof global.getComputedStyle === 'function') {
+          try {
+            if (global.getComputedStyle(el).display === 'none') hidden = true;
+          } catch (_) { /* layout may be unavailable */ }
+        }
+        const ratio = hidden ? 0 : overlapRatio(rect, rootBounds);
+        const isect = !hidden && ratio > 0;
+        const prev = state || { isIntersecting: null, ratio: null };
+        if (prev.isIntersecting === isect && prev.ratio === ratio) continue;
+        obs._targets.set(el, { isIntersecting: isect, ratio });
+        entries.push({
+          target: el,
+          isIntersecting: isect,
+          intersectionRatio: isect ? Math.min(1, ratio) : 0,
+          boundingClientRect: { ...rect },
+          rootBounds: { ...rootBounds },
+          intersectionRect: intersectRect(rect, rootBounds),
+          time,
+        });
+      }
+      if (entries.length) {
+        try { obs._callback(entries, obs); } catch (e) { console.error(e); }
+      }
+    }
+  }
+
+  function ensureIoResizeListener() {
+    if (ioResizeHooked) return;
+    ioResizeHooked = true;
+    global.addEventListener('resize', scheduleIntersectionChecks);
+  }
+
+  global.IntersectionObserver = class IntersectionObserver {
+    constructor(callback, options) {
+      if (typeof callback !== 'function') throw new TypeError('Callback must be a function');
+      options = options || {};
+      this._callback = callback;
+      this.root = options.root || null;
+      this.rootMargin = options.rootMargin == null ? '0px' : String(options.rootMargin);
+      const raw = options.threshold;
+      if (raw == null) this.thresholds = [0];
+      else if (Array.isArray(raw)) this.thresholds = raw.map(Number);
+      else this.thresholds = [Number(raw)];
+      this._targets = new Map();
+      this._records = [];
+      ioObservers.add(this);
+      ensureIoResizeListener();
+    }
+    observe(target) {
+      if (!target || target.nodeType !== 1) throw new TypeError('Target must be an Element');
+      this._targets.set(target, null);
+      scheduleIntersectionChecks();
+    }
+    unobserve(target) {
+      this._targets.delete(target);
+    }
+    disconnect() {
+      this._targets.clear();
+      this._records.length = 0;
+    }
+    takeRecords() {
+      const batch = this._records.slice();
+      this._records.length = 0;
+      return batch;
+    }
+  };
+
+  const roObservers = new Set();
+  let roCheckScheduled = false;
+
+  function scheduleResizeChecks() {
+    if (roCheckScheduled) return;
+    roCheckScheduled = true;
+    setTimeout(function () {
+      roCheckScheduled = false;
+      runResizeChecks();
+    }, 0);
+  }
+
+  function sizeKey(w, h) {
+    return String(w) + '\0' + String(h);
+  }
+
+  function runResizeChecks() {
+    if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
+    for (const obs of roObservers) {
+      if (!obs._targets.size) continue;
+      const entries = [];
+      for (const [el, last] of obs._targets) {
+        if (!el || el.nodeType !== 1) continue;
+        const rect = el.getBoundingClientRect();
+        const w = rect.width;
+        const h = rect.height;
+        const key = sizeKey(w, h);
+        if (last === key) continue;
+        obs._targets.set(el, key);
+        const contentRect = {
+          x: rect.x, y: rect.y, width: w, height: h,
+          top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left,
+        };
+        entries.push({
+          target: el,
+          contentRect,
+          borderBoxSize: [{ inlineSize: w, blockSize: h }],
+          contentBoxSize: [{ inlineSize: w, blockSize: h }],
+        });
+      }
+      if (entries.length) {
+        try { obs._callback(entries, obs); } catch (e) { console.error(e); }
+      }
+    }
+  }
+
+  global.ResizeObserver = class ResizeObserver {
+    constructor(callback) {
+      if (typeof callback !== 'function') throw new TypeError('Callback must be a function');
+      this._callback = callback;
+      this._targets = new Map();
+      roObservers.add(this);
+    }
+    observe(target) {
+      if (!target || target.nodeType !== 1) throw new TypeError('Target must be an Element');
+      if (!this._targets.has(target)) this._targets.set(target, null);
+      scheduleResizeChecks();
+    }
+    unobserve(target) {
+      this._targets.delete(target);
+    }
+    disconnect() {
+      this._targets.clear();
+    }
+  };
+
+  const CSS_KNOWN_PROPERTIES = new Set([
+    'display', 'position', 'float', 'clear', 'width', 'height', 'min-width', 'min-height',
+    'max-width', 'max-height', 'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+    'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    'border', 'border-width', 'border-style', 'border-color', 'border-radius',
+    'color', 'background', 'background-color', 'background-image', 'opacity',
+    'font', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height',
+    'text-align', 'text-decoration', 'text-transform', 'white-space', 'overflow', 'overflow-x', 'overflow-y',
+    'flex', 'flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'align-content', 'flex-grow',
+    'transform', 'visibility', 'z-index', 'top', 'right', 'bottom', 'left', 'box-sizing',
+    'fill', 'stroke', 'vector-effect',
+  ]);
+
+  function cssValueLooksValid(prop, value) {
+    const v = String(value).trim().toLowerCase();
+    if (!v) return false;
+    if (prop === 'display') {
+      return ['none', 'block', 'inline', 'inline-block', 'flex', 'grid', 'contents'].includes(v);
+    }
+    if (prop === 'position') return ['static', 'relative', 'absolute', 'fixed', 'sticky'].includes(v);
+    if (prop === 'float') return ['none', 'left', 'right'].includes(v);
+    if (v === 'initial' || v === 'inherit' || v === 'unset' || v === 'revert') return true;
+    if (/^#[0-9a-f]{3,8}$/i.test(v) || /^rgb|^hsl|^[a-z]+$/.test(v)) return true;
+    if (/^-?\d+(\.\d+)?(px|em|rem|%|vh|vw|fr|s|ms)?$/.test(v)) return true;
+    return v.length < 64;
+  }
+
+  function cssEscape(value) {
+    const s = String(value);
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      if (code === 0x0) {
+        out += '\uFFFD';
+        continue;
+      }
+      const first = i === 0;
+      const secondDigit = i === 1 && s.charCodeAt(0) === 0x30 && code >= 0x30 && code <= 0x39;
+      if ((first && code >= 0x30 && code <= 0x39) || secondDigit
+        || (code >= 0x1 && code <= 0x1f) || code === 0x7f
+        || (first && code === 0x2d)) {
+        out += '\\' + code.toString(16) + ' ';
+        continue;
+      }
+      if (code === 0x2d && secondDigit) {
+        out += '\\' + code.toString(16) + ' ';
+        continue;
+      }
+      if (code === 0x40 || code === 0x2d || code === 0x5f
+        || (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a)
+        || code >= 0x80) {
+        out += s[i];
+      } else {
+        out += '\\' + code.toString(16) + ' ';
+      }
+    }
+    return out;
+  }
+
+  function cssSupports(property, value) {
+    const prop = String(property).trim().toLowerCase();
+    if (!CSS_KNOWN_PROPERTIES.has(prop)) return false;
+    return cssValueLooksValid(prop, value);
+  }
+
+  function cssSupportsCondition(condition) {
+    const match = /^\(\s*([^:)]+)\s*:\s*([^)]+)\s*\)$/i.exec(String(condition).trim());
+    if (!match) return false;
+    return cssSupports(match[1], match[2]);
+  }
+
+  global.CSS = global.CSS || {};
+  global.CSS.supports = function (a, b) {
+    if (arguments.length === 1) return cssSupportsCondition(a);
+    return cssSupports(a, b);
+  };
+  global.CSS.escape = cssEscape;
+
+  const CE_RESERVED = new Set([
+    'annotation-xml', 'color-profile', 'font-face', 'font-face-src', 'font-face-uri',
+    'font-face-format', 'font-face-name', 'missing-glyph',
+  ]);
+  const ceRegistry = new Map();
+  const cePending = new Map();
+
+  function validCustomElementName(name) {
+    const n = String(name);
+    if (!n.includes('-')) return false;
+    if (/[A-Z]/.test(n)) return false;
+    if (CE_RESERVED.has(n.toLowerCase())) return false;
+    return /^[a-z][a-z0-9._-]*-[a-z0-9._-]+$/.test(n);
+  }
+
+  function resolveWhenDefined(name) {
+    const pending = cePending.get(name);
+    if (pending) {
+      cePending.delete(name);
+      pending.resolve(ceRegistry.get(name));
+    }
+  }
+
+  global.customElements = {
+    define(name, ctor, _options) {
+      const n = String(name);
+      if (!validCustomElementName(n)) {
+        const err = new SyntaxError('Invalid custom element name');
+        throw err;
+      }
+      if (ceRegistry.has(n)) {
+        const err = new SyntaxError('Custom element already defined');
+        throw err;
+      }
+      if (typeof ctor !== 'function') throw new TypeError('Constructor must be a function');
+      ceRegistry.set(n, ctor);
+      resolveWhenDefined(n);
+    },
+    get(name) {
+      return ceRegistry.get(String(name)) || undefined;
+    },
+    whenDefined(name) {
+      const n = String(name);
+      if (ceRegistry.has(n)) return Promise.resolve(ceRegistry.get(n));
+      if (!cePending.has(n)) {
+        let resolve;
+        const p = new Promise((r) => { resolve = r; });
+        cePending.set(n, { promise: p, resolve });
+        return p;
+      }
+      return cePending.get(n).promise;
+    },
+    upgrade(_root) {},
   };
 
   function Image(width, height) {

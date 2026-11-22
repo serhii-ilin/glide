@@ -19,9 +19,35 @@ use super::scripts::{
 };
 use super::snapshot;
 use super::tap::JsTap;
-use super::worker::{EvalReply, JsWorker};
+use super::worker::{EvalReply, JsWorker, WAKE_NONE};
 use crate::logging;
 use crate::tabs::TabId;
+
+pub type JsWaker = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Clone)]
+pub(crate) struct HostWake {
+    waker: Arc<std::sync::Mutex<Option<JsWaker>>>,
+    requested: Arc<AtomicBool>,
+}
+
+impl HostWake {
+    fn new() -> Self {
+        Self {
+            waker: Arc::new(std::sync::Mutex::new(None)),
+            requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+        if let Ok(guard) = self.waker.lock()
+            && let Some(waker) = guard.as_ref()
+        {
+            waker();
+        }
+    }
+}
 
 pub struct DomRpc {
     pub generation: u64,
@@ -46,6 +72,7 @@ pub struct JsHost {
     script_specs: Vec<ScriptSpec>,
     console_tab_id: TabId,
     console_page_epoch: u64,
+    host_wake: Arc<HostWake>,
 }
 
 impl JsHost {
@@ -68,7 +95,18 @@ impl JsHost {
             script_specs: Vec::new(),
             console_tab_id: 1,
             console_page_epoch: 1,
+            host_wake: Arc::new(HostWake::new()),
         }
+    }
+
+    pub fn set_waker(&self, waker: JsWaker) {
+        if let Ok(mut slot) = self.host_wake.waker.lock() {
+            *slot = Some(waker);
+        }
+    }
+
+    pub fn take_wake_request(&self) -> bool {
+        self.host_wake.requested.swap(false, Ordering::SeqCst)
     }
 
     pub fn set_console_route(&mut self, tab_id: TabId, page_epoch: u64) {
@@ -95,20 +133,16 @@ impl JsHost {
             return None;
         }
         let worker = self.worker.as_ref()?;
-        if worker.wake_epoch() == 0 {
+        if worker.is_stopped() {
             return None;
         }
         let deadline = worker.wake_deadline_ms();
-        if deadline == 0 {
+        if deadline == WAKE_NONE {
             return None;
         }
         let now = self.now_ms();
-        Some(Duration::from_millis(deadline.saturating_sub(now)))
-    }
-
-    /// Bumps when the worker publishes a new earliest-timer deadline (`0` means no report yet).
-    pub fn wake_epoch(&self) -> u64 {
-        self.worker.as_ref().map(JsWorker::wake_epoch).unwrap_or(0)
+        let ms = deadline.saturating_sub(now);
+        Some(Duration::from_millis(ms).max(Duration::from_millis(1)))
     }
 
     pub fn submit_console_eval(&self, source: &str) -> Result<(), String> {
@@ -222,6 +256,9 @@ impl JsHost {
         ) {
             return;
         }
+        if self.worker.is_some() {
+            self.reset_page_js_state();
+        }
         let specs = with_page_subdoc(chrome, |doc| collect_scripts_for_page(doc, Some(page_url)))
             .unwrap_or_else(|| collect_scripts_for_page(chrome, Some(page_url)));
         log_discovered_scripts(page_url, &specs);
@@ -231,7 +268,11 @@ impl JsHost {
         self.stale_page_doc_id = None;
         self.clock = Instant::now();
 
-        let worker = JsWorker::spawn(self.dom_tx.clone(), self.dom_generation);
+        let worker = JsWorker::spawn(
+            self.dom_tx.clone(),
+            self.dom_generation,
+            Arc::clone(&self.host_wake),
+        );
         let snapshot_json = serde_json::to_string(
             &with_page_subdoc(chrome, snapshot::snapshot_tree)
                 .unwrap_or_else(|| snapshot::snapshot_tree(chrome)),
@@ -616,7 +657,21 @@ fn page_subdoc_mut(chrome: &mut BaseDocument) -> Option<&mut BaseDocument> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
     use super::*;
+
+    fn worker_test_lock() -> (
+        std::sync::MutexGuard<'static, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        static WORKER: Mutex<()> = Mutex::new(());
+        (
+            WORKER.lock().expect("js host worker test lock"),
+            crate::js::console_feed::test_console_serial_lock(),
+        )
+    }
     use crate::js::bridge::DomValue;
     use blitz_dom::DocumentConfig;
 
@@ -722,6 +777,7 @@ mod tests {
 
     #[test]
     fn restart_requires_new_subdocument_after_reload() {
+        let (_worker, _console) = worker_test_lock();
         let doc_a = page_doc(true);
         let doc_b = page_doc(true);
         assert_ne!(doc_a.id(), doc_b.id());
@@ -745,7 +801,44 @@ mod tests {
     }
 
     #[test]
+    fn maybe_start_without_navigation_bumps_generation() {
+        let (_worker, _console) = worker_test_lock();
+        let mut doc_a = page_doc(true);
+        let mut doc_b = page_doc(true);
+        let url_a = "https://example.test/a";
+        let url_b = "https://example.test/b";
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc_a, url_a, handle);
+        host.pump(&mut doc_a, Instant::now());
+        let stale_generation = host.dom_generation;
+
+        host.maybe_start_page(&doc_b, url_b, handle);
+        assert!(
+            host.dom_generation > stale_generation,
+            "expected a new generation for document B"
+        );
+
+        let (reply_tx, reply_rx) = bounded(1);
+        let rpc = DomRpc {
+            generation: stale_generation,
+            request: DomRequest::Navigate {
+                url: "https://stale.example/".into(),
+                reply: 1,
+            },
+            reply: reply_tx,
+        };
+        assert!(host.dom_tx.send(rpc).is_ok());
+        assert!(!host.drain_dom_rpc(&mut doc_b));
+        let response = reply_rx.try_recv().expect("stale rpc reply");
+        assert!(matches!(response.value, DomValue::Error(_)));
+    }
+
+    #[test]
     fn stale_dom_rpc_is_rejected() {
+        let (_worker, _console) = worker_test_lock();
         let mut doc = page_doc(true);
         let url = "https://example.test/page";
         let rt = rt();
@@ -774,6 +867,7 @@ mod tests {
 
     #[test]
     fn current_dom_rpc_is_applied() {
+        let (_worker, _console) = worker_test_lock();
         let mut doc = page_doc(true);
         let url = "https://example.test/page";
         let rt = rt();
@@ -800,6 +894,7 @@ mod tests {
 
     #[test]
     fn page_without_timers_reports_no_wake() {
+        let (_worker, _console) = worker_test_lock();
         let html = concat!(
             "<!DOCTYPE html><html><body>",
             "<p id=\"t\">ok</p><script>document.getElementById('t').textContent='still';</script>",
@@ -815,12 +910,14 @@ mod tests {
             host.pump(&mut doc, Instant::now());
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(host.wake_epoch() > 0);
+        assert!(host.worker.as_ref().unwrap().wake_epoch() > 0);
+        assert_eq!(host.worker.as_ref().unwrap().wake_deadline_ms(), WAKE_NONE);
         assert!(host.next_wake_in().is_none());
     }
 
     #[test]
     fn page_with_timer_reports_next_wake() {
+        let (_worker, _console) = worker_test_lock();
         let html = concat!(
             "<!DOCTYPE html><html><body>",
             "<script>setTimeout(function(){}, 500);</script>",
@@ -836,21 +933,114 @@ mod tests {
             host.pump(&mut doc, Instant::now());
             std::thread::sleep(Duration::from_millis(2));
         }
-        let epoch = host.wake_epoch();
-        let deadline = host
-            .worker
-            .as_ref()
-            .map(JsWorker::wake_deadline_ms)
-            .unwrap_or(0);
-        assert!(epoch > 0, "wake not published (epoch={epoch})");
+        let worker = host.worker.as_ref().expect("worker");
+        assert!(worker.wake_epoch() > 0, "wake not published");
+        assert_ne!(worker.wake_deadline_ms(), WAKE_NONE);
+        let wake = host.next_wake_in().expect("pending timer");
+        assert!(wake >= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn settimeout_zero_reports_immediate_wake() {
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<script>setTimeout(function(){}, 0);</script>",
+            "</body></html>"
+        );
+        let doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(2));
+            let Some(worker) = host.worker.as_ref() else {
+                continue;
+            };
+            if worker.wake_epoch() == 0 {
+                continue;
+            }
+            assert_eq!(
+                worker.wake_deadline_ms(),
+                0,
+                "setTimeout(0) should publish a zero deadline"
+            );
+            assert!(host.next_wake_in().is_some());
+            return;
+        }
+        panic!("worker never published a wake deadline");
+    }
+
+    #[test]
+    fn worker_wake_on_dom_rpc_without_host_pump() {
+        use std::sync::atomic::Ordering;
+
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><head><title>t</title></head><body>",
+            "<p id=\"t\">idle</p></body></html>"
+        );
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        let wake_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let wake_probe = Arc::clone(&wake_count);
+        host.set_waker(Arc::new(move || {
+            wake_probe.fetch_add(1, Ordering::SeqCst);
+        }));
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        host.pump(&mut doc, Instant::now());
+        host.submit_eval("document.title = 'wake';", None)
+            .expect("eval");
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(2));
+            if wake_count.load(Ordering::SeqCst) > 0 || host.take_wake_request() {
+                return;
+            }
+        }
+        panic!("expected worker to request a host wake");
+    }
+
+    #[test]
+    fn earlier_timer_shortens_next_wake() {
+        let (_worker, _console) = worker_test_lock();
+        let html = "<!DOCTYPE html><html><body><p id=\"t\">x</p></body></html>";
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        host.pump(&mut doc, Instant::now());
+        host.submit_eval(
+            "setTimeout(function(){}, 5000); setTimeout(function(){}, 80);",
+            None,
+        )
+        .expect("eval");
+        let mut saw_soon_wake = false;
+        for _ in 0..40 {
+            host.pump(&mut doc, Instant::now());
+            if let Some(wake) = host.next_wake_in()
+                && wake < Duration::from_secs(2)
+            {
+                saw_soon_wake = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(
-            deadline > 0 || host.next_wake_in().is_some(),
-            "expected a pending timer deadline (deadline={deadline})"
+            saw_soon_wake,
+            "expected the shorter timer to publish an earlier wake"
         );
     }
 
     #[test]
     fn set_enabled_off_then_on_restarts_for_new_document() {
+        let (_worker, _console) = worker_test_lock();
         let doc_a = page_doc(true);
         let doc_b = page_doc(true);
         let url = "https://example.test/page";

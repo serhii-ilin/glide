@@ -1741,7 +1741,7 @@ fn timers_fixture_reports_wake_and_advances_with_pump() {
         }
     }
     host.pump(&mut doc, std::time::Instant::now());
-    assert!(host.wake_epoch() > 0);
+    assert!(host.next_wake_in().is_some());
     let timeout_text = doc
         .get_element_by_id("timeout")
         .and_then(|id| doc.get_node(id))

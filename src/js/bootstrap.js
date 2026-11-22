@@ -63,16 +63,17 @@
   };
 
   global.__glide_next_wake = function (now) {
-    let earliest = 0;
+    let earliest = -1;
     timers.forEach((t) => {
       if (!t) return;
-      if (earliest === 0 || t.at < earliest) earliest = t.at;
+      if (earliest < 0 || t.at < earliest) earliest = t.at;
     });
     if (rafQueue.length) {
       const rafAt = now + 16;
-      if (earliest === 0 || rafAt < earliest) earliest = rafAt;
+      if (earliest < 0 || rafAt < earliest) earliest = rafAt;
     }
-    return earliest;
+    if (earliest < 0) return -1;
+    return Math.ceil(earliest);
   };
 
   global.__glide_pump_timers = function (now) {

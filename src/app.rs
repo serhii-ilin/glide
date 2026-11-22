@@ -133,6 +133,8 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         js_tap: js_tap.clone(),
     };
     let js_host = JsHost::new(js_enabled, js_tap, Some(net_impl));
+    let js_wake_proxy = proxy.clone();
+    js_host.set_waker(Arc::new(move || js_wake_proxy.wake_up()));
 
     let chrome_config = DocumentConfig {
         base_url: Some(CHROME_BASE.to_string()),
@@ -356,19 +358,12 @@ struct Glide {
     history_log: HistoryLogState,
     ime_composing: bool,
     js_wake_armed_until: Option<std::time::Instant>,
-    js_last_seen_wake_epoch: u64,
 }
 
-const JS_IDLE_WAKE_CAP: Duration = Duration::from_millis(250);
-const JS_WAKE_REPORT_POLL: Duration = Duration::from_millis(16);
-
 /// How long the event loop may block before waking for a JS timer pump (`None` = wait indefinitely).
-pub(crate) fn pump_wait(wake: Option<Duration>, report_pending: bool) -> Option<Duration> {
-    if report_pending {
-        return Some(JS_WAKE_REPORT_POLL);
-    }
+pub(crate) fn pump_wait(wake: Option<Duration>) -> Option<Duration> {
     let wake = wake?;
-    Some(wake.min(JS_IDLE_WAKE_CAP))
+    Some(wake.max(Duration::from_millis(1)))
 }
 
 fn chrome_view_state(
@@ -610,21 +605,16 @@ impl Glide {
             devtools_drag: None,
             ime_composing: false,
             js_wake_armed_until: None,
-            js_last_seen_wake_epoch: 0,
         }
     }
 
     fn arm_js_pump(&mut self, event_loop: &dyn ActiveEventLoop) {
         if !self.js.page_js_active() {
             self.js_wake_armed_until = None;
-            self.js_last_seen_wake_epoch = 0;
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         }
-        let epoch = self.js.wake_epoch();
-        let report_pending = epoch == 0 || epoch != self.js_last_seen_wake_epoch;
-        let wait = pump_wait(self.js.next_wake_in(), report_pending);
-        match wait {
+        match pump_wait(self.js.next_wake_in()) {
             None => {
                 self.js_wake_armed_until = None;
                 event_loop.set_control_flow(ControlFlow::Wait);
@@ -635,7 +625,6 @@ impl Glide {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(until));
             }
         }
-        self.js_last_seen_wake_epoch = epoch;
     }
 
     fn save_settings(&self) -> Result<(), String> {
@@ -707,6 +696,7 @@ impl Glide {
     }
 
     fn sync(&mut self) {
+        let _ = self.js.take_wake_request();
         let Some(window_id) = self.inner.windows.keys().next().copied() else {
             return;
         };
@@ -1607,10 +1597,11 @@ impl ApplicationHandler for Glide {
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.inner.about_to_wait(event_loop);
+        let requested = self.js.take_wake_request();
         let wake_due = self
             .js_wake_armed_until
             .is_some_and(|until| Instant::now() >= until);
-        if wake_due {
+        if requested || wake_due {
             self.sync();
         }
         self.arm_js_pump(event_loop);
@@ -1767,27 +1758,20 @@ mod tests {
 
     #[test]
     fn pump_wait_no_work_returns_none() {
-        assert!(pump_wait(None, false).is_none());
+        assert!(pump_wait(None).is_none());
     }
 
     #[test]
-    fn pump_wait_immediate_timer_returns_zero() {
+    fn pump_wait_immediate_timer_returns_one_millisecond() {
         assert_eq!(
-            pump_wait(Some(Duration::from_millis(0)), false),
-            Some(Duration::ZERO)
+            pump_wait(Some(Duration::ZERO)),
+            Some(Duration::from_millis(1))
         );
     }
 
     #[test]
-    fn pump_wait_caps_at_250ms() {
-        assert_eq!(
-            pump_wait(Some(Duration::from_millis(300)), false),
-            Some(Duration::from_millis(250))
-        );
-    }
-
-    #[test]
-    fn pump_wait_report_pending_polls_16ms() {
-        assert_eq!(pump_wait(None, true), Some(JS_WAKE_REPORT_POLL));
+    fn pump_wait_does_not_cap_long_deadlines() {
+        let five_s = Duration::from_secs(5);
+        assert_eq!(pump_wait(Some(five_s)), Some(five_s));
     }
 }

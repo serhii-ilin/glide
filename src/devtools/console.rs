@@ -142,8 +142,9 @@ impl ConsoleJournal {
     /// An entry's sequence is its 0-based position in the stream of all pushes; it is
     /// stored at push time, so revoking an unhandled-rejection row does not renumber
     /// later rows. `next_cursor` is the sequence after the last returned entry, so
-    /// polling with it never repeats a row. `dropped` counts entries that left the ring
-    /// before the caller could read them.
+    /// polling with it never repeats a row. `dropped` counts rows that left the front of
+    /// the ring before the caller could read them (revoking the oldest unread row counts
+    /// as dropped; revoking a middle row does not).
     ///
     /// `clear()` empties the ring but leaves `total_pushed` alone, so the next pushed
     /// entry continues the sequence: navigation Clear reports the unread rows as

@@ -455,7 +455,7 @@ impl JsHost {
     /// slow page request never stops the UI thread (or the winit event loop).
     fn handle_dom_rpc(&self, chrome: &mut BaseDocument, rpc: DomRpc) -> bool {
         if rpc.generation != self.dom_generation {
-            let reply_id = dom_request_reply(&rpc.request);
+            let reply_id = super::apply::reply_id(&rpc.request);
             let _ = rpc.reply.send(DomResponse::err(reply_id, "page detached"));
             return false;
         }
@@ -610,25 +610,6 @@ fn log_discovered_scripts(page_url: &str, specs: &[ScriptSpec]) {
     );
 }
 
-fn dom_request_reply(request: &DomRequest) -> u64 {
-    match request {
-        DomRequest::Fetch(f) => f.reply,
-        DomRequest::SnapshotTree { reply, .. }
-        | DomRequest::BatchMutate { reply, .. }
-        | DomRequest::BoundingRect { reply, .. }
-        | DomRequest::ComputedStyle { reply, .. }
-        | DomRequest::LayoutField { reply, .. }
-        | DomRequest::PageUrl { reply }
-        | DomRequest::Navigate { reply, .. }
-        | DomRequest::SubmitForm { reply, .. }
-        | DomRequest::ListenTarget { reply, .. }
-        | DomRequest::RandomBytes { reply, .. }
-        | DomRequest::NodeCount { reply, .. } => *reply,
-        #[cfg(debug_assertions)]
-        DomRequest::TestResize { reply, .. } => *reply,
-    }
-}
-
 fn page_document_id(chrome: &BaseDocument) -> usize {
     with_page_subdoc(chrome, |doc| doc.id()).unwrap_or_else(|| chrome.id())
 }
@@ -668,9 +649,21 @@ mod tests {
     ) {
         static WORKER: Mutex<()> = Mutex::new(());
         (
-            WORKER.lock().expect("js host worker test lock"),
+            WORKER
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
             crate::js::console_feed::test_console_serial_lock(),
         )
+    }
+
+    fn poll_until(polls: usize, sleep: Duration, mut done: impl FnMut() -> bool) -> bool {
+        for _ in 0..polls {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(sleep);
+        }
+        false
     }
     use crate::js::bridge::DomValue;
     use blitz_dom::DocumentConfig;
@@ -803,7 +796,7 @@ mod tests {
     #[test]
     fn maybe_start_without_navigation_bumps_generation() {
         let (_worker, _console) = worker_test_lock();
-        let mut doc_a = page_doc(true);
+        let doc_a = page_doc(true);
         let mut doc_b = page_doc(true);
         let url_a = "https://example.test/a";
         let url_b = "https://example.test/b";
@@ -812,7 +805,10 @@ mod tests {
         let tap = JsTap::new_enabled();
         let mut host = JsHost::new(true, tap, None);
         host.maybe_start_page(&doc_a, url_a, handle);
-        host.pump(&mut doc_a, Instant::now());
+        assert!(
+            poll_until(100, Duration::from_millis(2), || host.worker.is_some()),
+            "worker should start for document A"
+        );
         let stale_generation = host.dom_generation;
 
         host.maybe_start_page(&doc_b, url_b, handle);
@@ -906,12 +902,20 @@ mod tests {
         let tap = JsTap::new_enabled();
         let mut host = JsHost::new(true, tap, None);
         host.maybe_start_page(&doc, "https://example.test/", handle);
+        let mut settled = false;
         for _ in 0..100 {
             host.pump(&mut doc, Instant::now());
+            if host
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.wake_epoch() > 0 && w.wake_deadline_ms() == WAKE_NONE)
+            {
+                settled = true;
+                break;
+            }
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(host.worker.as_ref().unwrap().wake_epoch() > 0);
-        assert_eq!(host.worker.as_ref().unwrap().wake_deadline_ms(), WAKE_NONE);
+        assert!(settled, "settled page should report no pending wake");
         assert!(host.next_wake_in().is_none());
     }
 
@@ -929,13 +933,21 @@ mod tests {
         let tap = JsTap::new_enabled();
         let mut host = JsHost::new(true, tap, None);
         host.maybe_start_page(&doc, "https://example.test/", handle);
+        let mut saw_timer = false;
         for _ in 0..100 {
             host.pump(&mut doc, Instant::now());
+            if host
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.wake_deadline_ms() != WAKE_NONE)
+                && host.next_wake_in().is_some()
+            {
+                saw_timer = true;
+                break;
+            }
             std::thread::sleep(Duration::from_millis(2));
         }
-        let worker = host.worker.as_ref().expect("worker");
-        assert!(worker.wake_epoch() > 0, "wake not published");
-        assert_ne!(worker.wake_deadline_ms(), WAKE_NONE);
+        assert!(saw_timer, "500ms timer should publish a pending wake");
         let wake = host.next_wake_in().expect("pending timer");
         assert!(wake >= Duration::from_millis(100));
     }
@@ -954,23 +966,15 @@ mod tests {
         let tap = JsTap::new_enabled();
         let mut host = JsHost::new(true, tap, None);
         host.maybe_start_page(&doc, "https://example.test/", handle);
-        for _ in 0..100 {
-            std::thread::sleep(Duration::from_millis(2));
-            let Some(worker) = host.worker.as_ref() else {
-                continue;
-            };
-            if worker.wake_epoch() == 0 {
-                continue;
-            }
-            assert_eq!(
-                worker.wake_deadline_ms(),
-                0,
-                "setTimeout(0) should publish a zero deadline"
-            );
-            assert!(host.next_wake_in().is_some());
-            return;
-        }
-        panic!("worker never published a wake deadline");
+        assert!(
+            poll_until(100, Duration::from_millis(2), || {
+                host.worker
+                    .as_ref()
+                    .is_some_and(|w| w.wake_deadline_ms() == 0)
+            }),
+            "setTimeout(0) should publish a zero-ms wake deadline"
+        );
+        assert!(host.next_wake_in().is_some());
     }
 
     #[test]
@@ -982,7 +986,7 @@ mod tests {
             "<!DOCTYPE html><html><head><title>t</title></head><body>",
             "<p id=\"t\">idle</p></body></html>"
         );
-        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let doc = parse::document_from_html(html, DocumentConfig::default(), true);
         let rt = rt();
         let handle = rt.handle();
         let tap = JsTap::new_enabled();
@@ -993,16 +997,18 @@ mod tests {
             wake_probe.fetch_add(1, Ordering::SeqCst);
         }));
         host.maybe_start_page(&doc, "https://example.test/", handle);
-        host.pump(&mut doc, Instant::now());
+        assert!(
+            poll_until(100, Duration::from_millis(2), || host.worker.is_some()),
+            "worker should start"
+        );
         host.submit_eval("document.title = 'wake';", None)
             .expect("eval");
-        for _ in 0..50 {
-            std::thread::sleep(Duration::from_millis(2));
-            if wake_count.load(Ordering::SeqCst) > 0 || host.take_wake_request() {
-                return;
-            }
-        }
-        panic!("expected worker to request a host wake");
+        assert!(
+            poll_until(50, Duration::from_millis(2), || {
+                wake_count.load(Ordering::SeqCst) > 0 || host.take_wake_request()
+            }),
+            "expected worker to request a host wake"
+        );
     }
 
     #[test]
@@ -1015,25 +1021,21 @@ mod tests {
         let tap = JsTap::new_enabled();
         let mut host = JsHost::new(true, tap, None);
         host.maybe_start_page(&doc, "https://example.test/", handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || host.worker.is_some()),
+            "worker should start"
+        );
         host.pump(&mut doc, Instant::now());
         host.submit_eval(
             "setTimeout(function(){}, 5000); setTimeout(function(){}, 80);",
             None,
         )
         .expect("eval");
-        let mut saw_soon_wake = false;
-        for _ in 0..40 {
-            host.pump(&mut doc, Instant::now());
-            if let Some(wake) = host.next_wake_in()
-                && wake < Duration::from_secs(2)
-            {
-                saw_soon_wake = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
         assert!(
-            saw_soon_wake,
+            poll_until(100, Duration::from_millis(2), || {
+                host.next_wake_in()
+                    .is_some_and(|w| w < Duration::from_secs(2))
+            }),
             "expected the shorter timer to publish an earlier wake"
         );
     }

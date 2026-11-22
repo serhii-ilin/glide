@@ -265,6 +265,15 @@ fn navigator_languages_work() {
 }
 
 #[test]
+fn observers_and_idle_work() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("observers.html"), true).expect("load");
+    assert!(text.contains("OBSERVERS-OK"), "{text}");
+    assert!(!text.contains("OBSERVERS-FAIL"), "{text}");
+}
+
+#[test]
 fn common_web_api_shims_work() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

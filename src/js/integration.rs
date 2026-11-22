@@ -912,6 +912,176 @@ fn navigator_host_hints_work() {
 }
 
 #[test]
+fn mutation_observer_reports_child_and_attribute_changes() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var log = [];
+      var mo = new MutationObserver(function (recs) {
+        log.push('cb:' + recs.length);
+      });
+      mo.observe(document.body, { childList: true, attributes: true, subtree: true });
+      var el = document.createElement('span');
+      el.id = 'added';
+      document.body.appendChild(el);
+      el.setAttribute('data-a', '1');
+      var pending = mo.takeRecords();
+      var child = pending.filter(function (r) { return r.type === 'childList'; })[0];
+      var attr = pending.filter(function (r) { return r.type === 'attributes'; })[0];
+      log.push('take:' + pending.length);
+      log.push('child:' + (child && child.addedNodes.length === 1 ? 'ok' : 'bad'));
+      log.push('attr:' + (attr && attr.attributeName === 'data-a' ? 'ok' : 'bad'));
+      setTimeout(function () {
+        document.body.appendChild(document.createElement('i'));
+      }, 5);
+      setTimeout(function () {
+        mo.disconnect();
+        document.body.appendChild(document.createElement('b'));
+        var hadCb = log.some(function (x) { return x.indexOf('cb:') === 0; });
+        log.push('hadCb:' + hadCb);
+        document.getElementById('t').textContent = log.join('|');
+      }, 80);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    let text = result.final_text;
+    assert!(text.contains("take:2"), "{text}");
+    assert!(text.contains("child:ok"), "{text}");
+    assert!(text.contains("attr:ok"), "{text}");
+    assert!(text.contains("hadCb:true"), "{text}");
+}
+
+#[test]
+fn mutation_observer_honors_attribute_filter_and_character_data() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var pending = [];
+      var mo = new MutationObserver(function () {});
+      mo.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['data-x'],
+        subtree: true,
+        characterData: true,
+      });
+      var el = document.createElement('div');
+      document.body.appendChild(el);
+      el.setAttribute('data-x', '1');
+      el.setAttribute('data-y', '2');
+      var text = document.createTextNode('hi');
+      el.appendChild(text);
+      text.data = 'bye';
+      pending = mo.takeRecords();
+      var names = pending.filter(function (r) { return r.type === 'attributes'; })
+        .map(function (r) { return r.attributeName; });
+      var charOk = pending.some(function (r) { return r.type === 'characterData'; });
+      var filterOk = names.indexOf('data-x') >= 0 && names.indexOf('data-y') < 0;
+      setTimeout(function () {
+        document.getElementById('t').textContent =
+          [filterOk, charOk, pending.length >= 2].join('|');
+      }, 20);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "true|true|true");
+}
+
+#[test]
+fn intersection_observer_fires_for_visible_and_hidden_elements() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div id="vis" style="width:40px;height:10px"></div>
+      <div id="hid" style="display:none;width:40px;height:10px"></div>
+      <p id="t">pending</p>
+      <script>
+        var out = { vis: null, hid: null, n: 0 };
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            out.n += 1;
+            if (e.target.id === 'vis') out.vis = e.isIntersecting;
+            if (e.target.id === 'hid') out.hid = e.isIntersecting;
+          });
+        });
+        io.observe(document.getElementById('vis'));
+        io.observe(document.getElementById('hid'));
+        setTimeout(function () {
+          document.getElementById('t').textContent =
+            [out.n >= 2, out.vis === true, out.hid === false].join('|');
+        }, 80);
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    assert_eq!(result.final_text, "true|true|true");
+}
+
+#[test]
+fn resize_observer_reports_initial_size_once() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div id="box" style="width:40px;height:10px"></div>
+      <p id="t">pending</p>
+      <script>
+        var sizes = [];
+        var ro = new ResizeObserver(function (entries) {
+          var cr = entries[0].contentRect;
+          sizes.push(Math.round(cr.width) + 'x' + Math.round(cr.height));
+        });
+        ro.observe(document.getElementById('box'));
+        ro.observe(document.getElementById('box'));
+        setTimeout(function () {
+          ro.observe(document.getElementById('box'));
+        }, 20);
+        setTimeout(function () {
+          document.getElementById('t').textContent = sizes.join(',');
+        }, 120);
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    assert!(
+        result.final_text.starts_with("40x10"),
+        "{}",
+        result.final_text
+    );
+    assert!(
+        result.final_text.matches(',').count() <= 1,
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn idle_callback_runs_with_a_deadline() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      requestIdleCallback(function (deadline) {
+        var ok = deadline.timeRemaining() > 0 && typeof deadline.didTimeout === 'boolean';
+        document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+      });
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn css_supports_escape_and_custom_elements_registry() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var parts = [];
+      parts.push(CSS.supports('display', 'flex') ? 'flex' : 'no-flex');
+      parts.push(CSS.supports('not-a-real-prop', 'foo') ? 'bad-unknown' : 'unknown-false');
+      parts.push(CSS.escape('1a') === '\\31 a' ? 'escape-ok' : 'escape-bad');
+      customElements.define('x-ce-test', function () {});
+      var dup = false;
+      try {
+        customElements.define('x-ce-test', function () {});
+      } catch (e) {
+        dup = e.name === 'SyntaxError';
+      }
+      var got = !!customElements.get('x-ce-test');
+      var p = customElements.whenDefined('x-ce-when');
+      parts.push([got, dup, p instanceof Promise].join(','));
+      document.getElementById('t').textContent = parts.join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(
+        result.final_text,
+        "flex|unknown-false|escape-ok|true,true,true"
+    );
+}
+
+#[test]
 fn failed_external_script_does_not_panic() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

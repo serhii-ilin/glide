@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Observers idle CSS custom elements</title>
+</head>
+<body>
+  <div id="visible" style="width:50px;height:20px"></div>
+  <div id="hidden" style="display:none;width:50px;height:20px"></div>
+  <p id="out">pending</p>
+  <script>
+    (function () {
+      var failures = [];
+      function check(name, fn) {
+        try {
+          if (!fn()) failures.push(name);
+        } catch (err) {
+          failures.push(name + ': ' + err);
+        }
+      }
+
+      check('mutation-observer', function () {
+        var mo = new MutationObserver(function () {});
+        mo.observe(document.body, { childList: true });
+        document.body.appendChild(document.createElement('em'));
+        return mo.takeRecords().length >= 1;
+      });
+
+      check('css-supports', function () {
+        return CSS.supports('display', 'flex') && !CSS.supports('not-a-real-prop', 'foo');
+      });
+
+      check('css-escape', function () {
+        return CSS.escape('1a') === '\\31 a';
+      });
+
+      check('custom-elements', function () {
+        customElements.define('x-obs-test', function X() {});
+        var dup = false;
+        try {
+          customElements.define('x-obs-test', function X() {});
+        } catch (e) {
+          dup = e.name === 'SyntaxError';
+        }
+        var p = customElements.whenDefined('x-obs-other');
+        return customElements.get('x-obs-test') && dup && p instanceof Promise;
+      });
+
+      var ioState = { n: 0, vis: null, hid: null };
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          ioState.n += 1;
+          if (e.target.id === 'visible') ioState.vis = e.isIntersecting;
+          if (e.target.id === 'hidden') ioState.hid = e.isIntersecting;
+        });
+      });
+      io.observe(document.getElementById('visible'));
+      io.observe(document.getElementById('hidden'));
+
+      var roSized = false;
+      var ro = new ResizeObserver(function (entries) {
+        var cr = entries[0].contentRect;
+        roSized = cr.width > 0 && cr.height > 0;
+      });
+      ro.observe(document.getElementById('visible'));
+
+      setTimeout(function () {
+        if (ioState.n < 2 || ioState.vis !== true || ioState.hid !== false) {
+          failures.push('intersection-observer');
+        }
+        if (!roSized) failures.push('resize-observer');
+        requestIdleCallback(function (d) {
+          if (d.timeRemaining() <= 0) failures.push('idle-budget');
+          document.getElementById('out').textContent = failures.length
+            ? 'OBSERVERS-FAIL:' + failures.join(',')
+            : 'OBSERVERS-OK';
+        });
+      }, 80);
+    })();
+  </script>
+</body>
+</html>

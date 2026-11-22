@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use blitz_net::{Provider, ProviderError};
 use blitz_traits::net::{
@@ -12,6 +12,9 @@ use blitz_traits::net::{
 };
 use tokio::sync::Notify;
 use url::Url;
+
+use crate::devtools::network::NetworkInitiator;
+use crate::network_feed::{self, NetworkCompleted, NetworkRoute};
 
 /// Tracks in-flight page and subresource loads for chrome UI and stop.
 #[derive(Default)]
@@ -152,6 +155,17 @@ pub struct GlideNet {
     /// Live scripting mode, shared with the HTML provider. It decides whether a
     /// `<noscript>` meta refresh may redirect the first navigation.
     scripting_enabled: Arc<AtomicBool>,
+    network_route: Arc<NetworkRoute>,
+}
+
+fn record_network_complete(route: &NetworkRoute, started: Instant, completed: NetworkCompleted) {
+    network_feed::publish_completed_from_net(
+        route,
+        NetworkCompleted {
+            duration_ms: started.elapsed().as_millis() as u64,
+            ..completed
+        },
+    );
 }
 
 impl GlideNet {
@@ -169,6 +183,7 @@ impl GlideNet {
             waker,
             bookmarks,
             Arc::new(AtomicBool::new(true)),
+            Arc::new(NetworkRoute::default()),
         )
     }
 
@@ -179,6 +194,7 @@ impl GlideNet {
         waker: Arc<dyn NetWaker>,
         bookmarks: Arc<dyn Fn() -> String + Send + Sync>,
         scripting_enabled: Arc<AtomicBool>,
+        network_route: Arc<NetworkRoute>,
     ) -> Arc<Self> {
         Arc::new(Self {
             inner,
@@ -186,7 +202,12 @@ impl GlideNet {
             waker,
             bookmarks,
             scripting_enabled,
+            network_route,
         })
+    }
+
+    pub fn network_route(&self) -> Arc<NetworkRoute> {
+        self.network_route.clone()
     }
 
     fn deliver_internal_page(
@@ -254,6 +275,9 @@ impl GlideNet {
         let glide_signal = token.glide_signal;
         let cancel_notify = token.notify;
         let scripting_enabled = self.scripting_enabled.load(Ordering::Relaxed);
+        let network_route = self.network_route.clone();
+        let method = request.method.to_string();
+        let started = Instant::now();
         #[cfg(test)]
         let test_delay_ms = state.test_page_delay_ms.load(Ordering::Relaxed);
         #[cfg(not(test))]
@@ -281,11 +305,41 @@ impl GlideNet {
             match result {
                 Ok((url, bytes)) => {
                     state.mark_page_load_succeeded(&original_url);
+                    record_network_complete(
+                        &network_route,
+                        started,
+                        NetworkCompleted {
+                            method,
+                            url: url.clone(),
+                            initiator: NetworkInitiator::Document,
+                            status: Some(200),
+                            error: None,
+                            size_bytes: Some(bytes.len() as u64),
+                            response_headers: Vec::new(),
+                            duration_ms: 0,
+                            started_ms: 0,
+                        },
+                    );
                     handler.bytes(url, bytes)
                 }
                 Err(LoadFail::Abort) => drop(handler),
                 Err(LoadFail::Failed(reason)) => {
                     state.mark_page_load_failed(&original_url);
+                    record_network_complete(
+                        &network_route,
+                        started,
+                        NetworkCompleted {
+                            method,
+                            url: original_url.clone(),
+                            initiator: NetworkInitiator::Document,
+                            status: None,
+                            error: Some(reason.clone()),
+                            size_bytes: None,
+                            response_headers: Vec::new(),
+                            duration_ms: 0,
+                            started_ms: 0,
+                        },
+                    );
                     let html = error_page_html(&original_url, &reason);
                     handler.bytes(original_url, Bytes::from(html));
                 }
@@ -302,18 +356,34 @@ impl GlideNet {
         self.state.subresource_started();
         let state = self.state.clone();
         let waker = self.waker.clone();
+        let route = self.network_route.clone();
+        let method = request.method.to_string();
+        let url = request.url.to_string();
+        let started = Instant::now();
         let wrapped = Box::new(SubresourceHandler {
             state,
             inner: Some(handler),
             waker,
             doc_id,
+            route,
+            method,
+            url,
+            started,
+            initiator: NetworkInitiator::Subresource,
         });
         tokio::spawn(async move {
             match crate::http::fetch_followed(request).await {
                 Ok(resp) if (200..300).contains(&resp.status) => {
                     wrapped.bytes(resp.url, resp.body);
                 }
-                _ => drop(wrapped),
+                Ok(resp) => {
+                    wrapped.record_failure(Some(resp.status), None);
+                    drop(wrapped);
+                }
+                Err(err) => {
+                    wrapped.record_failure(None, Some(err));
+                    drop(wrapped);
+                }
             }
         });
     }
@@ -354,11 +424,20 @@ impl NetProvider for GlideNet {
         self.state.subresource_started();
         let state = self.state.clone();
         let waker = self.waker.clone();
+        let route = self.network_route.clone();
+        let method = request.method.to_string();
+        let url = request.url.to_string();
+        let started = Instant::now();
         let wrapped = Box::new(SubresourceHandler {
             state,
             inner: Some(handler),
             waker,
             doc_id,
+            route,
+            method,
+            url,
+            started,
+            initiator: NetworkInitiator::Subresource,
         });
         self.inner.fetch(doc_id, request, wrapped);
     }
@@ -369,6 +448,55 @@ struct SubresourceHandler {
     inner: Option<Box<dyn NetHandler>>,
     waker: Arc<dyn NetWaker>,
     doc_id: usize,
+    route: Arc<NetworkRoute>,
+    method: String,
+    url: String,
+    started: Instant,
+    initiator: NetworkInitiator,
+}
+
+impl SubresourceHandler {
+    fn record_success(
+        &self,
+        url: String,
+        size: usize,
+        status: u16,
+        headers: Vec<(String, String)>,
+    ) {
+        record_network_complete(
+            &self.route,
+            self.started,
+            NetworkCompleted {
+                method: self.method.clone(),
+                url,
+                initiator: self.initiator,
+                status: Some(status),
+                error: None,
+                size_bytes: Some(size as u64),
+                response_headers: headers,
+                duration_ms: 0,
+                started_ms: 0,
+            },
+        );
+    }
+
+    fn record_failure(&self, status: Option<u16>, error: Option<String>) {
+        record_network_complete(
+            &self.route,
+            self.started,
+            NetworkCompleted {
+                method: self.method.clone(),
+                url: self.url.clone(),
+                initiator: self.initiator,
+                status,
+                error,
+                size_bytes: None,
+                response_headers: Vec::new(),
+                duration_ms: 0,
+                started_ms: 0,
+            },
+        );
+    }
 }
 
 impl SubresourceHandler {
@@ -385,6 +513,7 @@ impl NetHandler for SubresourceHandler {
         if self.inner.is_some() {
             self.finish_counting();
         }
+        self.record_success(resolved_url.clone(), bytes.len(), 200, Vec::new());
         if let Some(inner) = self.inner.take() {
             inner.bytes(resolved_url, bytes);
         }
@@ -696,6 +825,61 @@ mod tests {
         let bytes = record.lock().expect("record").clone().expect("bytes").1;
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("input"));
+    }
+
+    #[test]
+    fn network_log_records_subresource() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/network-subresources.css");
+        assert!(path.is_file(), "network-subresources.css fixture");
+
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(1);
+        let route = Arc::new(NetworkRoute::default());
+        route.set(9, 2);
+        let net = GlideNet::with_scripting(
+            inner,
+            state.clone(),
+            waker,
+            test_bookmarks_supplier(),
+            Arc::new(AtomicBool::new(true)),
+            route,
+        );
+
+        let _ = crate::network_feed::drain_pending();
+
+        let record = Arc::new(StdMutex::new(None));
+        let handler = Box::new(RecordHandler {
+            done: record.clone(),
+        });
+        net.fetch(
+            99,
+            Request::get(file_url(path.to_str().expect("utf8"))),
+            handler,
+        );
+
+        for _ in 0..200 {
+            if record.lock().expect("record").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(record.lock().expect("record").is_some());
+
+        let events = crate::network_feed::drain_pending();
+        assert_eq!(events.len(), 1);
+        let ev = &events[0];
+        assert_eq!(ev.tab_id, 9);
+        assert_eq!(ev.network_epoch, 2);
+        assert_eq!(ev.initiator, NetworkInitiator::Subresource);
+        assert_eq!(ev.status, Some(200));
+        assert!(ev.url.contains("network-subresources.css"));
+        assert!(ev.size_bytes.unwrap_or(0) > 0);
     }
 
     #[test]

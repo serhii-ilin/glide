@@ -899,9 +899,9 @@
 
   function hostFetch(url, optionsJson) {
     if (optionsJson == null) {
-      return __glide_dom_sync('fetch', 0, String(url));
+      return __glide_dom_sync('xhr', 0, String(url));
     }
-    return __glide_dom_sync('fetch', 0, String(url), optionsJson);
+    return __glide_dom_sync('xhr', 0, String(url), optionsJson);
   }
 
   function normalizeHostPayload(raw, fallbackUrl) {

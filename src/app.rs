@@ -16,8 +16,10 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::devtools::console::apply_console_wire;
+use crate::devtools::network::apply_network_wire;
 use crate::devtools::{DevToolsDock, DevToolsSession, DevToolsTab};
 use crate::js::console_feed;
+use crate::network_feed::{self, NetworkRoute};
 
 use std::sync::atomic::Ordering;
 
@@ -114,12 +116,14 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
     let bookmarks = BookmarksState::shared(bookmark_list.clone());
     // Shared by the network layer (noscript meta refresh) and the HTML provider.
     let scripting_enabled = Arc::new(AtomicBool::new(js_enabled));
+    let network_route = Arc::new(NetworkRoute::default());
     let net = GlideNet::with_scripting(
         net_impl.clone(),
         load_state.clone(),
         waker,
         bookmarks,
         scripting_enabled.clone(),
+        network_route.clone(),
     );
     let bus = NavBus::default();
 
@@ -184,6 +188,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         bookmark_list: bookmark_list.clone(),
         history_log,
         devtools,
+        network_route,
     });
     app.inner.add_window(window);
     event_loop
@@ -246,6 +251,7 @@ struct GlideBootstrap {
     bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
     history_log: HistoryLogState,
     devtools: DevToolsSession,
+    network_route: Arc<NetworkRoute>,
 }
 
 struct DevToolsSplitDrag {
@@ -462,6 +468,7 @@ struct Glide {
     bookmarks: BookmarksState,
     bookmark_list: Arc<std::sync::RwLock<Vec<crate::profile::Bookmark>>>,
     history_log: HistoryLogState,
+    network_route: Arc<NetworkRoute>,
     ime_composing: bool,
 }
 
@@ -572,6 +579,7 @@ fn capture_active_tab(
             js,
             &mut reset_tab_console_for_navigation,
         );
+        crate::devtools::network::observe_navigation_network_effect(effect, tab);
         effect
     };
     bookmarks.sync_star(doc, &actual);
@@ -591,6 +599,8 @@ fn reset_tab_console_for_navigation(tab: &mut Tab, js: &mut JsHost) {
     tab.console_epoch = tab.console_epoch.saturating_add(1);
     console_feed::discard_pending_for_tab(tab.id);
     js.set_console_route(tab.id, tab.console_epoch);
+    crate::devtools::network::bump_tab_network_epoch_for_navigation(tab);
+    js.set_network_route(tab.id, tab.network_epoch);
     crate::devtools::elements::reset_tab_elements_for_navigation(tab);
 }
 
@@ -631,6 +641,17 @@ fn apply_elements_tree_shortcut(
         }
         _ => {}
     }
+}
+
+fn sync_active_tab_network(
+    devtools: &mut DevToolsSession,
+    tabs: &mut TabManager,
+    doc: &mut BaseDocument,
+) -> bool {
+    let Some(tab) = tabs.active_mut() else {
+        return false;
+    };
+    devtools.sync_network_pane(doc, tab)
 }
 
 fn sync_active_tab_elements(
@@ -686,6 +707,7 @@ fn apply_active_tab_to_doc(
 
 fn bump_tab_console_epoch_for_switch(tab: &mut Tab, js: &mut JsHost) {
     crate::devtools::console::bump_tab_console_epoch_for_switch(tab, js);
+    js.set_network_route(tab.id, tab.network_epoch);
 }
 
 impl Glide {
@@ -706,6 +728,7 @@ impl Glide {
             history_log: init.history_log,
             devtools: init.devtools,
             devtools_drag: None,
+            network_route: init.network_route,
             ime_composing: false,
         }
     }
@@ -998,6 +1021,20 @@ impl Glide {
                         self.devtools.repl_ui.reset_after_submit();
                         sync_active_tab_console(&mut self.devtools, &self.tabs, &mut doc);
                     }
+                    NavCommand::DevToolsNetworkClear => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.network.clear();
+                            tab.network_panel.selected = None;
+                            network_feed::discard_pending_for_tab(tab.id);
+                        }
+                        sync_active_tab_network(&mut self.devtools, &mut self.tabs, &mut doc);
+                    }
+                    NavCommand::DevToolsNetworkSelect(id) => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.network_panel.selected = Some(*id);
+                        }
+                        sync_active_tab_network(&mut self.devtools, &mut self.tabs, &mut doc);
+                    }
                     NavCommand::ZoomIn | NavCommand::ZoomOut | NavCommand::ZoomReset => {
                         if let Some(tab) = self.tabs.active_mut() {
                             match &command {
@@ -1232,6 +1269,8 @@ impl Glide {
         };
         if let Some(tab) = self.tabs.active() {
             self.js.set_console_route(tab.id, tab.console_epoch);
+            self.js.set_network_route(tab.id, tab.network_epoch);
+            self.network_route.set(tab.id, tab.network_epoch);
         }
         if let Some(url) = &page_url_now {
             let handle = tokio::runtime::Handle::current();
@@ -1255,9 +1294,24 @@ impl Glide {
             js_redraw = js_redraw
                 || (self.devtools.state.open && self.devtools.state.tab == DevToolsTab::Console);
         }
+        let network_wire = network_feed::drain_pending();
+        let had_network = apply_network_wire(&mut self.tabs, &network_wire);
+        if had_network {
+            let mut chrome = view.doc.inner_mut();
+            if sync_active_tab_network(&mut self.devtools, &mut self.tabs, &mut chrome) {
+                js_redraw = true;
+            }
+            js_redraw = js_redraw
+                || (self.devtools.state.open && self.devtools.state.tab == DevToolsTab::Network);
+        }
         if self.devtools.state.open {
             let mut chrome = view.doc.inner_mut();
             if sync_active_tab_elements(&mut self.devtools, &mut self.tabs, &mut chrome) {
+                js_redraw = true;
+            }
+            if self.devtools.state.tab == DevToolsTab::Network
+                && sync_active_tab_network(&mut self.devtools, &mut self.tabs, &mut chrome)
+            {
                 js_redraw = true;
             }
         }

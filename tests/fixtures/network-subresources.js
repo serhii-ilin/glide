@@ -1,0 +1,1 @@
+document.getElementById("loaded").textContent = "script-ok";

@@ -187,15 +187,19 @@ pub fn start_fetch(
         headers,
         body,
         reply,
+        initiator,
     } = fetch;
+    let started = std::time::Instant::now();
     let send_now = |value: DomResponse| {
         let _ = reply_tx.send(value);
     };
     if is_data_url(&url) {
-        send_now(match data_url_response_json(&url) {
+        let response = match data_url_response_json(&url) {
             Ok(value) => DomResponse::ok(reply, DomValue::Json(value)),
             Err(reason) => DomResponse::err(reply, reason),
-        });
+        };
+        record_js_network(&method, &url, initiator, &response, started, None, None);
+        send_now(response);
         return;
     }
     let resolved = Url::parse(&url)
@@ -216,9 +220,67 @@ pub fn start_fetch(
             return;
         }
     };
+    let method_for_log = method.clone();
+    let url_for_log = url.clone();
     handle.spawn(async move {
         let response = fetch_response(net, request, reply).await;
+        record_js_network(
+            &method_for_log,
+            &url_for_log,
+            initiator,
+            &response,
+            started,
+            None,
+            None,
+        );
         let _ = reply_tx.send(response);
+    });
+}
+
+fn record_js_network(
+    method: &str,
+    url: &str,
+    initiator: crate::devtools::network::NetworkInitiator,
+    response: &DomResponse,
+    started: std::time::Instant,
+    status: Option<u16>,
+    headers: Option<Vec<(String, String)>>,
+) {
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let (status, error, size_bytes, response_headers) = match &response.value {
+        DomValue::Json(v) => {
+            let status = status
+                .or_else(|| v.get("status").and_then(|s| s.as_u64()).map(|s| s as u16))
+                .or(status);
+            let body = v
+                .get("body")
+                .and_then(|b| b.as_str())
+                .map(|s| s.len() as u64);
+            let hdrs = headers.unwrap_or_else(|| {
+                v.get("headers")
+                    .and_then(|h| h.as_object())
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            (status, None, body, hdrs)
+        }
+        DomValue::Error(msg) => (None, Some(msg.clone()), None, Vec::new()),
+        _ => (status, None, None, headers.unwrap_or_default()),
+    };
+    crate::network_feed::publish_completed_from_js(crate::network_feed::NetworkCompleted {
+        method: method.to_string(),
+        url: url.to_string(),
+        initiator,
+        status,
+        error,
+        duration_ms,
+        size_bytes,
+        response_headers,
+        started_ms: 0,
     });
 }
 
@@ -753,6 +815,7 @@ mod tests {
                 headers: Vec::new(),
                 body: String::new(),
                 reply: 1,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
             reply_tx,
         );
@@ -783,6 +846,30 @@ mod tests {
     }
 
     #[test]
+    fn start_fetch_records_network_entry() {
+        crate::network_feed::set_worker_route(7, 1);
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        start_fetch(
+            None,
+            "https://example.test/",
+            FetchRequest {
+                url: "data:,hello".into(),
+                method: "GET".into(),
+                headers: Vec::new(),
+                body: String::new(),
+                reply: 1,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
+            },
+            reply_tx,
+        );
+        let _ = reply_rx.recv().expect("reply");
+        let batch = crate::network_feed::drain_pending();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].tab_id, 7);
+        assert_eq!(batch[0].url, "data:,hello");
+    }
+
+    #[test]
     fn start_fetch_answers_data_urls_inline() {
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
         start_fetch(
@@ -794,6 +881,7 @@ mod tests {
                 headers: Vec::new(),
                 body: String::new(),
                 reply: 2,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
             reply_tx,
         );

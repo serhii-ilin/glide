@@ -74,6 +74,13 @@ impl JsHost {
         }
     }
 
+    pub fn set_network_route(&mut self, tab_id: TabId, network_epoch: u64) {
+        crate::network_feed::set_worker_route(tab_id, network_epoch);
+        if let Some(worker) = &self.worker {
+            worker.set_network_route(tab_id, network_epoch);
+        }
+    }
+
     /// Console messages and exceptions from the worker, not yet merged into a tab journal.
     pub fn drain_console_wire(&mut self) -> Vec<ConsoleWireEvent> {
         console_feed::drain_pending()

@@ -24,6 +24,7 @@ pub mod logging;
 pub mod mcp;
 pub mod nav;
 pub mod net;
+pub mod network_feed;
 pub mod parse;
 pub mod profile;
 pub mod remote_socket;

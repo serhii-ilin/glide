@@ -272,12 +272,64 @@
     return String(name).trim().toLowerCase();
   }
 
+  const FORBIDDEN_REQUEST_HEADERS = new Set([
+    'cookie', 'host', 'content-length', 'connection', 'user-agent', 'referer', 'origin',
+  ]);
+
+  function isValidHeaderName(name) {
+    const s = String(name).trim();
+    if (!s) return false;
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      const ok = (c >= 0x30 && c <= 0x39)
+        || (c >= 0x41 && c <= 0x5a)
+        || (c >= 0x61 && c <= 0x7a)
+        || c === 0x21 || c === 0x23 || c === 0x24 || c === 0x26 || c === 0x27
+        || c === 0x2a || c === 0x2b || c === 0x2d || c === 0x2e
+        || c === 0x5e || c === 0x5f || c === 0x60 || c === 0x7c || c === 0x7e;
+      if (!ok) return false;
+    }
+    return true;
+  }
+
+  function isValidHeaderValue(value) {
+    const s = String(value);
+    return !/[\r\n]/.test(s);
+  }
+
+  function validateHeaderNameValue(name, value) {
+    if (!isValidHeaderName(name) || !isValidHeaderValue(value)) {
+      const err = new TypeError('invalid header');
+      throw err;
+    }
+  }
+
+  function bytesFromBase64(b64) {
+    const bin = atob(String(b64));
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function base64FromBytes(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function cloneHeaders(h) {
+    const copy = new Headers();
+    if (h) h.forEach((v, k) => copy.append(k, v));
+    return copy;
+  }
+
   class Headers {
     constructor(init) {
       this._map = new Map();
       if (init) Headers.appendAll(this, init);
     }
     append(name, value) {
+      validateHeaderNameValue(name, value);
       const key = normalizeHeaderName(name);
       const prev = this._map.get(key);
       this._map.set(key, prev == null ? String(value) : `${prev}, ${value}`);
@@ -288,7 +340,10 @@
       return v == null ? null : v;
     }
     has(name) { return this._map.has(normalizeHeaderName(name)); }
-    set(name, value) { this._map.set(normalizeHeaderName(name), String(value)); }
+    set(name, value) {
+      validateHeaderNameValue(name, value);
+      this._map.set(normalizeHeaderName(name), String(value));
+    }
     forEach(cb, thisArg) {
       for (const [k, v] of this._map) cb.call(thisArg, v, k, this);
     }
@@ -341,6 +396,7 @@
         redirected: !!raw.redirected,
         headers: headersFromRecord(raw.headers),
         body: String(raw.body),
+        bodyBase64: raw.bodyBase64 != null ? String(raw.bodyBase64) : '',
       };
     }
     const body = raw == null ? '' : String(raw);
@@ -358,11 +414,18 @@
   function toRpcOptions(method, headers, body) {
     const headerObj = {};
     if (headers) {
-      headers.forEach((v, k) => { headerObj[k] = v; });
+      headers.forEach((v, k) => {
+        if (!FORBIDDEN_REQUEST_HEADERS.has(normalizeHeaderName(k))) headerObj[k] = v;
+      });
     }
     const opt = { method: method || 'GET', headers: headerObj };
     if (body != null && body !== '') opt.body = String(body);
     return JSON.stringify(opt);
+  }
+
+  function payloadBytes(data) {
+    if (data && data.bodyBase64) return bytesFromBase64(data.bodyBase64);
+    return utf8Encode(data && data.body != null ? data.body : '');
   }
 
   class Request {
@@ -371,22 +434,28 @@
       const req = input instanceof Request ? input : null;
       const url = req ? req.url : String(input);
       this.url = url;
-      this.method = String((init.method || (req && req.method) || 'GET')).toUpperCase();
+      this.method = String((init.method != null ? init.method : (req && req.method) || 'GET')).toUpperCase();
       this.headers = new Headers();
-      Headers.appendAll(this.headers, req ? req.headers : null);
-      Headers.appendAll(this.headers, init.headers || null);
+      if (req) {
+        if (init.headers !== undefined) Headers.appendAll(this.headers, init.headers);
+        else Headers.appendAll(this.headers, req.headers);
+      } else {
+        Headers.appendAll(this.headers, init.headers || null);
+      }
       if (init.body !== undefined) this._body = init.body == null ? null : String(init.body);
-      else this._body = req ? req._body : null;
-      this._signal = init.signal || (req && req._signal) || null;
+      else if (req) this._body = req._body;
+      else this._body = null;
+      this._signal = init.signal !== undefined ? init.signal : (req && req._signal) || null;
     }
+    get body() { return this._body; }
+    get signal() { return this._signal; }
     clone() {
-      const copy = new Request(this.url, {
+      return new Request(this.url, {
         method: this.method,
-        headers: this.headers,
+        headers: cloneHeaders(this.headers),
         body: this._body,
         signal: this._signal,
       });
-      return copy;
     }
   }
 
@@ -401,6 +470,7 @@
       this.type = 'basic';
       this.headers = init.headers instanceof Headers ? init.headers : headersFromRecord(init.headers);
       this._body = body == null ? '' : String(body);
+      this._bytes = init.bodyBase64 ? bytesFromBase64(init.bodyBase64) : utf8Encode(this._body);
     }
     clone() {
       return new Response(this._body, {
@@ -409,7 +479,8 @@
         ok: this.ok,
         url: this.url,
         redirected: this.redirected,
-        headers: this.headers,
+        headers: cloneHeaders(this.headers),
+        bodyBase64: base64FromBytes(this._bytes),
       });
     }
     text() { return Promise.resolve(this._body); }
@@ -419,12 +490,12 @@
       });
     }
     arrayBuffer() {
-      const bytes = utf8Encode(this._body);
-      return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+      const copy = this._bytes.slice();
+      return Promise.resolve(copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength));
     }
     blob() {
       const type = this.headers.get('content-type') || '';
-      return Promise.resolve(new Blob([this._body], { type }));
+      return Promise.resolve(new Blob([this._bytes], { type }));
     }
   }
 
@@ -436,20 +507,24 @@
       if (c < 0x80) bytes.push(c);
       else if (c < 0x800) {
         bytes.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
-      } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
-        const c2 = s.charCodeAt(i + 1);
-        if (c2 >= 0xdc00 && c2 <= 0xdfff) {
-          const cp = ((c - 0xd800) << 10) + (c2 - 0xdc00) + 0x10000;
-          bytes.push(
-            0xf0 | (cp >> 18),
-            0x80 | ((cp >> 12) & 0x3f),
-            0x80 | ((cp >> 6) & 0x3f),
-            0x80 | (cp & 0x3f),
-          );
-          i += 1;
-        } else {
-          bytes.push(0xef, 0xbf, 0xbd);
+      } else if (c >= 0xd800 && c <= 0xdbff) {
+        if (i + 1 < s.length) {
+          const c2 = s.charCodeAt(i + 1);
+          if (c2 >= 0xdc00 && c2 <= 0xdfff) {
+            const cp = ((c - 0xd800) << 10) + (c2 - 0xdc00) + 0x10000;
+            bytes.push(
+              0xf0 | (cp >> 18),
+              0x80 | ((cp >> 12) & 0x3f),
+              0x80 | ((cp >> 6) & 0x3f),
+              0x80 | (cp & 0x3f),
+            );
+            i += 1;
+            continue;
+          }
         }
+        bytes.push(0xef, 0xbf, 0xbd);
+      } else if (c >= 0xdc00 && c <= 0xdfff) {
+        bytes.push(0xef, 0xbf, 0xbd);
       } else {
         bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
       }
@@ -465,8 +540,8 @@
     return new Promise((resolve, reject) => {
       queueMicrotask(() => {
         try {
-          const req = input instanceof Request ? input : new Request(input, init || {});
-          const signal = (init && init.signal) || req._signal;
+          const req = new Request(input, init || {});
+          const signal = req.signal;
           if (signal && signal.aborted) {
             const err = new Error('The operation was aborted');
             err.name = 'AbortError';
@@ -514,7 +589,7 @@
       this.readyState = XHR_UNSENT;
       this.status = 0;
       this.statusText = '';
-      this.responseText = '';
+      this._responseText = '';
       this.response = null;
       this.responseType = '';
       this.responseURL = '';
@@ -524,7 +599,9 @@
       this._async = true;
       this._headers = new Headers();
       this._aborted = false;
-      this._timeoutId = null;
+      this._sent = false;
+      this._dispatched = false;
+      this._sendTimerId = null;
       this._listeners = new Map();
       this.onreadystatechange = null;
       this.onload = null;
@@ -565,12 +642,21 @@
     }
     overrideMimeType() {}
     abort() {
+      if (this._sendTimerId != null) {
+        clearTimeout(this._sendTimerId);
+        this._sendTimerId = null;
+      }
       this._aborted = true;
-      if (this._timeoutId != null) clearTimeout(this._timeoutId);
-      this.readyState = XHR_UNSENT;
+      if (!this._sent || !this._dispatched) {
+        this.readyState = XHR_UNSENT;
+        dispatchXhrEvent(this, 'abort');
+        return;
+      }
+      if (this.readyState !== XHR_DONE) {
+        this.readyState = XHR_DONE;
+        dispatchXhrEvent(this, 'readystatechange');
+      }
       dispatchXhrEvent(this, 'abort');
-      this.readyState = XHR_DONE;
-      dispatchXhrEvent(this, 'readystatechange');
       dispatchXhrEvent(this, 'loadend');
     }
     getResponseHeader(name) {
@@ -581,67 +667,106 @@
       if (this.readyState < XHR_HEADERS_RECEIVED || !this._responseHeaders) return '';
       const lines = [];
       this._responseHeaders.forEach((v, k) => lines.push(`${k}: ${v}`));
-      return lines.join('\r\n');
+      return `${lines.join('\r\n')}\r\n`;
     }
     send(body) {
-      if (this.readyState !== XHR_OPENED || this._aborted) return;
+      if (this.readyState !== XHR_OPENED) return;
+      if (this._aborted) return;
+      if (!this._async && this.timeout > 0) {
+        const err = new Error('InvalidAccessError');
+        err.name = 'InvalidAccessError';
+        throw err;
+      }
       const payload = body == null ? '' : String(body);
-      const run = () => this._perform(payload);
+      this._sent = true;
+      this._dispatched = false;
       if (!this._async) {
-        run();
+        this._run(payload);
         return;
       }
-      if (this.timeout > 0) {
-        this._timeoutId = setTimeout(() => {
-          if (this.readyState < XHR_DONE) dispatchXhrEvent(this, 'timeout');
-        }, this.timeout);
-      }
-      setTimeout(() => {
+      const self = this;
+      this._sendTimerId = setTimeout(() => {
+        self._sendTimerId = null;
+        if (self._aborted) return;
         beginTask();
-        try { run(); } catch (e) { dispatchXhrEvent(this, 'error'); dispatchXhrEvent(this, 'loadend'); }
+        try { self._run(payload); } catch (_) { self._onNetworkError(); }
         runMicrotasks();
       }, 0);
     }
-    _perform(body) {
+    _fillBody(data) {
+      const bytes = payloadBytes(data);
+      if (this.responseType === 'json') {
+        this.response = JSON.parse(data.body);
+        this._responseText = '';
+      } else if (this.responseType === 'arraybuffer') {
+        const copy = bytes.slice();
+        this.response = copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength);
+        this._responseText = '';
+      } else if (this.responseType === 'blob') {
+        const type = data.headers.get('content-type') || '';
+        this.response = new Blob([bytes], { type });
+        this._responseText = '';
+      } else if (this.responseType === '' || this.responseType === 'text') {
+        this._responseText = data.body;
+        this.response = data.body;
+      } else {
+        this._responseText = data.body;
+        this.response = data.body;
+      }
+    }
+    _onTimeout() {
+      if (this._aborted) return;
+      this.status = 0;
+      this._responseText = '';
+      this.response = null;
+      this.readyState = XHR_DONE;
+      dispatchXhrEvent(this, 'readystatechange');
+      dispatchXhrEvent(this, 'timeout');
+      dispatchXhrEvent(this, 'loadend');
+    }
+    _onNetworkError() {
+      if (this._aborted) return;
+      dispatchXhrEvent(this, 'error');
+      this.readyState = XHR_DONE;
+      dispatchXhrEvent(this, 'readystatechange');
+      dispatchXhrEvent(this, 'loadend');
+    }
+    _run(body) {
+      if (this._aborted) return;
+      this._dispatched = true;
       dispatchXhrEvent(this, 'loadstart');
-      setXhrState(this, XHR_HEADERS_RECEIVED);
-      setXhrState(this, XHR_LOADING);
+      const started = performance.now();
       try {
         const raw = hostFetch(this._url, toRpcOptions(this._method, this._headers, body));
+        if (this._aborted) return;
+        if (this.timeout > 0 && (performance.now() - started) > this.timeout) {
+          this._onTimeout();
+          return;
+        }
         const data = normalizeHostPayload(raw, this._url);
         this.status = data.status;
         this.statusText = data.statusText;
         this.responseURL = data.url;
         this._responseHeaders = data.headers;
-        if (this.responseType === 'json') {
-          this.response = JSON.parse(data.body);
-          this.responseText = '';
-        } else if (this.responseType === 'arraybuffer') {
-          const bytes = utf8Encode(data.body);
-          this.response = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-          this.responseText = '';
-        } else if (this.responseType === '' || this.responseType === 'text') {
-          this.responseText = data.body;
-          this.response = data.body;
-        } else {
-          this.responseText = data.body;
-          this.response = data.body;
-        }
+        setXhrState(this, XHR_HEADERS_RECEIVED);
+        setXhrState(this, XHR_LOADING);
+        if (this._aborted) return;
+        this._fillBody(data);
         setXhrState(this, XHR_DONE);
         dispatchXhrEvent(this, 'load');
-      } catch (e) {
-        dispatchXhrEvent(this, 'error');
-        this.readyState = XHR_DONE;
-        dispatchXhrEvent(this, 'readystatechange');
+        dispatchXhrEvent(this, 'loadend');
+      } catch (_) {
+        if (this._aborted) return;
+        this._onNetworkError();
       }
-      if (this._timeoutId != null) clearTimeout(this._timeoutId);
-      dispatchXhrEvent(this, 'loadend');
     }
     _reset() {
       this._aborted = false;
+      this._sent = false;
+      this._dispatched = false;
       this.status = 0;
       this.statusText = '';
-      this.responseText = '';
+      this._responseText = '';
       this.response = null;
       this.responseURL = '';
       this._responseHeaders = null;
@@ -768,22 +893,26 @@
       if (set) set.delete(listener);
     }
     abort() {
+      if (this.readyState !== FR_LOADING) return;
       this._aborted = true;
       this.readyState = FR_DONE;
       this._fire('abort');
       this._fire('loadend');
     }
     readAsText(blob, encoding) {
+      if (!(blob instanceof Blob)) throw new TypeError('parameter 1 is not of type Blob');
       const _ = encoding;
       this._read(blob, () => new TextDecoder().decode(blob._bytes));
     }
     readAsArrayBuffer(blob) {
+      if (!(blob instanceof Blob)) throw new TypeError('parameter 1 is not of type Blob');
       this._read(blob, () => {
         const copy = blob._bytes.slice();
         return copy.buffer;
       });
     }
     readAsDataURL(blob) {
+      if (!(blob instanceof Blob)) throw new TypeError('parameter 1 is not of type Blob');
       this._read(blob, () => {
         const type = blob.type || 'application/octet-stream';
         let binary = '';
@@ -838,9 +967,28 @@
   }
   global.TextEncoder = TextEncoder;
 
-  function utf8DecodeBytes(arr, partial) {
+  function utf8DecodeFatal(fatal) {
+    if (fatal) throw new TypeError('Decoding failed');
+    return '\uFFFD';
+  }
+
+  function isContinuation(b) {
+    return (b & 0xc0) === 0x80;
+  }
+
+  function utf8DecodeBytes(arr, fatal, partial) {
     let out = '';
     let i = 0;
+    const need = (n) => {
+      if (i + n > arr.length) {
+        if (partial) return false;
+        utf8DecodeFatal(fatal);
+        out += '\uFFFD';
+        i += 1;
+        return 'skip';
+      }
+      return true;
+    };
     while (i < arr.length) {
       const b0 = arr[i];
       if (b0 < 0x80) {
@@ -848,30 +996,68 @@
         i += 1;
         continue;
       }
-      if ((b0 & 0xe0) === 0xc0 && i + 1 < arr.length) {
-        out += String.fromCharCode(((b0 & 0x1f) << 6) | (arr[i + 1] & 0x3f));
+      if ((b0 & 0xe0) === 0xc0) {
+        const ok = need(2);
+        if (ok === false) break;
+        if (ok === 'skip') continue;
+        const b1 = arr[i + 1];
+        if (!isContinuation(b1) || b0 < 0xc2) {
+          out += utf8DecodeFatal(fatal);
+          i += 1;
+          continue;
+        }
+        out += String.fromCharCode(((b0 & 0x1f) << 6) | (b1 & 0x3f));
         i += 2;
         continue;
       }
-      if ((b0 & 0xf0) === 0xe0 && i + 2 < arr.length) {
-        out += String.fromCharCode(
-          ((b0 & 0x0f) << 12) | ((arr[i + 1] & 0x3f) << 6) | (arr[i + 2] & 0x3f),
-        );
+      if ((b0 & 0xf0) === 0xe0) {
+        const ok = need(3);
+        if (ok === false) break;
+        if (ok === 'skip') continue;
+        const b1 = arr[i + 1];
+        const b2 = arr[i + 2];
+        if (!isContinuation(b1) || !isContinuation(b2)) {
+          out += utf8DecodeFatal(fatal);
+          i += 1;
+          continue;
+        }
+        let cp = ((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
+        if (cp >= 0xd800 && cp <= 0xdfff) {
+          out += utf8DecodeFatal(fatal);
+          i += 1;
+          continue;
+        }
+        out += String.fromCharCode(cp);
         i += 3;
         continue;
       }
-      if ((b0 & 0xf8) === 0xf0 && i + 3 < arr.length) {
+      if ((b0 & 0xf8) === 0xf0) {
+        const ok = need(4);
+        if (ok === false) break;
+        if (ok === 'skip') continue;
+        const b1 = arr[i + 1];
+        const b2 = arr[i + 2];
+        const b3 = arr[i + 3];
+        if (!isContinuation(b1) || !isContinuation(b2) || !isContinuation(b3) || b0 > 0xf4) {
+          out += utf8DecodeFatal(fatal);
+          i += 1;
+          continue;
+        }
         const cp = ((b0 & 0x07) << 18)
-          | ((arr[i + 1] & 0x3f) << 12)
-          | ((arr[i + 2] & 0x3f) << 6)
-          | (arr[i + 3] & 0x3f);
+          | ((b1 & 0x3f) << 12)
+          | ((b2 & 0x3f) << 6)
+          | (b3 & 0x3f);
+        if (cp > 0x10ffff || cp < 0x10000) {
+          out += utf8DecodeFatal(fatal);
+          i += 1;
+          continue;
+        }
         const adj = cp - 0x10000;
         out += String.fromCharCode(0xd800 + (adj >> 10), 0xdc00 + (adj & 0x3ff));
         i += 4;
         continue;
       }
-      if (partial && i >= arr.length - 3) break;
-      out += '\uFFFD';
+      out += utf8DecodeFatal(fatal);
       i += 1;
     }
     return { text: out, rest: arr.slice(i) };
@@ -899,7 +1085,12 @@
       const merged = new Uint8Array(this._stream.length + bytes.length);
       merged.set(this._stream);
       merged.set(bytes, this._stream.length);
-      const decoded = utf8DecodeBytes(merged, !!options.stream);
+      let source = merged;
+      if (!this.ignoreBOM && source.length >= 3
+        && source[0] === 0xef && source[1] === 0xbb && source[2] === 0xbf) {
+        source = source.subarray(3);
+      }
+      const decoded = utf8DecodeBytes(source, this.fatal, !!options.stream);
       if (options.stream) {
         this._stream = new Uint8Array(decoded.rest);
         return decoded.text;

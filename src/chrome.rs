@@ -22,6 +22,7 @@ pub enum NavCommand {
     DevToolsDockBottom,
     DevToolsDockRight,
     DevToolsTab(crate::devtools::DevToolsTab),
+    DevToolsConsoleClear,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -137,6 +138,7 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
                 .as_deref()
                 .and_then(crate::devtools::DevToolsTab::parse)
                 .map(NavCommand::DevToolsTab),
+            Some("devtools-console-clear") => Some(NavCommand::DevToolsConsoleClear),
             Some("zoom-in") => Some(NavCommand::ZoomIn),
             Some("zoom-out") => Some(NavCommand::ZoomOut),
             Some("zoom-reset") => Some(NavCommand::ZoomReset),
@@ -689,6 +691,61 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     font-size: calc(12px * var(--ui));
     color: #6b6358;
   }}
+  div.devtools-console-toolbar {{
+    display: flex;
+    justify-content: flex-end;
+    padding: calc(4px * var(--ui)) calc(6px * var(--ui));
+    border-bottom: calc(1px * var(--ui)) solid #d9d3c8;
+    flex: none;
+  }}
+  a#devtools-console-clear {{
+    font-size: calc(12px * var(--ui));
+    color: #4d4841;
+    text-decoration: none;
+    padding: calc(2px * var(--ui)) calc(8px * var(--ui));
+    border-radius: calc(4px * var(--ui));
+    background: #e4ddd0;
+  }}
+  #devtools-console-log {{
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: calc(11px * var(--ui));
+    line-height: 1.4;
+    overflow: auto;
+    padding: calc(4px * var(--ui)) 0;
+    height: 100%;
+    box-sizing: border-box;
+  }}
+  #devtools-pane-console {{
+    display: none;
+    flex-direction: column;
+  }}
+  #devtools-pane-console.active {{
+    display: flex;
+  }}
+  div.devtools-console-line {{
+    padding: calc(2px * var(--ui)) calc(8px * var(--ui));
+    border-bottom: calc(1px * var(--ui)) solid #ebe6dc;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }}
+  div.devtools-console-line .console-ts {{
+    color: #8a8278;
+    margin-right: calc(6px * var(--ui));
+  }}
+  div.devtools-console-line .console-level {{
+    font-weight: 600;
+    margin-right: calc(6px * var(--ui));
+  }}
+  div.devtools-console-line.level-log .console-level {{ color: #2f6f3a; }}
+  div.devtools-console-line.level-info .console-level {{ color: #1d5a8a; }}
+  div.devtools-console-line.level-warn .console-level {{ color: #9a6700; }}
+  div.devtools-console-line.level-error .console-level {{ color: #b42318; }}
+  div.devtools-console-line.level-debug .console-level {{ color: #5f6473; }}
+  span.console-source {{
+    color: #6b6358;
+    margin-right: calc(6px * var(--ui));
+  }}
+  span.console-msg {{ color: #1c1915; }}
   #inspect-hl {{
     display: none;
     pointer-events: none;
@@ -749,7 +806,12 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
         <a id="devtools-tab-elements" class="devtools-tab" href="glide://devtools-tab?tab=elements">Elements</a>
         <a id="devtools-tab-network" class="devtools-tab" href="glide://devtools-tab?tab=network">Network</a>
       </div>
-      <div id="devtools-pane-console" class="devtools-pane active"><p class="devtools-placeholder">Console output will appear here.</p></div>
+      <div id="devtools-pane-console" class="devtools-pane active">
+        <div class="devtools-console-toolbar">
+          <a id="devtools-console-clear" href="glide://devtools-console-clear">Clear</a>
+        </div>
+        <div id="devtools-console-log"></div>
+      </div>
       <div id="devtools-pane-elements" class="devtools-pane"><p class="devtools-placeholder">DOM tree will appear here.</p></div>
       <div id="devtools-pane-network" class="devtools-pane"><p class="devtools-placeholder">Network log will appear here.</p></div>
     </aside>
@@ -1883,6 +1945,10 @@ mod tests {
         assert_eq!(
             parse("glide://devtools-tab?tab=network"),
             Some(NavCommand::DevToolsTab(DevToolsTab::Network))
+        );
+        assert_eq!(
+            parse("glide://devtools-console-clear"),
+            Some(NavCommand::DevToolsConsoleClear)
         );
     }
 

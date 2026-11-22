@@ -11,6 +11,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 
 use super::apply::apply_request;
 use super::bridge::{DomRequest, DomResponse, bubble_handles};
+use super::console_feed::{self, ConsoleWireEvent};
 use super::paint_prune::prune_stale_paint_children;
 use super::scripts::{
     ScriptSource, ScriptSpec, collect_scripts_for_page, execution_plan, source_body,
@@ -57,6 +58,11 @@ impl JsHost {
             pending_indices: None,
             script_specs: Vec::new(),
         }
+    }
+
+    /// Console messages and exceptions from the worker, not yet merged into a tab journal.
+    pub fn drain_console_wire(&mut self) -> Vec<ConsoleWireEvent> {
+        console_feed::drain_pending()
     }
 
     pub fn is_enabled(&self) -> bool {

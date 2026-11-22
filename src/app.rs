@@ -15,7 +15,8 @@ use winit::event::{ButtonSource, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
 
-use crate::devtools::{DevToolsDock, DevToolsSession};
+use crate::devtools::console::ConsoleEntry;
+use crate::devtools::{DevToolsDock, DevToolsSession, DevToolsTab};
 
 use std::sync::atomic::Ordering;
 
@@ -464,6 +465,13 @@ fn capture_active_tab(
     }
 }
 
+fn sync_active_tab_console(devtools: &DevToolsSession, tabs: &TabManager, doc: &mut BaseDocument) {
+    let Some(tab) = tabs.active() else {
+        return;
+    };
+    devtools.sync_console_pane(doc, &tab.console);
+}
+
 fn apply_active_tab_to_doc(tabs: &mut TabManager, doc: &mut BaseDocument, js: &mut JsHost) {
     let url = tabs
         .active()
@@ -723,6 +731,7 @@ impl Glide {
                     }
                     NavCommand::DevToolsToggle => {
                         self.devtools.toggle(&mut doc);
+                        sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
                         save_settings_after = true;
                     }
                     NavCommand::DevToolsDockBottom => {
@@ -735,6 +744,15 @@ impl Glide {
                     }
                     NavCommand::DevToolsTab(tab) => {
                         self.devtools.set_tab(*tab, &mut doc);
+                        if *tab == DevToolsTab::Console {
+                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
+                        }
+                    }
+                    NavCommand::DevToolsConsoleClear => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.console.clear();
+                        }
+                        sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
                     }
                     NavCommand::ZoomIn | NavCommand::ZoomOut | NavCommand::ZoomReset => {
                         if let Some(tab) = self.tabs.active_mut() {
@@ -760,6 +778,7 @@ impl Glide {
                             tab.zoom = self.session.default_zoom;
                         }
                         apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                        sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
                         structure_changed = true;
                     }
                     NavCommand::DuplicateTab => {
@@ -773,6 +792,7 @@ impl Glide {
                         if let Some(tab) = self.tabs.active().cloned() {
                             self.tabs.insert(tab);
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -800,6 +820,7 @@ impl Glide {
                                 break;
                             }
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
                         } else {
                             self.tabs.close(id);
                         }
@@ -820,6 +841,7 @@ impl Glide {
                         };
                         if selected {
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -838,6 +860,7 @@ impl Glide {
                         };
                         if moved {
                             apply_active_tab_to_doc(&mut self.tabs, &mut doc, &mut self.js);
+                            sync_active_tab_console(&self.devtools, &self.tabs, &mut doc);
                             structure_changed = true;
                         }
                     }
@@ -957,9 +980,24 @@ impl Glide {
                 let chrome = view.doc.inner();
                 self.js.maybe_start_page(&chrome, &url, &handle);
             }
+            let wire = self.js.drain_console_wire();
+            let had_console = !wire.is_empty();
             let js_redraw = {
                 let mut chrome = view.doc.inner_mut();
-                self.js.pump(&mut chrome, Instant::now())
+                let redraw = self.js.pump(&mut chrome, Instant::now());
+                if had_console {
+                    if let Some(tab) = self.tabs.active_mut() {
+                        let ts = self.js.now_ms();
+                        for ev in wire {
+                            tab.console.push(ConsoleEntry::from_wire(ev, ts));
+                        }
+                    }
+                    sync_active_tab_console(&self.devtools, &self.tabs, &mut chrome);
+                }
+                redraw
+                    || (had_console
+                        && self.devtools.state.open
+                        && self.devtools.state.tab == DevToolsTab::Console)
             };
             if js_redraw {
                 view.request_redraw();

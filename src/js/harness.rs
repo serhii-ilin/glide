@@ -1,8 +1,13 @@
 //! Helpers for V8 integration tests (run on the test thread with a real worker).
 
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(test)]
+static HARNESS_CONSOLE_LOCK: Mutex<()> = Mutex::new(());
 
 use blitz_dom::DocumentConfig;
 use blitz_net::Provider;
@@ -14,6 +19,7 @@ use crate::parse;
 
 pub struct JsRunResult {
     pub final_text: String,
+    pub console_wire: Vec<crate::js::console_feed::ConsoleWireEvent>,
 }
 
 pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
@@ -25,6 +31,10 @@ pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
 }
 
 fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> JsRunResult {
+    #[cfg(test)]
+    let _console_test_lock = HARNESS_CONSOLE_LOCK.lock().expect("harness console lock");
+    let _ = crate::js::console_feed::drain_pending();
+
     let net = Arc::new(Provider::new(None));
     let tap = JsTap::new_enabled();
     let provider = GlideHtmlProvider {
@@ -50,6 +60,10 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
     }
     js_host.flush_dom_rpc(&mut document.0, Duration::from_millis(200));
     document.0.resolve(0.0);
+    for _ in 0..8 {
+        js_host.pump(&mut document.0, Instant::now());
+        thread::sleep(Duration::from_millis(5));
+    }
 
     let final_text = document
         .0
@@ -58,5 +72,10 @@ fn run_inline_page_with_runtime(html: &str, pump_for: Duration, rt: &Handle) -> 
         .map(|n| n.text_content())
         .unwrap_or_default();
 
-    JsRunResult { final_text }
+    let console_wire = js_host.drain_console_wire();
+
+    JsRunResult {
+        final_text,
+        console_wire,
+    }
 }

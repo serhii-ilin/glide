@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use keyboard_types::Modifiers;
 use serde::{Deserialize, Serialize};
 
+use crate::devtools::console::ConsoleJournal;
 use crate::find::FindSession;
 use crate::history::History;
 use crate::nav::NavTracker;
@@ -22,6 +23,7 @@ pub struct Tab {
     pub loading: bool,
     pub find: FindSession,
     pub zoom: PageZoom,
+    pub console: ConsoleJournal,
     /// Last URL written into the address field, so a focused field is left alone.
     pub address_written: String,
 }
@@ -35,6 +37,7 @@ impl Tab {
             loading: false,
             find: FindSession::default(),
             zoom: PageZoom::new(),
+            console: ConsoleJournal::default(),
             address_written: url,
         }
     }

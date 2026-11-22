@@ -3,6 +3,7 @@
 mod apply;
 mod batch;
 mod bridge;
+pub mod console_feed;
 pub mod diagnostics;
 mod host;
 mod paint_prune;

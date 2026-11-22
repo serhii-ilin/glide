@@ -1103,3 +1103,53 @@ fn failed_external_script_does_not_panic() {
         crate::js::scripts::ScriptSource::Failed
     ));
 }
+
+#[test]
+fn console_log_reaches_console_feed() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      console.log('devtools-console-test');
+      console.warn('watch');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, std::time::Duration::from_millis(120));
+    assert_eq!(result.final_text, "");
+    let events = result.console_wire;
+    let messages: Vec<_> = events.iter().map(|e| e.message.as_str()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("devtools-console-test")),
+        "{messages:?}"
+    );
+    assert!(messages.iter().any(|m| m.contains("watch")), "{messages:?}");
+}
+
+#[test]
+fn uncaught_exception_reaches_console_feed() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      throw new Error('boom-console');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, std::time::Duration::from_millis(120));
+    let events = result.console_wire;
+    assert!(
+        events
+            .iter()
+            .any(|e| e.level == "uncaught" && e.message.contains("boom-console")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn unhandled_rejection_reaches_console_feed() {
+    let html = r#"<!DOCTYPE html><html><body>
+    <script>
+      Promise.reject(new Error('reject-console'));
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, std::time::Duration::from_millis(200));
+    let events = result.console_wire;
+    assert!(
+        events
+            .iter()
+            .any(|e| e.level == "rejection" && e.message.contains("reject-console")),
+        "{events:?}"
+    );
+}

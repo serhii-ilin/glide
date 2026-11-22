@@ -1,5 +1,7 @@
 //! DevTools panel shell state: dock side, size, active tab, and chrome commands.
 
+pub mod console;
+
 use blitz_dom::BaseDocument;
 use serde::{Deserialize, Serialize};
 
@@ -173,6 +175,12 @@ impl DevToolsSession {
         self.state.set_tab(tab);
         if self.state.open {
             self.sync_chrome(doc);
+        }
+    }
+
+    pub fn sync_console_pane(&self, doc: &mut BaseDocument, journal: &console::ConsoleJournal) {
+        if self.state.open && self.state.tab == DevToolsTab::Console {
+            console::render_devtools_console(doc, journal);
         }
     }
 

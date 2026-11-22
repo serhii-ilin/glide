@@ -126,6 +126,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
     let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
     isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 16);
     isolate.add_message_listener(v8_message_listener);
+    isolate.set_promise_reject_callback(promise_reject_callback);
     let global_context = {
         v8::scope!(let hs, isolate);
         let context = v8::Context::new(hs, Default::default());
@@ -357,18 +358,40 @@ fn console_callback(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let level = args.get(0).to_rust_string_lossy(scope);
+    let level_str = args.get(0).to_rust_string_lossy(scope);
     let msg = args.get(1).to_rust_string_lossy(scope);
-    let level = match level.as_str() {
-        "error" => Level::Error,
+    let level = match level_str.as_str() {
+        "error" | "rejection" => Level::Error,
         "warn" | "warning" => Level::Warn,
         "debug" | "trace" => Level::Debug,
         _ => Level::Info,
     };
     diagnostics::record_console(level, &msg);
+    super::console_feed::publish_console_level(&level_str, &msg);
 }
 
 /// Capture uncaught V8 exceptions instead of letting V8 write raw `<unknown>:N:` lines.
+extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {
+    use v8::PromiseRejectEvent;
+    if msg.get_event() != PromiseRejectEvent::PromiseRejectWithNoHandler {
+        return;
+    }
+    v8::callback_scope!(unsafe scope, &msg);
+    let Some(value) = msg.get_value() else {
+        super::console_feed::publish_unhandled_rejection("Unhandled rejection: <no reason>");
+        return;
+    };
+    v8::scope!(let scope, scope);
+    let message = if value.is_undefined() {
+        "<undefined>".to_string()
+    } else if value.is_null() {
+        "null".to_string()
+    } else {
+        value.to_rust_string_lossy(scope)
+    };
+    super::console_feed::publish_unhandled_rejection(&format!("Unhandled rejection: {message}"));
+}
+
 extern "C" fn v8_message_listener(
     message: v8::Local<v8::Message>,
     _exception: v8::Local<v8::Value>,
@@ -388,6 +411,7 @@ extern "C" fn v8_message_listener(
         .unwrap_or_default();
 
     diagnostics::record_uncaught(&text, line, resource.as_deref(), &stack);
+    super::console_feed::publish_uncaught(&text, line, resource.as_deref());
 }
 
 fn stack_trace_text(scope: &v8::PinScope<'_, '_>, trace: &v8::Local<v8::StackTrace>) -> String {

@@ -24,6 +24,7 @@ pub mod nav;
 pub mod net;
 pub mod parse;
 pub mod profile;
+pub mod remote_socket;
 mod runtime;
 pub mod shot;
 pub mod tabs;

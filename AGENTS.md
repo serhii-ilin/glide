@@ -28,6 +28,7 @@ src/parse.rs      html5ever with configurable scripting flag
 src/location.rs   URL vs. search
 src/headless.rs   headless load/settle and --dump-text text extraction
 src/shot.rs       paint a loaded page to PNG
+src/remote_socket.rs  user-only NDJSON socket for opt-in live-window control (F-069)
 src/control/      agent control: request/result protocol, headless session, window socket (planned F-066/F-069)
 src/mcp/          MCP stdio server (`glide --mcp`) mapping tools onto src/control (planned F-066)
 docs/features.md  requirements + feature registry + spec links (keep current)

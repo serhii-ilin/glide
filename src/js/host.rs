@@ -995,7 +995,8 @@ mod tests {
         let (_worker, _console) = worker_test_lock();
         let html = concat!(
             "<!DOCTYPE html><html><body>",
-            "<script>setTimeout(function(){}, -5);</script>",
+            // The later 5 s timer must not mask the overdue one.
+            "<script>setTimeout(function(){}, -5); setTimeout(function(){}, 5000);</script>",
             "</body></html>"
         );
         let doc = parse::document_from_html(html, DocumentConfig::default(), true);
@@ -1013,6 +1014,34 @@ mod tests {
             "a negative setTimeout delay is due now, not idle"
         );
         assert!(host.next_wake_in().is_some());
+    }
+
+    #[test]
+    fn settimeout_non_numeric_and_infinite_delays_stay_numeric() {
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<script>",
+            "setTimeout(function(){}, '100');",
+            "setTimeout(function(){}, Infinity);",
+            "setTimeout(function(){}, 5000);",
+            "</script></body></html>"
+        );
+        let doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || {
+                host.worker.as_ref().is_some_and(|w| {
+                    let deadline = w.wake_deadline_ms();
+                    deadline > 0 && deadline <= 1000
+                })
+            }),
+            "the 100 ms timer should be the earliest wake"
+        );
     }
 
     #[test]

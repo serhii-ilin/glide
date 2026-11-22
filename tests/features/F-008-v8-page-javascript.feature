@@ -5,7 +5,7 @@ Feature: F-008 V8 page JavaScript lifecycle
 
   # Source / basis: HTML Living Standard (timers, script execution); DOM Standard
   # Registry: docs/features.md -> F-008
-  # Tests: js::host::tests::{stale_dom_rpc_is_rejected,current_dom_rpc_is_applied,maybe_start_without_navigation_bumps_generation,page_with_timer_reports_next_wake,page_without_timers_reports_no_wake,settimeout_zero_reports_immediate_wake,settimeout_negative_delay_reports_immediate_wake,worker_wake_on_dom_rpc_without_host_pump,earlier_timer_shortens_next_wake_and_wakes_the_host}, js::integration::timers_fixture_reports_wake_and_advances_with_pump, app::tests::pump_wait_*, manual M-049, M-050
+  # Tests: js::host::tests::{stale_dom_rpc_is_rejected,current_dom_rpc_is_applied,maybe_start_without_navigation_bumps_generation,page_with_timer_reports_next_wake,page_without_timers_reports_no_wake,settimeout_zero_reports_immediate_wake,settimeout_negative_delay_reports_immediate_wake,settimeout_non_numeric_and_infinite_delays_stay_numeric,worker_wake_on_dom_rpc_without_host_pump,earlier_timer_shortens_next_wake_and_wakes_the_host}, js::integration::timers_fixture_reports_wake_and_advances_with_pump, app::tests::pump_wait_*, manual M-049, M-050
   # MCP: planned F-067 (glide_eval)
 
   Background:
@@ -38,7 +38,7 @@ Feature: F-008 V8 page JavaScript lifecycle
     Then the host reports no next wake deadline
 
   Scenario: a later timer wakes the host with an earlier deadline
-  # Covered by js::host::tests::earlier_timer_shortens_next_wake
+  # Covered by js::host::tests::earlier_timer_shortens_next_wake_and_wakes_the_host
     Given a page already has a long-pending timer
     When a script schedules a shorter timer
     Then the host wake deadline moves earlier

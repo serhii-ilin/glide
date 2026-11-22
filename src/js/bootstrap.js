@@ -39,9 +39,19 @@
     microtaskQueue.push(fn);
   };
 
+  // HTML timers normalize the delay: NaN and negative become 0, and the delay is
+  // capped. Keep it numeric here so `at` never becomes a concatenated string or
+  // a non-finite value that would confuse the idle-wake calculation.
+  const MAX_TIMER_DELAY = 2147483647;
+  function timerDelay(ms) {
+    const n = Number(ms);
+    if (Number.isNaN(n) || n <= 0) return 0;
+    return Math.min(n, MAX_TIMER_DELAY);
+  }
+
   global.setTimeout = function (fn, ms) {
     const id = nextTimerId++;
-    timers.set(id, { fn, at: nowMs + (ms || 0), kind: 'timeout' });
+    timers.set(id, { fn, at: nowMs + timerDelay(ms), kind: 'timeout' });
     return id;
   };
   global.clearTimeout = function (id) {
@@ -49,7 +59,8 @@
   };
   global.setInterval = function (fn, ms) {
     const id = nextTimerId++;
-    timers.set(id, { fn, at: nowMs + (ms || 0), interval: ms || 0, kind: 'interval' });
+    const delay = timerDelay(ms);
+    timers.set(id, { fn, at: nowMs + delay, interval: delay, kind: 'interval' });
     return id;
   };
   global.clearInterval = function (id) {
@@ -63,21 +74,22 @@
   };
 
   global.__glide_next_wake = function (now) {
-    // -1 means "no pending work". A timer deadline may legitimately be <= now
-    // (setTimeout with a negative delay, or a deadline computed as now - x);
-    // such work is due immediately and must not be confused with idle.
-    let earliest = -1;
+    // -1 means "no pending work". Deadlines are normalized to finite numbers at
+    // creation; a deadline <= now is due immediately (not idle). Use an
+    // Infinity minimum so an overdue timer cannot be replaced by a later one.
+    let earliest = Infinity;
     let hasWork = false;
     timers.forEach((t) => {
       if (!t) return;
       hasWork = true;
-      const at = Number.isFinite(t.at) ? t.at : 0;
-      if (earliest < 0 || at < earliest) earliest = at;
+      const at = Number(t.at);
+      const due = Number.isFinite(at) ? at : 0;
+      if (due < earliest) earliest = due;
     });
     if (rafQueue.length) {
       hasWork = true;
       const rafAt = now + 16;
-      if (earliest < 0 || rafAt < earliest) earliest = rafAt;
+      if (rafAt < earliest) earliest = rafAt;
     }
     if (!hasWork) return -1;
     return Math.ceil(Math.max(0, earliest));

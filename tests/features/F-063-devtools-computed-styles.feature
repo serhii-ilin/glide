@@ -28,7 +28,7 @@ Feature: F-063 DevTools computed styles and highlight
   # Automated: devtools::computed::tests::computed_html_escapes_values_once
 
   Scenario: The page shows a highlight overlay for the selected element
-  # Automated: devtools::highlight::tests::inspect_overlay_position_accounts_for_scroll
+  # Automated: devtools::highlight::tests::overlay_scroll_offset_moves_top_up
 
   Scenario: Highlight hides when selection clears or DevTools closes
   # Automated: devtools::highlight::tests::overlay_hidden_when_inactive

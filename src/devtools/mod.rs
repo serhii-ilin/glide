@@ -194,6 +194,10 @@ impl DevToolsSession {
         self.state.set_tab(tab);
         if self.state.open {
             self.sync_chrome(doc);
+            if tab != DevToolsTab::Elements {
+                highlight::apply_inspect_highlight(doc, None);
+                self.elements_last_highlight = None;
+            }
         }
     }
 
@@ -256,9 +260,6 @@ impl DevToolsSession {
                 self.elements_last_computed_html = plan.computed_html.clone();
             }
         }
-        let _ = crate::find::with_page_document_mut(chrome, |page| {
-            page.resolve(0.0);
-        });
         let highlight = elements::with_page_document(chrome, |page| {
             highlight::highlight_for_selected(chrome, page, tab.elements.selected)
         })
@@ -497,6 +498,38 @@ mod tests {
                 .map(|n| !n.children.is_empty())
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn highlight_hidden_when_devtools_tab_leaves_elements() {
+        use blitz_dom::local_name;
+
+        let mut chrome = parse_chrome(&chrome_document("about:blank", true, false));
+        chrome.resolve(0.0);
+        let mut session = DevToolsSession {
+            state: DevToolsState {
+                open: true,
+                tab: DevToolsTab::Elements,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        highlight::apply_inspect_highlight(
+            &mut chrome,
+            Some(highlight::HighlightRect {
+                left: 12.0,
+                top: 34.0,
+                width: 40.0,
+                height: 20.0,
+            }),
+        );
+        session.set_tab(DevToolsTab::Console, &mut chrome);
+        let hl = chrome.get_element_by_id("inspect-hl").expect("hl");
+        let style = chrome
+            .get_node(hl)
+            .and_then(|n| n.attr(local_name!("style")))
+            .unwrap_or_default();
+        assert!(style.contains("display:none"), "{style}");
     }
 
     #[test]

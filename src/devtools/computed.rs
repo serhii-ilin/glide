@@ -112,7 +112,21 @@ fn render_box_model_summary(rows: &[(String, String)]) -> String {
     let width = lookup_value(rows, "width").unwrap_or("auto");
     let height = lookup_value(rows, "height").unwrap_or("auto");
     format!(
-        r#"<div class="devtools-box-model"><div class="bm-margin"><span class="bm-label">margin</span><span class="bm-t">{margin_t}</span><span class="bm-r">{margin_r}</span><span class="bm-b">{margin_b}</span><span class="bm-l">{margin_l}</span><div class="bm-border"><span class="bm-label">border</span><span class="bm-t">{border_t}</span><span class="bm-r">{border_r}</span><span class="bm-b">{border_b}</span><span class="bm-l">{border_l}</span><div class="bm-padding"><span class="bm-label">padding</span><span class="bm-t">{padding_t}</span><span class="bm-r">{padding_r}</span><span class="bm-b">{padding_b}</span><span class="bm-l">{padding_l}</span><div class="bm-content">{width} × {height}</div></div></div></div></div>"#
+        r#"<div class="devtools-box-model"><div class="bm-margin"><span class="bm-label">margin</span><span class="bm-t">{margin_t}</span><span class="bm-r">{margin_r}</span><span class="bm-b">{margin_b}</span><span class="bm-l">{margin_l}</span><div class="bm-border"><span class="bm-label">border</span><span class="bm-t">{border_t}</span><span class="bm-r">{border_r}</span><span class="bm-b">{border_b}</span><span class="bm-l">{border_l}</span><div class="bm-padding"><span class="bm-label">padding</span><span class="bm-t">{padding_t}</span><span class="bm-r">{padding_r}</span><span class="bm-b">{padding_b}</span><span class="bm-l">{padding_l}</span><div class="bm-content">{width} × {height}</div></div></div></div></div>"#,
+        margin_t = escape_elements_text(margin_t),
+        margin_r = escape_elements_text(margin_r),
+        margin_b = escape_elements_text(margin_b),
+        margin_l = escape_elements_text(margin_l),
+        border_t = escape_elements_text(border_t),
+        border_r = escape_elements_text(border_r),
+        border_b = escape_elements_text(border_b),
+        border_l = escape_elements_text(border_l),
+        padding_t = escape_elements_text(padding_t),
+        padding_r = escape_elements_text(padding_r),
+        padding_b = escape_elements_text(padding_b),
+        padding_l = escape_elements_text(padding_l),
+        width = escape_elements_text(width),
+        height = escape_elements_text(height),
     )
 }
 
@@ -230,6 +244,7 @@ mod tests {
         );
         let id = doc.get_element_by_id("x").expect("x");
         let html = render_computed_pane_html(&doc, Some(node_to_handle(id)));
+        assert!(html.contains("&amp;"));
         assert!(!html.contains("&amp;amp;"));
     }
 

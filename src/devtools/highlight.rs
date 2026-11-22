@@ -1,6 +1,5 @@
 //! DevTools element highlight overlay (`#inspect-hl`) in chrome coordinates.
 
-use blitz_dom::node::NodeData;
 use blitz_dom::{BaseDocument, qual_name};
 use blitz_traits::node_id::NodeId;
 
@@ -21,29 +20,24 @@ impl HighlightRect {
     }
 }
 
-/// Map a page border box (document/layout coordinates), viewport scroll, iframe
-/// placement, and zoom scales to the fixed `#inspect-hl` overlay rect in chrome.
+/// Map a page border box (document/layout coordinates), viewport scroll, and iframe
+/// placement to the fixed `#inspect-hl` overlay rect in chrome CSS pixels.
 ///
-/// `ui_scale` is the chrome `--ui` counter-scale (`1.0` at 100% page zoom). `page_zoom`
-/// is the active page zoom factor applied to the chrome viewport (iframe content).
+/// Page zoom and `--ui` are already reflected in iframe and client geometry; the
+/// highlight border width alone uses `var(--ui)` in chrome CSS.
 pub fn overlay_rect_from_parts(
     layout_box: HighlightRect,
     scroll_x: f32,
     scroll_y: f32,
     iframe_origin: HighlightRect,
-    ui_scale: f32,
-    page_zoom: f32,
 ) -> HighlightRect {
-    let ui = ui_scale.max(f32::EPSILON);
-    let zoom = page_zoom.max(f32::EPSILON);
     let client_left = layout_box.left - scroll_x;
     let client_top = layout_box.top - scroll_y;
-    let content_scale = zoom / ui;
     HighlightRect {
-        left: iframe_origin.left + client_left * content_scale,
-        top: iframe_origin.top + client_top * content_scale,
-        width: layout_box.width * content_scale,
-        height: layout_box.height * content_scale,
+        left: iframe_origin.left + client_left,
+        top: iframe_origin.top + client_top,
+        width: layout_box.width,
+        height: layout_box.height,
     }
 }
 
@@ -52,7 +46,7 @@ pub fn map_page_rect_to_chrome(
     page_client_rect: HighlightRect,
     iframe_origin: HighlightRect,
 ) -> HighlightRect {
-    overlay_rect_from_parts(page_client_rect, 0.0, 0.0, iframe_origin, 1.0, 1.0)
+    overlay_rect_from_parts(page_client_rect, 0.0, 0.0, iframe_origin)
 }
 
 pub fn page_layout_border_box(page: &BaseDocument, node_id: NodeId) -> Option<HighlightRect> {
@@ -63,23 +57,6 @@ pub fn page_layout_border_box(page: &BaseDocument, node_id: NodeId) -> Option<Hi
         top: client.y as f32 + scroll.y as f32,
         width: client.width as f32,
         height: client.height as f32,
-    })
-}
-
-pub fn page_element_highlight_rect(page: &BaseDocument, node_id: NodeId) -> Option<HighlightRect> {
-    let node = page.get_node(node_id)?;
-    if !matches!(
-        &node.data,
-        NodeData::Element(_) | NodeData::AnonymousBlock(_)
-    ) {
-        return None;
-    }
-    let border = page.get_client_bounding_rect(node_id)?;
-    Some(HighlightRect {
-        left: border.x as f32,
-        top: border.y as f32,
-        width: border.width as f32,
-        height: border.height as f32,
     })
 }
 
@@ -105,15 +82,11 @@ pub fn highlight_for_selected(
     let layout = page_layout_border_box(page, node_id)?;
     let iframe = iframe_highlight_origin(chrome)?;
     let scroll = page.viewport_scroll();
-    let page_zoom = chrome.viewport().zoom();
-    let ui_scale = 1.0 / page_zoom.max(f32::EPSILON);
     Some(overlay_rect_from_parts(
         layout,
         scroll.x as f32,
         scroll.y as f32,
         iframe,
-        ui_scale,
-        page_zoom,
     ))
 }
 
@@ -195,8 +168,8 @@ mod tests {
             width: 800.0,
             height: 500.0,
         };
-        let at_rest = overlay_rect_from_parts(layout, 0.0, 0.0, iframe, 1.0, 1.0);
-        let scrolled = overlay_rect_from_parts(layout, 0.0, 350.0, iframe, 1.0, 1.0);
+        let at_rest = overlay_rect_from_parts(layout, 0.0, 0.0, iframe);
+        let scrolled = overlay_rect_from_parts(layout, 0.0, 350.0, iframe);
         assert_eq!(at_rest.top, 490.0);
         assert_eq!(scrolled.top, 140.0);
         assert!(scrolled.top < at_rest.top);
@@ -217,9 +190,9 @@ mod tests {
             width: 500.0,
             height: 500.0,
         };
-        let zoomed = overlay_rect_from_parts(layout, 0.0, 0.0, iframe, 0.5, 2.0);
-        assert_eq!(zoomed.width, 400.0);
-        assert_eq!(zoomed.height, 200.0);
+        let at_zoom_2 = overlay_rect_from_parts(layout, 0.0, 0.0, iframe);
+        assert_eq!(at_zoom_2.width, 100.0);
+        assert_eq!(at_zoom_2.height, 50.0);
     }
 
     #[test]
@@ -250,16 +223,39 @@ mod tests {
         let scroll = page.viewport_scroll();
         let chrome = chrome_with_devtools(DevToolsDock::Bottom, 280);
         let iframe = iframe_highlight_origin(&chrome).expect("iframe");
-        let zoom = chrome.viewport().zoom();
-        let ui = 1.0 / zoom;
-        let expected =
-            overlay_rect_from_parts(layout, scroll.x as f32, scroll.y as f32, iframe, ui, zoom);
+        let expected = overlay_rect_from_parts(layout, scroll.x as f32, scroll.y as f32, iframe);
         let wired = highlight_for_selected(
             &chrome,
             &page,
             Some(crate::devtools::elements::node_to_handle(target)),
         );
         assert_eq!(wired, Some(expected));
+    }
+
+    #[test]
+    fn highlight_wiring_unchanged_at_non_default_page_zoom() {
+        let page_html = r#"<!DOCTYPE html><html><body><div id="target" style="width:60px;height:30px"></div></body></html>"#;
+        let page = sample_page(page_html);
+        let target = page.get_element_by_id("target").expect("target");
+        let mut chrome = chrome_with_devtools(DevToolsDock::Bottom, 280);
+        {
+            let mut vp = chrome.viewport_mut();
+            vp.set_zoom(2.0);
+        }
+        crate::chrome::set_ui_scale(&mut chrome, 0.5);
+        chrome.resolve(0.0);
+        let layout = page_layout_border_box(&page, target).expect("layout");
+        let scroll = page.viewport_scroll();
+        let iframe = iframe_highlight_origin(&chrome).expect("iframe");
+        let expected = overlay_rect_from_parts(layout, scroll.x as f32, scroll.y as f32, iframe);
+        let wired = highlight_for_selected(
+            &chrome,
+            &page,
+            Some(crate::devtools::elements::node_to_handle(target)),
+        );
+        assert_eq!(wired, Some(expected));
+        assert_eq!(expected.width, layout.width);
+        assert_eq!(expected.height, layout.height);
     }
 
     #[test]

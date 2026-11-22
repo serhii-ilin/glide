@@ -638,6 +638,11 @@ fn with_page_subdoc<R>(chrome: &BaseDocument, f: impl FnOnce(&BaseDocument) -> R
     }
 }
 
+/// True when the page iframe has a loaded subdocument but Blitz has no hover there yet.
+pub(crate) fn page_subdoc_hover_is_none(chrome: &BaseDocument) -> bool {
+    with_page_subdoc(chrome, |doc| doc.get_hover_node_id().is_none()).unwrap_or(false)
+}
+
 fn page_subdoc_mut(chrome: &mut BaseDocument) -> Option<&mut BaseDocument> {
     let page_id = chrome.get_element_by_id("page")?;
     let sub = chrome.get_node_mut(page_id)?.subdoc_mut()?;
@@ -1154,5 +1159,132 @@ mod tests {
 
         host.maybe_start_page(&doc_b, url, handle);
         assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
+    }
+
+    use blitz_dom::Document;
+    use blitz_traits::events::{
+        BlitzWheelDelta, BlitzWheelEvent, MouseEventButtons, Point, PointerCoords, UiEvent,
+    };
+    use blitz_traits::shell::{ColorScheme, Viewport};
+    use keyboard_types::Modifiers;
+
+    use crate::html::HtmlPageDocument;
+
+    const CHROME_SHELL: &str = r#"<!DOCTYPE html><html><body style="margin:0;padding:0"><iframe id="page" style="display:block;width:800px;height:600px;border:0"></iframe></body></html>"#;
+
+    fn viewport_doc_config() -> DocumentConfig {
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        }
+    }
+
+    fn chrome_with_scroll_pane() -> BaseDocument {
+        const PAGE: &str = include_str!("../../tests/fixtures/scroll-pane.html");
+        let mut chrome = parse::document_from_html(CHROME_SHELL, viewport_doc_config(), false);
+        let mut page = parse::document_from_html(PAGE, viewport_doc_config(), false);
+        page.resolve(0.0);
+        let page_id = chrome.get_element_by_id("page").expect("page iframe");
+        chrome.set_sub_document(page_id, Box::new(HtmlPageDocument(page)));
+        chrome.resolve(0.0);
+        chrome
+    }
+
+    fn pane_scroll_y(chrome: &BaseDocument) -> f64 {
+        with_page_subdoc(chrome, |page| {
+            let pane = page.get_element_by_id("pane").expect("pane");
+            page.get_node(pane).expect("pane node").scroll_offset().y
+        })
+        .unwrap_or(0.0)
+    }
+
+    fn pane_center(page: &BaseDocument) -> (f32, f32) {
+        let pane = page.get_element_by_id("pane").expect("pane");
+        let node = page.get_node(pane).expect("pane node");
+        let layout = node.final_layout();
+        let pos = node.absolute_position(0.0, 0.0);
+        (
+            pos.x + layout.size.width / 2.0,
+            pos.y + layout.size.height / 2.0,
+        )
+    }
+
+    fn wheel_lines(chrome: &mut BaseDocument, x: f32, y: f32, lines_y: f64) {
+        let coords = PointerCoords {
+            page_x: x,
+            page_y: y,
+            screen_x: x,
+            screen_y: y,
+            client_x: x,
+            client_y: y,
+        };
+        let event = BlitzWheelEvent {
+            delta: BlitzWheelDelta::Lines(0., lines_y),
+            coords,
+            buttons: MouseEventButtons::None,
+            mods: Modifiers::empty(),
+            element: Point { x: 0., y: 0. },
+        };
+        chrome.handle_ui_event(UiEvent::Wheel(event));
+        chrome.resolve(0.0);
+    }
+
+    #[test]
+    fn page_subdoc_hover_is_none_without_page_iframe() {
+        let mut doc = page_doc(true);
+        doc.resolve(0.0);
+        assert!(!page_subdoc_hover_is_none(&doc));
+    }
+
+    #[test]
+    fn page_subdoc_hover_is_none_when_subdoc_has_no_hover() {
+        let chrome = chrome_with_scroll_pane();
+        assert!(page_subdoc_hover_is_none(&chrome));
+    }
+
+    #[test]
+    fn page_subdoc_hover_is_none_false_after_set_hover() {
+        let mut chrome = chrome_with_scroll_pane();
+        let Some(page) = page_subdoc_mut(&mut chrome) else {
+            panic!("page subdoc");
+        };
+        page.set_hover_to(80.0, 80.0);
+        page.resolve(0.0);
+        assert!(!page_subdoc_hover_is_none(&chrome));
+    }
+
+    #[test]
+    fn wheel_scrolls_inner_pane_after_hover_refresh() {
+        let mut chrome = chrome_with_scroll_pane();
+        chrome.set_hover_to(120.0, 100.0);
+        chrome.resolve(0.0);
+        let before = pane_scroll_y(&chrome);
+        wheel_lines(&mut chrome, 120.0, 100.0, 3.0);
+        let without_subdoc_hover = pane_scroll_y(&chrome);
+        assert_eq!(
+            without_subdoc_hover, before,
+            "wheel should not scroll the pane until the subdocument hover is set"
+        );
+
+        const SCROLL_PAGE: &str = concat!(
+            "<!DOCTYPE html><html><body style=\"margin:0\">",
+            "<div id=\"pane\" style=\"width:200px;height:120px;overflow:auto\">",
+            "<div style=\"height:800px\">tall</div></div>",
+            "<div style=\"height:3000px\">filler</div>",
+            "</body></html>"
+        );
+        let mut page = parse::document_from_html(SCROLL_PAGE, viewport_doc_config(), false);
+        page.resolve(0.0);
+        let (pane_x, pane_y) = pane_center(&page);
+        let pane_id = page.get_element_by_id("pane").expect("pane");
+        page.set_hover_to(pane_x, pane_y);
+        page.resolve(0.0);
+        let baseline = page.get_node(pane_id).expect("pane node").scroll_offset().y;
+        wheel_lines(&mut page, pane_x, pane_y, -5.0);
+        let after = page.get_node(pane_id).expect("pane node").scroll_offset().y;
+        assert!(
+            after > baseline,
+            "wheel should scroll the overflow pane once hover is set"
+        );
     }
 }

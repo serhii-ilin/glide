@@ -46,3 +46,11 @@ Feature: F-051 Common Web API compatibility shims
     When a script sets element.dataset.fooBar to "baz"
     Then the element has data-foo-bar="baz"
     And element.dataset is an instance of window.DOMStringMap
+
+  # Added with F-072: Reddit's JavaScript challenge iterates its own query string.
+  Scenario: URLSearchParams iterates and mutates pairs
+    When a script parses URLSearchParams from a query string
+    Then forEach and entries visit the pairs in order
+    And set and delete update the pair list
+    And size and has reflect the change
+    And the object is iterable

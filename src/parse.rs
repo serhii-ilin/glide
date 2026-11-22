@@ -38,6 +38,8 @@ pub fn document_from_html_with(
     let mut mutr = doc.mutate();
     parse_into_mutator(&mut mutr, html, scripting_enabled);
     drop(mutr);
+    crate::custom_elements::apply_streamed_suspense(&mut doc);
+    crate::custom_elements::show_unupgraded(&mut doc);
     doc
 }
 

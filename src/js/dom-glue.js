@@ -33,6 +33,7 @@
   const layoutCache = new Map();
   let currentPageUrl = 'about:blank';
   let pageLocation = null;
+  let formSubmissionInstalled = false;
 
   function rpc(op, ...args) {
     const reply = nextReply++;
@@ -1182,6 +1183,7 @@
     global.MouseEvent = impl.MouseEvent;
     patchLayout(global.Element.prototype);
     patchDataset(global.HTMLElement.prototype);
+    installFormSubmission();
     const gcsImpl = function (el) {
       flushMutations();
       const id = blitzId(el);
@@ -1216,6 +1218,82 @@
     } catch (_) { /* domino defines these as readonly */ }
   }
 
+  // Form submission (HTML Living Standard, form submission algorithm).
+  //
+  // Domino mirrors Blitz's element tree; Blitz builds the entry list, resolves
+  // the action and calls the document's navigation provider. Domino's
+  // `HTMLFormElement.submit` is a no-op and `requestSubmit` does not exist, so
+  // pages that submit forms (Reddit's JavaScript challenge, search boxes) never
+  // navigate. `requestSubmit` fires the cancelable `submit` event first, which
+  // is where pages add fields to the form.
+  function installFormSubmission() {
+    if (formSubmissionInstalled) return;
+    const Form = domino.impl.HTMLFormElement;
+    if (!Form || !Form.prototype) return;
+    formSubmissionInstalled = true;
+    // Domino installs `submit` as a non-configurable, non-writable no-op on
+    // HTMLFormElement.prototype. Forms created later inherit from whatever
+    // `Form.prototype` points at, so swap in a child prototype that adds the
+    // real methods without trying to redefine the locked property.
+    const proto = Object.create(Form.prototype);
+    Object.defineProperty(Form, 'prototype', {
+      value: proto,
+      writable: true,
+      enumerable: false,
+      configurable: false,
+    });
+
+    // Domino has no event-handler IDL properties. `form.onsubmit = fn` is a
+    // plain property there, so dispatching `submit` would not call it.
+    Object.defineProperty(proto, 'onsubmit', {
+      configurable: true,
+      get() {
+        return this.__glide_onsubmit || null;
+      },
+      set(fn) {
+        const previous = this.__glide_onsubmit;
+        if (previous) this.removeEventListener('submit', previous);
+        const handler = typeof fn === 'function' ? fn : null;
+        if (handler) this.addEventListener('submit', handler);
+        this.__glide_onsubmit = handler;
+      },
+    });
+
+    function submitFormElement(form, submitter) {
+      const formId = blitzId(form);
+      if (formId == null) return;
+      // Fields added or changed in this task must exist in Blitz first.
+      flushMutations();
+      const submitterId = submitter ? blitzId(submitter) : null;
+      try {
+        rpc('submitForm', String(formId), String(submitterId == null ? formId : submitterId));
+      } catch (_) {
+        // A rejected navigation must not throw into the page's handler.
+      }
+    }
+
+    Object.defineProperty(proto, 'submit', {
+      configurable: true,
+      writable: true,
+      value: function submit() {
+        submitFormElement(this, null);
+      },
+    });
+
+    Object.defineProperty(proto, 'requestSubmit', {
+      configurable: true,
+      writable: true,
+      value: function requestSubmit(submitter) {
+        if (submitter != null && submitter.form !== this) {
+          throw new TypeError('requestSubmit: submitter is not owned by this form');
+        }
+        const evt = new domino.impl.Event('submit', { bubbles: true, cancelable: true });
+        if (!this.dispatchEvent(evt)) return;
+        submitFormElement(this, submitter || null);
+      },
+    });
+  }
+
   function locationFrom(pageUrl) {
     const loc = {
       assign(u) {
@@ -1241,6 +1319,9 @@
   global.__glide_get_page_url = function () { return currentPageUrl; };
 
   global.__glide_init_page = function (snapshotJson, pageUrl) {
+    // Must run before the snapshot creates elements, so they inherit the
+    // prototype that carries `submit` / `requestSubmit`.
+    installFormSubmission();
     moSnapshotBuilding = true;
     resetMutationObservers();
     pendingOnHandlers.length = 0;
@@ -1406,7 +1487,16 @@
           });
         }
       }
+      get size() { return this._pairs.length; }
       append(k, v) { this._pairs.push([String(k), String(v)]); }
+      delete(k) {
+        const key = String(k);
+        this._pairs = this._pairs.filter(([name]) => name !== key);
+      }
+      getAll(k) {
+        const key = String(k);
+        return this._pairs.filter(([name]) => name === key).map(([, value]) => value);
+      }
       get(k) {
         const key = String(k);
         for (let i = 0; i < this._pairs.length; i++) {
@@ -1414,6 +1504,33 @@
         }
         return null;
       }
+      has(k) {
+        const key = String(k);
+        return this._pairs.some(([name]) => name === key);
+      }
+      set(k, v) {
+        const key = String(k);
+        const value = String(v);
+        const at = this._pairs.findIndex(([name]) => name === key);
+        if (at < 0) {
+          this._pairs.push([key, value]);
+          return;
+        }
+        this._pairs[at] = [key, value];
+        this._pairs = this._pairs.filter((pair, i) => i <= at || pair[0] !== key);
+      }
+      sort() {
+        this._pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+      }
+      forEach(callback, thisArg) {
+        this._pairs.slice().forEach(([name, value]) => {
+          callback.call(thisArg, value, name, this);
+        });
+      }
+      *entries() { yield* this._pairs; }
+      *keys() { yield* this._pairs.map(([name]) => name); }
+      *values() { yield* this._pairs.map(([, value]) => value); }
+      [Symbol.iterator]() { return this.entries(); }
       toString() {
         return this._pairs.map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&');
       }

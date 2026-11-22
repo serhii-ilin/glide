@@ -17,6 +17,20 @@ pub struct JsRunResult {
     pub console_wire: Vec<crate::js::console_feed::ConsoleWireEvent>,
 }
 
+/// Records `location.assign` / form-submit navigations instead of loading them.
+#[derive(Default)]
+struct RecordedNavigation {
+    urls: std::sync::Mutex<Vec<String>>,
+}
+
+impl blitz_traits::navigation::NavigationProvider for RecordedNavigation {
+    fn navigate_to(&self, options: blitz_traits::navigation::NavigationOptions) {
+        if let Ok(mut urls) = self.urls.lock() {
+            urls.push(options.url.to_string());
+        }
+    }
+}
+
 pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -37,12 +51,35 @@ pub fn run_inline_page_with_extra_settle(
     run_inline_page_with_runtime(html, pump_for, rt.handle(), extra_settle)
 }
 
+/// Run a page and return the navigations it requested (location, form submit).
+pub fn run_inline_page_with_navigation(
+    html: &str,
+    pump_for: Duration,
+) -> (JsRunResult, Vec<String>) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let (result, urls) = run_inline_page_full(html, pump_for, rt.handle(), 0, true);
+    (result, urls.unwrap_or_default())
+}
+
 fn run_inline_page_with_runtime(
     html: &str,
     pump_for: Duration,
     rt: &Handle,
     extra_settle: u32,
 ) -> JsRunResult {
+    run_inline_page_full(html, pump_for, rt, extra_settle, false).0
+}
+
+fn run_inline_page_full(
+    html: &str,
+    pump_for: Duration,
+    rt: &Handle,
+    extra_settle: u32,
+    record_navigation: bool,
+) -> (JsRunResult, Option<Vec<String>>) {
     let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
     let _ = crate::js::console_feed::drain_pending();
 
@@ -54,9 +91,14 @@ fn run_inline_page_with_runtime(
     };
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
     js_host.set_console_route(0, 1);
+    let recorder = record_navigation.then(|| Arc::new(RecordedNavigation::default()));
+    let navigation: Option<Arc<dyn blitz_traits::navigation::NavigationProvider>> = recorder
+        .as_ref()
+        .map(|r| Arc::clone(r) as Arc<dyn blitz_traits::navigation::NavigationProvider>);
     let config = DocumentConfig {
         base_url: Some("https://example.test/".into()),
         net_provider: Some(net.clone()),
+        navigation_provider: navigation,
         html_parser_provider: Some(Arc::new(provider)),
         ..Default::default()
     };
@@ -85,11 +127,15 @@ fn run_inline_page_with_runtime(
         .unwrap_or_default();
 
     let console_wire = js_host.drain_console_wire();
+    let urls = recorder.map(|r| r.urls.lock().map(|u| u.clone()).unwrap_or_default());
 
-    JsRunResult {
-        final_text,
-        console_wire,
-    }
+    (
+        JsRunResult {
+            final_text,
+            console_wire,
+        },
+        urls,
+    )
 }
 
 /// Run inline HTML, then evaluate a Console REPL expression and drain wire events.

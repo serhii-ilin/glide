@@ -577,6 +577,11 @@ fn map_dom_op(
             url: arg_string(scope, args, 2)?,
             reply,
         },
+        "submitForm" => DomRequest::SubmitForm {
+            form: arg_handle(scope, args, 2)?,
+            submitter: arg_handle(scope, args, 3)?,
+            reply,
+        },
         "randomBytes" => {
             let size = arg_string(scope, args, 2)?
                 .parse::<usize>()

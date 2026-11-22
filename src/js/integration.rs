@@ -1637,3 +1637,87 @@ fn json_eval_returns_json_text() {
     let json_text: String = serde_json::from_str(&raw).expect("string preview parses as JSON");
     assert_eq!(json_text, r#"{"a":1}"#);
 }
+
+#[test]
+fn request_submit_fires_submit_event_and_navigates() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form action="/search" method="get">
+        <input name="q" value="glide">
+        <input type="hidden" name="token">
+      </form>
+      <p id="t">pending</p>
+      <script>
+        var f = document.forms[0];
+        var fired = false;
+        f.onsubmit = function (e) {
+          fired = true;
+          e.target.elements.namedItem('token').value = 't1';
+        };
+        f.requestSubmit();
+        document.getElementById('t').textContent = fired ? 'fired' : 'missed';
+      </script></body></html>"#;
+    let (result, urls) =
+        super::harness::run_inline_page_with_navigation(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "fired");
+    assert_eq!(urls, vec!["https://example.test/search?q=glide&token=t1"]);
+}
+
+#[test]
+fn form_submit_does_not_fire_submit_event() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form action="/search" method="get"><input name="q" value="glide"></form>
+      <p id="t">pending</p>
+      <script>
+        var f = document.forms[0];
+        var fired = false;
+        f.onsubmit = function () { fired = true; };
+        f.submit();
+        document.getElementById('t').textContent = fired ? 'fired' : 'quiet';
+      </script></body></html>"#;
+    let (result, urls) =
+        super::harness::run_inline_page_with_navigation(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "quiet");
+    assert_eq!(urls, vec!["https://example.test/search?q=glide"]);
+}
+
+#[test]
+fn canceled_submit_event_prevents_navigation() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form action="/search" method="get"><input name="q" value="glide"></form>
+      <script>
+        var f = document.forms[0];
+        f.onsubmit = function (e) { e.preventDefault(); };
+        f.requestSubmit();
+      </script></body></html>"#;
+    let (_, urls) =
+        super::harness::run_inline_page_with_navigation(html, Duration::from_millis(80));
+    assert!(urls.is_empty(), "{urls:?}");
+}
+
+#[test]
+fn location_assign_requests_navigation() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <p id="t">x</p>
+      <script>location.assign('/next?x=1');</script></body></html>"#;
+    let (_, urls) =
+        super::harness::run_inline_page_with_navigation(html, Duration::from_millis(80));
+    assert_eq!(urls, vec!["https://example.test/next?x=1"]);
+}
+
+#[test]
+fn url_search_params_iterates_and_mutates() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var p = new URLSearchParams('a=1&b=two');
+        var pairs = [];
+        p.forEach(function (value, name) { pairs.push(name + '=' + value); });
+        var entries = Array.from(p.entries()).map(function (e) { return e[0] + ':' + e[1]; });
+        p.set('c', '3');
+        p['delete']('a');
+        document.getElementById('t').textContent =
+          pairs.join(',') + '|' + entries.join(',') + '|' + p.size + '|' + p.has('a') +
+          '|' + Array.from(p).map(function (e) { return e[0]; }).join(',');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(60));
+    assert_eq!(result.final_text, "a=1,b=two|a:1,b:two|2|false|b,c");
+}

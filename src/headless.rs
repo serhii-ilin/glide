@@ -151,8 +151,54 @@ where
     }
 }
 
+/// Upper bound on page-initiated navigations followed during one headless load.
+pub const MAX_JS_NAVIGATIONS: u32 = 5;
+
+/// Records page-initiated navigations (`location.assign`, form submission).
+///
+/// A headless document has no iframe and therefore no navigation provider of
+/// its own; this one keeps the target so the loader can follow it, mirroring
+/// what the window does when the iframe reports a navigation.
+#[derive(Default)]
+pub struct JsNavigation {
+    pending: std::sync::Mutex<Option<url::Url>>,
+}
+
+impl JsNavigation {
+    /// Take the last requested navigation, if any.
+    pub fn take(&self) -> Option<url::Url> {
+        self.pending.lock().ok().and_then(|mut url| url.take())
+    }
+}
+
+impl blitz_traits::navigation::NavigationProvider for JsNavigation {
+    fn navigate_to(&self, options: blitz_traits::navigation::NavigationOptions) {
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = Some(options.url);
+        }
+    }
+}
+
 /// Load a page headlessly and wait until subresources and scripts (when enabled) settle.
+///
+/// Follows navigations the page starts itself (a JavaScript challenge that
+/// submits a form, `location.assign`) for up to [`MAX_JS_NAVIGATIONS`] hops.
 pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
+    let mut target = url.to_string();
+    let mut hops = 0;
+    loop {
+        let (document, next) = load_once(&target, js_enabled)?;
+        match next {
+            Some(next) if hops < MAX_JS_NAVIGATIONS => {
+                hops += 1;
+                target = next.to_string();
+            }
+            _ => return Ok(document),
+        }
+    }
+}
+
+fn load_once(url: &str, js_enabled: bool) -> Result<(HtmlPageDocument, Option<url::Url>), String> {
     let net_impl = Arc::new(Provider::new(None));
     let handle = tokio::runtime::Handle::current();
     let (final_url, bytes) = fetch_page(url, js_enabled, &handle, &net_impl)?;
@@ -169,10 +215,12 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
         js_tap: tap.clone(),
     };
     let mut js_host = JsHost::new(js_enabled, tap, Some(net_impl.clone()));
+    let navigation = Arc::new(JsNavigation::default());
 
     let config = DocumentConfig {
         base_url: Some(final_url.clone()),
         net_provider: Some(net_provider),
+        navigation_provider: Some(navigation.clone()),
         html_parser_provider: Some(Arc::new(html_provider)),
         viewport: Some(Viewport::new(
             VIEWPORT_WIDTH,
@@ -216,7 +264,7 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
         }
     }
 
-    Ok(document)
+    Ok((document, navigation.take()))
 }
 
 /// Whether the laid-out page shows any text or replaced content.

@@ -296,3 +296,12 @@ fn counter_fixture_runs_with_js() {
         .unwrap_or_default();
     assert_eq!(text.trim(), "ready");
 }
+
+#[test]
+fn page_script_navigation_is_followed() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("page-navigate.html"), true).expect("load");
+    assert!(text.contains("NAVIGATED ?from=source"), "{text}");
+    assert!(!text.contains("start"), "{text}");
+}

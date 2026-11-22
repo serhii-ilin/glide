@@ -45,6 +45,14 @@ pub enum DomRequest {
         url: String,
         reply: u64,
     },
+    /// Submit a form the way the page's own `requestSubmit()` / `submit()`
+    /// would: build the entry list and navigate through the document's
+    /// navigation provider (the iframe's provider in the window).
+    SubmitForm {
+        form: u64,
+        submitter: u64,
+        reply: u64,
+    },
     ListenTarget {
         node: u64,
         event_type: String,

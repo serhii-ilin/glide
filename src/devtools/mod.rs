@@ -235,7 +235,7 @@ impl DevToolsSession {
         .flatten();
         if let Some(r) = rect {
             highlight::apply_inspect_highlight(chrome, Some(r));
-            inspect::apply_inspect_label(chrome, label.as_deref());
+            inspect::apply_inspect_label(chrome, label.as_deref(), Some(r));
         } else {
             inspect::exit_inspect_visuals(chrome);
         }

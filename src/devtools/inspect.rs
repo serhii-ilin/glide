@@ -115,16 +115,27 @@ pub fn inspect_element_label(page: &BaseDocument, element: NodeId) -> String {
     }
 }
 
-pub fn apply_inspect_label(chrome: &mut BaseDocument, label: Option<&str>) {
+pub fn apply_inspect_label(
+    chrome: &mut BaseDocument,
+    label: Option<&str>,
+    rect: Option<HighlightRect>,
+) {
     let Some(label_id) = chrome.get_element_by_id("inspect-label") else {
         return;
     };
-    let (style, text) = match label.filter(|s| !s.is_empty()) {
-        Some(l) => ("display:block;", escape_elements_text(l)),
-        None => ("display:none;", String::new()),
+    let (style, text) = match (label.filter(|s| !s.is_empty()), rect) {
+        (Some(l), Some(r)) => (
+            format!(
+                "display:block;left:{}px;top:{}px;",
+                r.left,
+                (r.top - 22.0).max(0.0)
+            ),
+            escape_elements_text(l),
+        ),
+        _ => ("display:none;".to_string(), String::new()),
     };
     let mut m = chrome.mutate();
-    m.set_attribute(label_id, qual_name!("style"), style);
+    m.set_attribute(label_id, qual_name!("style"), &style);
     for child in m.child_ids(label_id) {
         m.remove_and_drop_node(child);
     }
@@ -154,7 +165,7 @@ pub fn pick_at_chrome_point(
 
 pub fn exit_inspect_visuals(chrome: &mut BaseDocument) {
     highlight::apply_inspect_highlight(chrome, None);
-    apply_inspect_label(chrome, None);
+    apply_inspect_label(chrome, None, None);
 }
 
 #[cfg(test)]

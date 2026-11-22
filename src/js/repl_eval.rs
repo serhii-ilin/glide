@@ -59,6 +59,21 @@ impl EvalWatchdog {
     }
 }
 
+impl Drop for EvalWatchdog {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+/// Clears the `<console>` script label when evaluation returns, on success or error.
+struct ScriptLabelGuard;
+
+impl Drop for ScriptLabelGuard {
+    fn drop(&mut self) {
+        super::diagnostics::clear_script();
+    }
+}
+
 pub fn quote_js_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -116,14 +131,38 @@ fn eval_expression_value<'s>(
     source: &str,
 ) -> Result<String, String> {
     let watchdog = EvalWatchdog::start(scope);
+    let outcome = eval_source_value(scope, source, &watchdog);
+    // Keep the watchdog armed through the task flush so an endless microtask chain
+    // started by the eval is still bounded.
+    if settle_with_watchdog(scope) {
+        return Err(timeout_message());
+    }
+    outcome
+}
+
+fn eval_source_value<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    source: &str,
+    watchdog: &EvalWatchdog,
+) -> Result<String, String> {
     let quoted = serde_json::to_string(source).map_err(|e| e.to_string())?;
     let code = format!("(0,eval)({quoted})");
     super::diagnostics::set_script(Some("<console>"), None, Some("repl"));
-    let value = run_expression_with_watchdog(scope, &code, "<repl>", &watchdog)?;
-    let preview = format_v8_preview_under_watchdog(scope, value, 0, &watchdog)?;
-    super::diagnostics::clear_script();
-    watchdog.finish();
-    Ok(preview)
+    let _label = ScriptLabelGuard;
+    let value = run_expression_with_watchdog(scope, &code, "<repl>", watchdog)?;
+    format_v8_preview_under_watchdog(scope, value, 0)
+}
+
+/// Flush queued DOM work, returning true when the watchdog terminated the flush.
+fn settle_with_watchdog<'s>(scope: &mut v8::PinScope<'s, '_>) -> bool {
+    let tc = pin!(v8::TryCatch::new(scope));
+    let tc = &mut tc.init();
+    super::worker::settle_task(tc);
+    if tc.has_terminated() {
+        tc.cancel_terminate_execution();
+        return true;
+    }
+    false
 }
 
 fn run_expression_with_watchdog<'s>(
@@ -183,14 +222,12 @@ fn format_v8_preview_under_watchdog<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     value: v8::Local<'s, v8::Value>,
     depth: usize,
-    watchdog: &EvalWatchdog,
 ) -> Result<String, String> {
     let tc = pin!(v8::TryCatch::new(scope));
     let tc = &mut tc.init();
     let text = format_v8_preview(tc, value, depth);
     if tc.has_terminated() {
         tc.cancel_terminate_execution();
-        watchdog.finish();
         return Err(timeout_message());
     }
     if tc.has_caught() {

@@ -263,9 +263,6 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 let outcome =
                     super::repl_eval::eval_console_expression(scope, &source, tab_id, page_epoch);
-                // Flush queued DOM mutations before replying so a blocking caller sees
-                // the page after the eval, and drain the DOM RPC on the host side.
-                settle_task(scope);
                 if let Some(reply) = reply {
                     let _ = reply.send(outcome);
                 }
@@ -886,7 +883,7 @@ fn script_fields(name: &str) -> Vec<(&'static str, String)> {
 }
 
 /// Run V8 microtasks and the Glide queue until both are idle, then flush DOM ops.
-fn settle_task(scope: &mut v8::PinScope<'_, '_>) {
+pub(super) fn settle_task(scope: &mut v8::PinScope<'_, '_>) {
     for _ in 0..32 {
         scope.perform_microtask_checkpoint();
         let ran = call_global_fn(scope, "__glide_drain_microtasks", &[])

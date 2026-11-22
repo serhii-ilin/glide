@@ -30,7 +30,10 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     } else {
         let parsed = url::Url::parse(url).map_err(|err| err.to_string())?;
         if parsed.scheme() == "http" || parsed.scheme() == "https" {
-            match handle.block_on(crate::http::fetch_document(Request::get(parsed))) {
+            match handle.block_on(crate::http::fetch_document(
+                Request::get(parsed),
+                js_enabled,
+            )) {
                 crate::http::DocumentFetch::Page { url, body } => (url, body.to_vec()),
                 crate::http::DocumentFetch::Failed { url, reason } => {
                     return Err(format!("fetch {url}: {reason}"));

@@ -184,10 +184,11 @@ pub async fn fetch_followed(request: Request) -> Result<Followed, String> {
 /// Top-level navigation fetch: final document, or a reason for the error page.
 ///
 /// After HTTP redirects, a zero-delay `<meta http-equiv="refresh">` is followed
-/// too. A refresh that lives only inside `<noscript>` is followed when the rest
-/// of the document has no content, which is the fallback page Google shows when
-/// its scripts do not take over.
-pub async fn fetch_document(request: Request) -> DocumentFetch {
+/// too. A refresh that lives only inside `<noscript>` is followed only when
+/// scripting is disabled: the HTML parser does not create `<noscript>` children
+/// while scripting is enabled, so the fallback Google serves for script-less
+/// clients must stay inert. See [`meta_refresh_url`].
+pub async fn fetch_document(request: Request, scripting_enabled: bool) -> DocumentFetch {
     let original = request.url.to_string();
     let mut request = request;
     let mut seen = HashSet::new();
@@ -198,7 +199,8 @@ pub async fn fetch_document(request: Request) -> DocumentFetch {
             Ok(resp) if render_http_body(resp.status, resp.body.is_empty()) => {
                 if meta_hops < MAX_REDIRECTS as u16
                     && is_html_document(&resp.content_type, &resp.body)
-                    && let Some(target) = meta_refresh_url(&String::from_utf8_lossy(&resp.body))
+                    && let Some(target) =
+                        meta_refresh_url(&String::from_utf8_lossy(&resp.body), scripting_enabled)
                     && let Ok(base) = Url::parse(&resp.url)
                     && let Some(next) = resolve_redirect(&base, &target)
                     && seen.insert(next.to_string())
@@ -253,7 +255,12 @@ fn is_html_document(content_type: &str, body: &[u8]) -> bool {
 /// A refresh that lives only inside `<noscript>` is the fallback for a script
 /// shell. Google's search response is that shell plus one `display:none` box,
 /// so hidden subtrees do not count as page content.
-fn meta_refresh_url(html: &str) -> Option<String> {
+///
+/// Source / basis: HTML Standard, the `noscript` element in a document with a
+/// browsing context — with scripting enabled its contents are not parsed, so a
+/// refresh inside it never applies. With scripting disabled the contents are
+/// parsed and the refresh does apply.
+fn meta_refresh_url(html: &str, scripting_enabled: bool) -> Option<String> {
     let bytes = html.as_bytes();
     let mut i = 0;
     let mut in_script = false;
@@ -359,7 +366,7 @@ fn meta_refresh_url(html: &str) -> Option<String> {
         i = end;
     }
 
-    element_refresh.or(if body_has_content {
+    element_refresh.or(if scripting_enabled || body_has_content {
         None
     } else {
         noscript_refresh
@@ -674,35 +681,48 @@ mod tests {
 
     #[test]
     fn meta_refresh_reads_head_and_noscript_fallback() {
-        assert_eq!(
-            meta_refresh_url(
-                r#"<head><meta content="0;url=/search?q=a&amp;b=1" http-equiv="refresh"></head><body>wait</body>"#
-            )
-            .as_deref(),
-            Some("/search?q=a&b=1")
-        );
+        let head_refresh = r#"<head><meta content="0;url=/search?q=a&amp;b=1" http-equiv="refresh"></head><body>wait</body>"#;
+        for scripting in [true, false] {
+            assert_eq!(
+                meta_refresh_url(head_refresh, scripting).as_deref(),
+                Some("/search?q=a&b=1"),
+                "a real refresh applies in both scripting modes"
+            );
+        }
+
         let noscript_only = r#"<body><noscript><style>div{display:none}</style><meta content="0;url=/httpservice/retry/enablejs?sei=1" http-equiv="refresh"><div>Please click</div></noscript><script>var x=1</script></body>"#;
         assert_eq!(
-            meta_refresh_url(noscript_only).as_deref(),
-            Some("/httpservice/retry/enablejs?sei=1")
+            meta_refresh_url(noscript_only, false).as_deref(),
+            Some("/httpservice/retry/enablejs?sei=1"),
+            "with scripting disabled the noscript fallback is real markup"
         );
+        assert_eq!(
+            meta_refresh_url(noscript_only, true),
+            None,
+            "with scripting enabled the noscript contents are inert"
+        );
+
         let with_article = r#"<body><p>results</p><noscript><meta http-equiv="refresh" content="0;url=/nojs"></noscript></body>"#;
-        assert_eq!(meta_refresh_url(with_article), None);
+        assert_eq!(meta_refresh_url(with_article, false), None);
+        assert_eq!(meta_refresh_url(with_article, true), None);
+
         let google_shell = r#"<head><style>body{background:#fff}</style></head><body><noscript><style>div{display:none}</style><meta content="0;url=/httpservice/retry/enablejs?sei=1" http-equiv="refresh"><div style="display:block">Please click <a href="/httpservice/retry/enablejs?sei=1">here</a></div></noscript><script>var x=1</script><div id="yvlrue" style="display:none">trouble <a href="/search">click</a></div></body>"#;
         assert_eq!(
-            meta_refresh_url(google_shell).as_deref(),
+            meta_refresh_url(google_shell, false).as_deref(),
             Some("/httpservice/retry/enablejs?sei=1")
         );
         assert_eq!(
-            meta_refresh_url(
-                r#"<script>var s='<meta http-equiv="refresh" content="0;url=/evil">'</script><p>ok</p>"#
-            ),
-            None
+            meta_refresh_url(google_shell, true),
+            None,
+            "Google's enablejs fallback must not run while scripts are on"
         );
-        assert_eq!(
-            meta_refresh_url(r#"<head><meta http-equiv="refresh" content="5;url=/later"></head>"#),
-            None
-        );
+
+        let script_text = r#"<script>var s='<meta http-equiv="refresh" content="0;url=/evil">'</script><p>ok</p>"#;
+        assert_eq!(meta_refresh_url(script_text, true), None);
+        assert_eq!(meta_refresh_url(script_text, false), None);
+        let delayed = r#"<head><meta http-equiv="refresh" content="5;url=/later"></head>"#;
+        assert_eq!(meta_refresh_url(delayed, true), None);
+        assert_eq!(meta_refresh_url(delayed, false), None);
     }
 
     #[test]
@@ -804,7 +824,7 @@ mod tests {
         let _guard = rt.enter();
 
         let start = Url::parse(&format!("http://127.0.0.1:{port}/start")).unwrap();
-        match rt.block_on(fetch_document(Request::get(start))) {
+        match rt.block_on(fetch_document(Request::get(start), false)) {
             DocumentFetch::Page { url, body } => {
                 assert!(url.ends_with("/land"), "{url}");
                 assert!(String::from_utf8_lossy(&body).contains("landed"));
@@ -823,7 +843,7 @@ mod tests {
         }
 
         let missing = Url::parse(&format!("http://127.0.0.1:{port}/missing")).unwrap();
-        match rt.block_on(fetch_document(Request::get(missing))) {
+        match rt.block_on(fetch_document(Request::get(missing), false)) {
             DocumentFetch::Page { body, .. } => {
                 assert!(String::from_utf8_lossy(&body).contains("custom-404"));
             }
@@ -831,7 +851,7 @@ mod tests {
         }
 
         let meta = Url::parse(&format!("http://127.0.0.1:{port}/meta")).unwrap();
-        match rt.block_on(fetch_document(Request::get(meta))) {
+        match rt.block_on(fetch_document(Request::get(meta), false)) {
             DocumentFetch::Page { url, body } => {
                 assert!(url.ends_with("/land"), "{url}");
                 assert!(String::from_utf8_lossy(&body).contains("landed"));
@@ -840,15 +860,21 @@ mod tests {
         }
 
         let noscript = Url::parse(&format!("http://127.0.0.1:{port}/noscript")).unwrap();
-        match rt.block_on(fetch_document(Request::get(noscript))) {
+        match rt.block_on(fetch_document(Request::get(noscript.clone()), false)) {
             DocumentFetch::Page { url, .. } => assert!(url.ends_with("/land"), "{url}"),
             DocumentFetch::Failed { reason, .. } => {
                 panic!("noscript-only refresh should land: {reason}")
             }
         }
+        match rt.block_on(fetch_document(Request::get(noscript), true)) {
+            DocumentFetch::Page { url, .. } => assert!(url.ends_with("/noscript"), "{url}"),
+            DocumentFetch::Failed { reason, .. } => {
+                panic!("noscript refresh must stay inert: {reason}")
+            }
+        }
 
         let keep = Url::parse(&format!("http://127.0.0.1:{port}/keep")).unwrap();
-        match rt.block_on(fetch_document(Request::get(keep))) {
+        match rt.block_on(fetch_document(Request::get(keep), false)) {
             DocumentFetch::Page { body, .. } => {
                 assert!(String::from_utf8_lossy(&body).contains("stay"));
             }
@@ -856,7 +882,7 @@ mod tests {
         }
 
         let empty = Url::parse(&format!("http://127.0.0.1:{port}/empty")).unwrap();
-        match rt.block_on(fetch_document(Request::get(empty))) {
+        match rt.block_on(fetch_document(Request::get(empty), false)) {
             DocumentFetch::Failed { reason, .. } => {
                 assert!(reason.contains("503"), "{reason}");
             }

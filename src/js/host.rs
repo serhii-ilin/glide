@@ -399,11 +399,11 @@ impl JsHost {
                 worker.run_scripts(vec![(body, script_id, module, resource)], "async");
             }
         }
-        worker.fire_page_load();
         let failed = failed_elements();
         if !failed.is_empty() {
             worker.notify_script_elements(failed);
         }
+        worker.fire_page_load();
         worker.page_settled();
     }
 

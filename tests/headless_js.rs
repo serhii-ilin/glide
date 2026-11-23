@@ -570,6 +570,14 @@ fn parser_async_script_runs_before_load_event() {
 }
 
 #[test]
+fn parser_async_missing_script_fires_error_before_load_event() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("parser-async-missing.html"), true).expect("load");
+    assert!(text.contains("error,load"), "{text}");
+}
+
+#[test]
 fn classic_script_dynamic_import_resolves_relative_module() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

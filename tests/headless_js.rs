@@ -562,6 +562,14 @@ fn module_runs_between_parser_scripts_and_dom_content_loaded() {
 }
 
 #[test]
+fn parser_async_script_runs_before_load_event() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("parser-async-load.html"), true).expect("load");
+    assert!(text.contains("classic,dom,async,load"), "{text}");
+}
+
+#[test]
 fn classic_script_dynamic_import_resolves_relative_module() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

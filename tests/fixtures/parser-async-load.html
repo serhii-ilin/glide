@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t"></p>
+  <script>
+    window.order = ['classic'];
+    document.addEventListener('DOMContentLoaded', function () {
+      window.order.push('dom');
+    });
+    window.addEventListener('load', function () {
+      window.order.push('load');
+      document.getElementById('t').textContent = window.order.join(',');
+    });
+  </script>
+  <script async src="parser-async-load.js"></script>
+</body>
+</html>

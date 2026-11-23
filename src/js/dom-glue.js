@@ -1571,12 +1571,20 @@
     documentLoaded = true;
   };
 
-  global.__glide_fire_page_load = function () {
+  global.__glide_dispatch_dom_content_loaded = function () {
     beginTask();
     flushMutations();
     if (pageDocument) {
       pageDocument.readyState = 'interactive';
       pageDocument.dispatchEvent(new domino.impl.Event('DOMContentLoaded', { bubbles: true }));
+    }
+    flushMutations();
+  };
+
+  global.__glide_fire_page_load = function () {
+    beginTask();
+    flushMutations();
+    if (pageDocument) {
       pageDocument.readyState = 'complete';
     }
     global.dispatchEvent(new domino.impl.Event('load', { bubbles: false }));

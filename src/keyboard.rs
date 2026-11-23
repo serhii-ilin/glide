@@ -719,6 +719,7 @@ fn primary_modifiers() -> ModifiersState {
 
 /// Run a menu edit command on whatever has focus, exactly as its key press would
 /// (page iframe first, then a focused chrome text field), see [`dispatch_text_keys`].
+#[allow(clippy::needless_bool)]
 pub fn apply_edit_action_to_doc(chrome: &mut BaseDocument, action: EditAction) -> bool {
     let code = action.key_code();
     let modifiers = primary_modifiers();
@@ -1211,7 +1212,7 @@ mod tests {
                 KeyCode::KeyB,
                 prim | ModifiersState::ALT,
                 Some(BrowserShortcut::ShowBookmarks),
-                Some(BrowserShortcut::ShowBookmarks),
+                None,
             ));
             cases.extend(both(
                 &format!("{tag}+Shift+W close window"),
@@ -1225,7 +1226,7 @@ mod tests {
                 KeyCode::KeyM,
                 prim,
                 Some(BrowserShortcut::MinimizeWindow),
-                Some(BrowserShortcut::MinimizeWindow),
+                None,
             ));
             cases.extend(both(
                 &format!("{tag}+. stop loading"),

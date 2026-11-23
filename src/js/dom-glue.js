@@ -2199,6 +2199,18 @@
   };
 
   global.__glide_flush_dom = endTask;
+
+  global.__glide_load_lazy_image = function (el) {
+    flushMutations();
+    const id = blitzId(el);
+    if (id == null) return;
+    try {
+      rpc('loadImage', String(id));
+    } catch (_) {
+      // Fetch may fail quietly; the img stays without a resource.
+    }
+  };
+
   if (global.__glide_debug_hooks) {
     global.__glide_test_skip_node = function (node) {
       if (!node) return;

@@ -58,7 +58,9 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::WebSocketSend { reply, .. }
         | DomRequest::WebSocketClose { reply, .. }
         | DomRequest::WebSocketBuffered { reply, .. }
-        | DomRequest::NodeCount { reply } => *reply,
+        | DomRequest::NodeCount { reply }
+        | DomRequest::LoadImage { reply, .. }
+        | DomRequest::ScrollViewport { reply, .. } => *reply,
         #[cfg(debug_assertions)]
         DomRequest::TestResize { reply, .. } => *reply,
     }
@@ -143,6 +145,22 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
             reply,
             DomValue::Number(super::batch::live_node_count(doc) as f64),
         ),
+        DomRequest::LoadImage { node, reply } => {
+            use blitz_traits::node_id::NodeId;
+            let node_id = NodeId::from_u64(node);
+            if doc.get_node(node_id).is_none() {
+                return DomResponse::err(reply, "unknown node");
+            }
+            let mut mutator = doc.mutate();
+            mutator.load_image(node_id);
+            DomResponse::ok(reply, DomValue::Null)
+        }
+        DomRequest::ScrollViewport { x, y, reply } => {
+            let cur = doc.viewport_scroll();
+            doc.scroll_viewport_by(x - cur.x, y - cur.y);
+            doc.resolve(0.0);
+            DomResponse::ok(reply, DomValue::Null)
+        }
         #[cfg(debug_assertions)]
         DomRequest::TestResize {
             width,

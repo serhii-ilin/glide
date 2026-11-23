@@ -807,6 +807,7 @@ impl Glide {
         }
     }
 
+    #[allow(dead_code)] // macOS native menu calls this; the in-window menu path is separate.
     fn apply_menu_command(
         &mut self,
         event_loop: &dyn ActiveEventLoop,

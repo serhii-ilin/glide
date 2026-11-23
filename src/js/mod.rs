@@ -5,6 +5,7 @@ mod batch;
 mod bridge;
 pub mod console_feed;
 pub mod diagnostics;
+mod form_controls;
 mod host;
 mod modules;
 mod paint_prune;
@@ -13,6 +14,7 @@ mod repl_eval;
 pub mod scripts;
 mod snapshot;
 mod tap;
+pub mod websocket;
 mod worker;
 
 #[cfg(test)]

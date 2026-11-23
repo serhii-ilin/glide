@@ -163,6 +163,15 @@ mod tests {
     }
 
     #[test]
+    fn back_after_post_entry_returns_url_for_get_reload() {
+        let mut h = History::new("https://example.test/form".into());
+        h.push("https://example.test/result".into());
+        assert_eq!(h.back().as_deref(), Some("https://example.test/form"));
+        // History stores URLs only; reload after back is always GET (no POST replay).
+        assert_eq!(h.current(), "https://example.test/form");
+    }
+
+    #[test]
     fn back_from_second_page_returns_about_blank() {
         let mut h = History::new("about:blank".into());
         h.push("https://example.test/page".into());

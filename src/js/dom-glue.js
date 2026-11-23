@@ -287,6 +287,7 @@
   }
 
   function installCustomElementsRegistry() {
+    installFormControlMirror();
     installHTMLElementConstructorPatch();
     const registry = {
       define(name, ctor, options) {
@@ -359,6 +360,7 @@
   let currentPageUrl = 'about:blank';
   let pageLocation = null;
   let formSubmissionInstalled = false;
+  let formControlMirrorInstalled = false;
 
   function rpc(op, ...args) {
     const reply = nextReply++;
@@ -1519,7 +1521,10 @@
     if (!scriptEl || scriptEl.nodeType !== 1 || scriptEl.localName !== 'script') return;
     if (ranScripts.has(scriptEl)) return;
     ranScripts.add(scriptEl);
-    if (scriptEl.getAttribute && scriptEl.getAttribute('src')) return;
+    if (scriptEl.getAttribute && scriptEl.getAttribute('src')) {
+      runDynamicScript(scriptEl);
+      return;
+    }
     const code = scriptEl.textContent || '';
     if (!code) return;
     const prevScript = global.__glideCurrentScript;
@@ -1828,6 +1833,131 @@
   // pages that submit forms (Reddit's JavaScript challenge, search boxes) never
   // navigate. `requestSubmit` fires the cancelable `submit` event first, which
   // is where pages add fields to the form.
+  function mirrorControlField(node, field) {
+    const id = blitzId(node);
+    if (id == null) return null;
+    const raw = rpc('controlField', String(id), field);
+    if (raw == null) return null;
+    if (field === 'checked') {
+      const on = raw === 'true' || raw === true;
+      try { node.checked = on; } catch (_) { /* domino may reject on wrong type */ }
+      return on;
+    }
+    if (field === 'value') {
+      try { node.value = String(raw); } catch (_) { /* textarea/input */ }
+      return String(raw);
+    }
+    return raw;
+  }
+
+  const controlValueCache = new WeakMap();
+
+  function syncFormControlsFromBlitz(form) {
+    const formId = blitzId(form);
+    if (formId == null) return;
+    const rows = rpc('syncFormControls', String(formId));
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      const node = blitzToNode.get(String(row.id));
+      if (!node) continue;
+      if (row.checked != null) {
+        try { node.checked = Boolean(row.checked); } catch (_) { /* type */ }
+      }
+      if (row.value != null) {
+        try { node.value = String(row.value); } catch (_) { /* type */ }
+      }
+    }
+  }
+
+  function pushFormControlsToBlitz(form) {
+    if (!form || form.nodeType !== 1) return;
+    const pairs = [];
+    const stack = [form];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || node.nodeType !== 1) continue;
+      const tag = String(node.localName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea') {
+        const id = blitzId(node);
+        if (id != null) {
+          let value = '';
+          try {
+            value = String(node.value);
+          } catch (_) {
+            value = (node.getAttribute && node.getAttribute('value')) || '';
+          }
+          if (controlValueCache.has(node)) value = String(controlValueCache.get(node));
+          pairs.push([id, value]);
+        }
+      }
+      for (let c = node.firstChild; c; c = c.nextSibling) stack.push(c);
+    }
+    if (pairs.length) {
+      try {
+        rpc('pushFormValues', JSON.stringify(pairs));
+      } catch (_) { /* navigation must not throw into the page */ }
+    }
+  }
+
+  function installFormControlMirror() {
+    if (formControlMirrorInstalled) return;
+    const Input = domino.impl.HTMLInputElement;
+    const TextArea = domino.impl.HTMLTextAreaElement;
+    if (!Input || !Input.prototype) return;
+    formControlMirrorInstalled = true;
+    const inputProto = Object.create(Input.prototype);
+    Object.defineProperty(Input, 'prototype', {
+      value: inputProto,
+      writable: true,
+      enumerable: false,
+      configurable: false,
+    });
+    Object.defineProperty(inputProto, 'value', {
+      configurable: true,
+      get() {
+        if (controlValueCache.has(this)) return controlValueCache.get(this);
+        return mirrorControlField(this, 'value') ?? '';
+      },
+      set(v) {
+        const text = String(v);
+        controlValueCache.set(this, text);
+        this.setAttribute('value', text);
+      },
+    });
+    Object.defineProperty(inputProto, 'checked', {
+      configurable: true,
+      get() {
+        const raw = mirrorControlField(this, 'checked');
+        return raw === true || raw === 'true';
+      },
+      set(on) {
+        if (on) this.setAttribute('checked', '');
+        else this.removeAttribute('checked');
+      },
+    });
+    if (TextArea && TextArea.prototype) {
+      const taProto = Object.create(TextArea.prototype);
+      Object.defineProperty(TextArea, 'prototype', {
+        value: taProto,
+        writable: true,
+        enumerable: false,
+        configurable: false,
+      });
+      Object.defineProperty(taProto, 'value', {
+        configurable: true,
+        get() {
+          if (controlValueCache.has(this)) return controlValueCache.get(this);
+          return mirrorControlField(this, 'value') ?? '';
+        },
+        set(v) {
+          const text = String(v);
+          controlValueCache.set(this, text);
+          this.setAttribute('value', text);
+        },
+      });
+    }
+  }
+
   function installFormSubmission() {
     if (formSubmissionInstalled) return;
     const Form = domino.impl.HTMLFormElement;
@@ -1861,9 +1991,11 @@
       },
     });
 
-    function submitFormElement(form, submitter) {
+    function submitFormElement(form, submitter, skipBlitzPull) {
       const formId = blitzId(form);
       if (formId == null) return;
+      if (!skipBlitzPull) syncFormControlsFromBlitz(form);
+      pushFormControlsToBlitz(form);
       // Fields added or changed in this task must exist in Blitz first.
       flushMutations();
       const submitterId = submitter ? blitzId(submitter) : null;
@@ -1878,7 +2010,7 @@
       configurable: true,
       writable: true,
       value: function submit() {
-        submitFormElement(this, null);
+        submitFormElement(this, null, true);
       },
     });
 
@@ -1887,11 +2019,16 @@
       writable: true,
       value: function requestSubmit(submitter) {
         if (submitter != null && submitter.form !== this) {
-          throw new TypeError('requestSubmit: submitter is not owned by this form');
+          const DOMException = domino.impl.DOMException;
+          throw new DOMException(
+            'The submitter is not owned by this form element.',
+            DOMException.NOT_FOUND_ERR,
+          );
         }
         const evt = new domino.impl.Event('submit', { bubbles: true, cancelable: true });
         if (!this.dispatchEvent(evt)) return;
-        submitFormElement(this, submitter || null);
+        flushMutations();
+        submitFormElement(this, submitter || null, true);
       },
     });
   }

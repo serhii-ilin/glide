@@ -6,7 +6,7 @@ Feature: F-049 Native macOS menu bar
   # Source / basis: Apple Human Interface Guidelines (The menu bar; Keyboard shortcuts);
   #                Safari for macOS menus as structural benchmark
   # Registry: docs/features.md -> F-049
-  # Tests: menu::tests, chrome::tests and keyboard::tests on every OS; manual M-056 on macOS
+  # Tests: menu::tests, chrome::tests and keyboard::tests on every OS; manual M-059 on macOS
   # MCP: n/a (chrome UI; same commands reachable via glide_* navigation tools)
 
   Background:
@@ -131,7 +131,7 @@ Feature: F-049 Native macOS menu bar
     When Edit > Copy is chosen
     Then the edit action reports unhandled and the chord is replayed as a key press for Blitz's default handling
 
-  # Test: menu::tests::app_menu_quit_uses_the_quit_shortcut_path; manual M-056 for the session
+  # Test: menu::tests::app_menu_quit_uses_the_quit_shortcut_path; manual M-059 for the session
   Scenario: Quit saves the session
     When Glide > Quit Glide is chosen
     Then the same code runs as for the Quit shortcut and the session is saved

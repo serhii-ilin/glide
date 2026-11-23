@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<body>
+<form id="f" method="post" action="/post">
+  <input type="hidden" name="token" id="token" value="a">
+</form>
+<script>
+  document.getElementById('token').value = 'b';
+  document.getElementById('f').submit();
+</script>
+</body>
+</html>

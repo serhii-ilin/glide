@@ -16,6 +16,7 @@ pub enum NetworkResourceKind {
     Font,
     Fetch,
     Xhr,
+    WebSocket,
     Other,
 }
 
@@ -29,6 +30,7 @@ impl NetworkResourceKind {
             Self::Font => "font",
             Self::Fetch => "fetch",
             Self::Xhr => "xhr",
+            Self::WebSocket => "websocket",
             Self::Other => "other",
         }
     }
@@ -39,6 +41,9 @@ impl NetworkResourceKind {
         }
         if initiator == NetworkInitiator::Xhr {
             return Self::Xhr;
+        }
+        if initiator == NetworkInitiator::WebSocket {
+            return Self::WebSocket;
         }
         let path = url.rsplit_once('?').map(|(p, _)| p).unwrap_or(url);
         let lower = path.to_ascii_lowercase();
@@ -67,7 +72,9 @@ impl NetworkResourceKind {
         match initiator {
             NetworkInitiator::Document => Self::Document,
             NetworkInitiator::Subresource => Self::Other,
-            NetworkInitiator::Fetch | NetworkInitiator::Xhr => Self::Fetch,
+            NetworkInitiator::Fetch | NetworkInitiator::Xhr | NetworkInitiator::WebSocket => {
+                Self::Fetch
+            }
         }
     }
 }
@@ -78,6 +85,7 @@ pub enum NetworkInitiator {
     Subresource,
     Fetch,
     Xhr,
+    WebSocket,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,7 +211,9 @@ pub fn apply_network_wire(tabs: &mut crate::tabs::TabManager, events: &[NetworkW
 }
 
 pub(crate) fn bump_tab_network_epoch_for_navigation(tab: &mut crate::tabs::Tab) {
-    tab.network_epoch = tab.network_epoch.saturating_add(1);
+    let next_epoch = tab.network_epoch.saturating_add(1);
+    crate::js::websocket::close_for_tab_network_epoch(tab.id, next_epoch);
+    tab.network_epoch = next_epoch;
     tab.network.clear();
     tab.network_panel.reset_for_navigation();
     crate::network_feed::discard_pending_for_tab(tab.id);

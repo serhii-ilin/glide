@@ -1706,6 +1706,70 @@ fn json_eval_returns_json_text() {
 }
 
 #[test]
+fn input_value_round_trips_same_turn_without_stale_readback() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <input id="i" value="">
+      <p id="t">x</p>
+      <script>
+        var input = document.getElementById('i');
+        input.value = 'hello';
+        document.getElementById('t').textContent = input.value;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "hello");
+}
+
+#[test]
+fn request_submit_rejects_foreign_submitter() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form id="f"></form>
+      <button id="b" type="submit"></button>
+      <p id="t">pending</p>
+      <script>
+        var err = '';
+        try {
+          document.getElementById('f').requestSubmit(document.getElementById('b'));
+        } catch (e) {
+          err = (e.name || 'Error') + ':' + (e.code != null ? e.code : '');
+        }
+        document.getElementById('t').textContent = err;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert!(
+        result.final_text.contains("NotFoundError") || result.final_text.contains("not owned"),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn hidden_gbv_submit_handler_updates_entry_list() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form action="/search" method="get">
+        <input type="hidden" name="gbv" id="gbv" value="1">
+      </form>
+      <script>
+        var f = document.forms[0];
+        f.onsubmit = function () {
+          if (typeof XMLHttpRequest !== 'undefined') {
+            var el = document.getElementById('gbv');
+            try { el.value = '2'; } catch (_) {}
+            el.setAttribute('value', '2');
+          }
+        };
+        f.requestSubmit();
+      </script></body></html>"#;
+    let (_, urls) =
+        super::harness::run_inline_page_with_navigation(html, Duration::from_millis(80));
+    assert_eq!(urls.len(), 1, "{urls:?}");
+    assert!(
+        urls[0].contains("gbv=2"),
+        "expected upgraded gbv in navigation URL, got {}",
+        urls[0]
+    );
+}
+
+#[test]
 fn request_submit_fires_submit_event_and_navigates() {
     let html = r#"<!DOCTYPE html><html><body>
       <form action="/search" method="get">
@@ -2248,4 +2312,228 @@ fn custom_element_unicode_and_invalid_names() {
       </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(120));
     assert_eq!(result.final_text, "r|u");
+}
+
+#[test]
+fn websocket_loopback_echo_and_close() {
+    let server_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("server runtime");
+    let (ws_url, _server) = server_rt.block_on(super::websocket::test_support::test_server(None));
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var ws = new WebSocket({url:?});
+        var log = [];
+        ws.onopen = function() {{ ws.send('hello'); }};
+        ws.onmessage = function(ev) {{ log.push('msg:' + ev.data); ws.close(1000, 'done'); }};
+        ws.onclose = function(ev) {{
+          log.push('close:' + ev.code + ':' + ev.reason + ':' + ev.wasClean);
+          document.getElementById('t').textContent = log.join('|');
+        }};
+      </script></body></html>"#,
+        url = ws_url
+    );
+    let page_rt = super::harness::harness_tokio_runtime();
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        &html,
+        Duration::from_millis(1200),
+        page_rt.handle(),
+        80,
+        "http://example.test/",
+    );
+    let text = result.final_text;
+    assert!(text.contains("msg:hello"), "{text}");
+    assert!(text.contains("close:1000:done:true"), "{text}");
+}
+
+#[test]
+fn websocket_close_validation_leaves_socket_open() {
+    let server_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("server runtime");
+    let (ws_url, _server) = server_rt.block_on(super::websocket::test_support::test_server(None));
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var ws = new WebSocket({url:?});
+        var out = [];
+        ws.onopen = function() {{
+          try {{ ws.close(1005); }} catch (e) {{ out.push('e1005:' + e.name); }}
+          out.push('c1005:' + ws.readyState);
+          try {{ ws.close(1000, 'x'.repeat(200)); }} catch (e) {{ out.push('elong:' + e.name); }}
+          out.push('long:' + ws.readyState);
+        }};
+        ws.onclose = function() {{ out.push('closed'); }};
+        setTimeout(function() {{
+          document.getElementById('t').textContent = out.join('|');
+        }}, 800);
+      </script></body></html>"#,
+        url = ws_url
+    );
+    let page_rt = super::harness::harness_tokio_runtime();
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        &html,
+        Duration::from_millis(2500),
+        page_rt.handle(),
+        100,
+        "http://example.test/",
+    );
+    let text = result.final_text;
+    assert!(text.contains("e1005:InvalidAccessError"), "{text}");
+    assert!(text.contains("elong:SyntaxError"), "{text}");
+    assert!(text.contains("c1005:1"), "{text}");
+}
+
+#[test]
+fn websocket_binary_blob_echo() {
+    let server_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("server runtime");
+    let (ws_url, _server) = server_rt.block_on(super::websocket::test_support::test_server(None));
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var ws = new WebSocket({url:?});
+        ws.binaryType = 'blob';
+        ws.onopen = function() {{
+          ws.send(new Blob([new Uint8Array([1, 2, 3])]));
+        }};
+        ws.onmessage = function(ev) {{
+          var kind = ev.data instanceof Blob ? 'blob' : 'other';
+          ev.data.arrayBuffer().then(function(buf) {{
+            var b = new Uint8Array(buf);
+            document.getElementById('t').textContent = kind + ':' + b[0] + ',' + b[1] + ',' + b[2];
+          }});
+        }};
+      </script></body></html>"#,
+        url = ws_url
+    );
+    let page_rt = super::harness::harness_tokio_runtime();
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        &html,
+        Duration::from_millis(1500),
+        page_rt.handle(),
+        80,
+        "http://example.test/",
+    );
+    assert_eq!(result.final_text, "blob:1,2,3");
+}
+
+#[test]
+fn websocket_url_fragment_and_default_port() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var out = [];
+        try { new WebSocket('ws://example.test/#frag'); } catch (e) { out.push('frag:' + e.name); }
+        try {
+          var w = new WebSocket('ws://example.test:80/path');
+          out.push('url:' + w.url);
+        } catch (e) { out.push('urlerr:' + e.name); }
+        document.getElementById('t').textContent = out.join('|');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "http://example.test/",
+        Duration::from_millis(300),
+    );
+    let text = result.final_text;
+    assert!(text.contains("frag:SyntaxError"), "{text}");
+    assert!(text.contains("url:ws://example.test/path"), "{text}");
+}
+
+#[test]
+fn websocket_binary_arraybuffer_roundtrip_200kb() {
+    let server_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("server runtime");
+    let (ws_url, _server) = server_rt.block_on(super::websocket::test_support::test_server(None));
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var ws = new WebSocket({url:?});
+        ws.binaryType = 'arraybuffer';
+        ws.onopen = function() {{
+          var buf = new Uint8Array(200 * 1024);
+          for (var i = 0; i < buf.length; i++) buf[i] = i & 255;
+          ws.send(buf);
+        }};
+        ws.onmessage = function(ev) {{
+          var b = new Uint8Array(ev.data);
+          var ok = b.length === 200 * 1024 && b[0] === 0 && b[b.length - 1] === ((b.length - 1) & 255);
+          document.getElementById('t').textContent = ok ? 'ok:' + b.length : 'bad:' + b.length;
+        }};
+      </script></body></html>"#,
+        url = ws_url
+    );
+    let page_rt = super::harness::harness_tokio_runtime();
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        &html,
+        Duration::from_millis(4000),
+        page_rt.handle(),
+        120,
+        "http://example.test/",
+    );
+    assert!(
+        result.final_text.starts_with("ok:204800"),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn websocket_protocol_negotiation() {
+    let server_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("server runtime");
+    let (ws_url, _server) =
+        server_rt.block_on(super::websocket::test_support::test_server(Some("chat")));
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var out = [];
+        try {{ new WebSocket({url:?}, ['a','a']); }} catch (e) {{ out.push('dup:' + e.name); }}
+        try {{ new WebSocket({url:?}, ''); }} catch (e) {{ out.push('empty:' + e.name); }}
+        var ws = new WebSocket({url:?}, ['chat', 'other']);
+        ws.onopen = function() {{ document.getElementById('t').textContent = out.join('|') + '|proto:' + ws.protocol; }};
+      </script></body></html>"#,
+        url = ws_url
+    );
+    let page_rt = super::harness::harness_tokio_runtime();
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        &html,
+        Duration::from_millis(1500),
+        page_rt.handle(),
+        80,
+        "http://example.test/",
+    );
+    let text = result.final_text;
+    assert!(text.contains("dup:SyntaxError"), "{text}");
+    assert!(text.contains("empty:SyntaxError"), "{text}");
+    assert!(text.contains("proto:chat"), "{text}");
+}
+
+#[test]
+fn websocket_rejects_mixed_content_and_bad_url() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var out = [];
+        try { new WebSocket('ws://insecure.test/'); } catch (e) { out.push('mixed:' + e.name); }
+        try { new WebSocket('https://bad.example/ws'); } catch (e) { out.push('bad:' + e.name); }
+        document.getElementById('t').textContent = out.join('|');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    let text = result.final_text;
+    assert!(text.contains("mixed:SecurityError"), "{text}");
+    assert!(text.contains("bad:SyntaxError"), "{text}");
 }

@@ -30,6 +30,101 @@ impl ErrorKind {
     }
 }
 
+/// Host API names Glide probes or implements (`CAPABILITY_PROBES`, bootstrap shims).
+const KNOWN_HOST_APIS: &[&str] = &[
+    "atob",
+    "btoa",
+    "fetch",
+    "XMLHttpRequest",
+    "matchMedia",
+    "MutationObserver",
+    "localStorage",
+    "sessionStorage",
+    "WebAssembly",
+    "IntersectionObserver",
+    "ResizeObserver",
+    "customElements",
+    "Notification",
+    "WebSocket",
+    "Worker",
+    "EventSource",
+    "Blob",
+    "crypto",
+    "crypto.subtle",
+    "CSS",
+    "history",
+    "performance",
+    "performance.now",
+    "navigator",
+    "queueMicrotask",
+    "requestIdleCallback",
+    "requestAnimationFrame",
+    "AbortController",
+    "DOMStringMap",
+    "URLSearchParams",
+    "structuredClone",
+    "indexedDB",
+    "FormData",
+];
+
+fn missing_api_identifier(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let reference = lower
+        .strip_prefix("uncaught referenceerror: ")
+        .or_else(|| lower.strip_prefix("referenceerror: "));
+    if let Some(rest) = reference
+        && let Some(name) = rest.strip_suffix(" is not defined")
+    {
+        return Some(name.trim().to_string());
+    }
+    if let Some(idx) = lower.find(" is not a function") {
+        let head = &message[..idx];
+        let token = head.split_whitespace().last().unwrap_or(head).trim();
+        if is_known_host_api(token) {
+            return Some(token.to_string());
+        }
+        let tail = head.rsplit(['.', ' ']).next().unwrap_or(head).trim();
+        if !tail.is_empty() {
+            return Some(tail.to_string());
+        }
+    }
+    if let Some(idx) = lower.find(" is not a constructor") {
+        let head = &message[..idx];
+        let token = head.split_whitespace().last().unwrap_or(head).trim();
+        if is_known_host_api(token) {
+            return Some(token.to_string());
+        }
+        let tail = head.rsplit(['.', ' ']).next().unwrap_or(head).trim();
+        if !tail.is_empty() {
+            return Some(tail.to_string());
+        }
+    }
+    if lower.contains("reading 'getitem'") || lower.contains("reading \"getitem\"") {
+        return Some("localStorage".into());
+    }
+    if lower.contains("reading 'setitem'") || lower.contains("reading \"setitem\"") {
+        return Some("localStorage".into());
+    }
+    if lower.contains("reading 'navigationstart'") || lower.contains("reading \"navigationstart\"")
+    {
+        return Some("performance".into());
+    }
+    if lower.contains("right-hand side of 'instanceof' is not an object")
+        || lower.contains("right-hand side of \"instanceof\" is not an object")
+    {
+        return Some("DOMStringMap".into());
+    }
+    None
+}
+
+fn is_known_host_api(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    KNOWN_HOST_APIS.iter().any(|api| {
+        let api = api.to_ascii_lowercase();
+        lower == api || lower.starts_with(&format!("{api}."))
+    })
+}
+
 /// Best-effort root-cause classification for a V8 or console error message.
 pub fn classify(message: &str) -> ErrorKind {
     let lower = message.to_ascii_lowercase();
@@ -49,18 +144,7 @@ pub fn classify(message: &str) -> ErrorKind {
         ErrorKind::DomRpc
     } else if lower.contains("timed out") || lower.contains("terminated") {
         ErrorKind::ScriptTimeout
-    } else if lower.contains("is not defined")
-        || lower.contains("is not a function")
-        || lower.contains("is not a constructor")
-        || lower.contains("reading 'getitem'")
-        || lower.contains("reading \"getitem\"")
-        || lower.contains("reading 'setitem'")
-        || lower.contains("reading \"setitem\"")
-        || lower.contains("reading 'navigationstart'")
-        || lower.contains("reading \"navigationstart\"")
-        || lower.contains("right-hand side of 'instanceof' is not an object")
-        || lower.contains("right-hand side of \"instanceof\" is not an object")
-    {
+    } else if missing_api_identifier(message).is_some_and(|name| is_known_host_api(&name)) {
         ErrorKind::MissingApi
     } else {
         ErrorKind::Other
@@ -98,6 +182,12 @@ pub fn hint(kind: ErrorKind, message: &str) -> &'static str {
         "Web Workers are not supported by Glide; third-party analytics may only degrade."
     } else if lower.contains("innerHTML") {
         "Domino defines innerHTML as a non-configurable prototype property; assign to it instead of redefining it."
+    } else if kind == ErrorKind::Other
+        && (lower.contains("is not defined")
+            || lower.contains("is not a function")
+            || lower.contains("is not a constructor"))
+    {
+        "Page script referenced a host function that is not a built-in Web API; check the page script or bundle."
     } else {
         match kind {
             ErrorKind::MissingApi => {
@@ -428,6 +518,43 @@ mod tests {
         );
         assert_eq!(classify("dom rpc timeout"), ErrorKind::DomRpc);
         assert_eq!(classify("unexpected failure"), ErrorKind::Other);
+    }
+
+    #[test]
+    fn classify_page_function_missing_is_other_not_missing_api() {
+        assert_eq!(
+            classify("ReferenceError: solveSimpleChallenge is not defined"),
+            ErrorKind::Other
+        );
+        let hint = hint(
+            ErrorKind::Other,
+            "ReferenceError: solveSimpleChallenge is not defined",
+        );
+        assert!(hint.contains("page script"));
+    }
+
+    #[test]
+    fn classify_known_fetch_missing_is_missing_api() {
+        assert_eq!(
+            classify("ReferenceError: fetch is not defined"),
+            ErrorKind::MissingApi
+        );
+    }
+
+    #[test]
+    fn classify_crypto_subtle_missing_is_missing_api() {
+        assert_eq!(
+            classify("TypeError: Cannot read properties of undefined (reading 'digest')"),
+            ErrorKind::Other
+        );
+        assert_eq!(
+            classify("ReferenceError: crypto is not defined"),
+            ErrorKind::MissingApi
+        );
+        assert_eq!(
+            classify("TypeError: crypto.subtle is not a function"),
+            ErrorKind::MissingApi
+        );
     }
 
     #[test]

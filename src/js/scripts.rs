@@ -174,11 +174,13 @@ pub fn resolve_sources(
             if parsed.scheme() == "http" || parsed.scheme() == "https" {
                 let credentials = script_fetch_credentials(s.crossorigin.as_deref());
                 let document = Url::parse(base_url).ok();
+                let meta = crate::http::FetchMetadata::script(document.clone());
                 return match rt.block_on(crate::http::fetch_followed_with_cookie_context(
                     Request::get(parsed),
                     document,
                     crate::cookies::CookieRequestKind::Subresource,
                     credentials,
+                    meta,
                 )) {
                     Ok(resp) if (200..300).contains(&resp.status) => {
                         ScriptSource::External(String::from_utf8_lossy(&resp.body).into_owned())

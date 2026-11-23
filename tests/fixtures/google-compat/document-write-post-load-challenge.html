@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p id="status">loading</p>
+<script>
+window.addEventListener('load', function () {
+  document.write('<script src="challenge.js"><\/script>');
+  try {
+    challenge();
+    var el = document.getElementById('status');
+    if (el) {
+      el.textContent = 'post-load-write-challenge-ok';
+    } else if (document.body) {
+      document.body.appendChild(document.createTextNode(' post-load-write-challenge-ok'));
+    }
+  } catch (e) {
+    var el = document.getElementById('status');
+    if (el) el.textContent = 'post-load-write-challenge-fail:' + e;
+  }
+});
+</script>
+</body>
+</html>

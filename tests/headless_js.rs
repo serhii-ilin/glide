@@ -318,6 +318,114 @@ fn counter_fixture_runs_with_js() {
 }
 
 #[test]
+fn headless_post_form_navigation_submits_urlencoded_body() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let posted = Arc::new(Mutex::new(String::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let posted2 = posted.clone();
+    std::thread::spawn(move || {
+        for _ in 0..4 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (status, body, extra) = if req.starts_with("GET /form") {
+                (
+                    "200 OK",
+                    "<!DOCTYPE html><html><body>\
+<form id=f action=\"/done\" method=\"post\"><input name=q value=\"hi\"></form>\
+<script>document.getElementById('f').requestSubmit()</script>\
+</body></html>",
+                    "Content-Type: text/html; charset=utf-8\r\n",
+                )
+            } else if req.starts_with("POST /done") {
+                *posted2.lock().expect("lock") =
+                    req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                (
+                    "200 OK",
+                    "<!DOCTYPE html><html><body><p>posted ok</p></body></html>",
+                    "Content-Type: text/html; charset=utf-8\r\n",
+                )
+            } else {
+                ("404 Not Found", "", "")
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/form");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("posted ok"), "{text}");
+    assert_eq!(posted.lock().expect("lock").as_str(), "q=hi");
+}
+
+#[test]
+fn headless_post_checkbox_checked_sends_on() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let posted = Arc::new(Mutex::new(String::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let posted2 = posted.clone();
+    std::thread::spawn(move || {
+        for _ in 0..4 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (status, body, extra) = if req.starts_with("GET /form") {
+                (
+                    "200 OK",
+                    "<!DOCTYPE html><html><body>\
+<form id=f action=\"/done\" method=\"post\">\
+<input type=\"checkbox\" name=\"agree\" value=\"on\" checked=\"\">\
+<input type=\"submit\"></form>\
+<script>document.getElementById('f').requestSubmit();</script>\
+</body></html>",
+                    "Content-Type: text/html; charset=utf-8\r\n",
+                )
+            } else if req.starts_with("POST /done") {
+                *posted2.lock().expect("lock") =
+                    req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                (
+                    "200 OK",
+                    "<!DOCTYPE html><html><body><p>posted ok</p></body></html>",
+                    "Content-Type: text/html; charset=utf-8\r\n",
+                )
+            } else {
+                ("404 Not Found", "", "")
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/form");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("posted ok"), "{text}");
+    assert_eq!(posted.lock().expect("lock").as_str(), "agree=on");
+}
+
+#[test]
 fn page_script_navigation_is_followed() {
     let rt = tokio_runtime();
     let _guard = rt.enter();
@@ -639,4 +747,188 @@ fn module_imports_data_url() {
     let _guard = rt.enter();
     let text = dump_text(&fixture_url("module-data-import.html"), true).expect("load");
     assert!(text.contains("data-42"), "{text}");
+}
+
+#[test]
+fn form_submit_posts_hidden_value_updated_same_turn() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let posted = Arc::new(Mutex::new(String::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let posted2 = posted.clone();
+    std::thread::spawn(move || {
+        for _ in 0..4 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("");
+            let (status, body, extra): (String, String, String) =
+                if path == "/" || path.starts_with("/?") {
+                    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/fixtures/google-compat/form-submit-hidden-value.html");
+                    let html = std::fs::read_to_string(fixture).expect("fixture");
+                    let html = html.replace("/post", &format!("http://127.0.0.1:{port}/post"));
+                    (
+                        "200 OK".to_string(),
+                        html,
+                        "Content-Type: text/html; charset=utf-8\r\n".to_string(),
+                    )
+                } else if path.starts_with("/post") {
+                    *posted2.lock().expect("lock") =
+                        req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                    (
+                        "200 OK".to_string(),
+                        "<!DOCTYPE html><html><body><p>posted</p></body></html>".to_string(),
+                        "Content-Type: text/html; charset=utf-8\r\n".to_string(),
+                    )
+                } else {
+                    (
+                        "404 Not Found".to_string(),
+                        String::new(),
+                        "Content-Type: text/plain\r\n".to_string(),
+                    )
+                };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("posted"), "{text}");
+    assert!(
+        posted.lock().expect("lock").contains("token=b"),
+        "posted body: {}",
+        posted.lock().expect("lock")
+    );
+}
+
+#[test]
+fn gbv_hidden_value_script_update_is_posted() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let posted = Arc::new(Mutex::new(String::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let posted2 = posted.clone();
+    std::thread::spawn(move || {
+        for _ in 0..4 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("");
+            let (status, body, extra): (String, String, String) =
+                if path == "/" || path.starts_with("/?") || path.starts_with("/form") {
+                    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/fixtures/google-compat/gbv-upgrade.html");
+                    let html = std::fs::read_to_string(fixture).expect("fixture");
+                    let html = html.replace("/search", &format!("http://127.0.0.1:{port}/search"));
+                    (
+                        "200 OK".to_string(),
+                        html,
+                        "Content-Type: text/html; charset=utf-8\r\n".to_string(),
+                    )
+                } else if path.starts_with("/search") {
+                    *posted2.lock().expect("lock") =
+                        req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                    (
+                        "200 OK".to_string(),
+                        "<!DOCTYPE html><html><body><p>search ok</p></body></html>".to_string(),
+                        "Content-Type: text/html; charset=utf-8\r\n".to_string(),
+                    )
+                } else {
+                    (
+                        "404 Not Found".to_string(),
+                        String::new(),
+                        "Content-Type: text/plain\r\n".to_string(),
+                    )
+                };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/form");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("search ok"), "{text}");
+    assert!(
+        posted.lock().expect("lock").contains("gbv=2"),
+        "posted body: {}",
+        posted.lock().expect("lock")
+    );
+}
+
+fn google_compat_fixture(name: &str) -> String {
+    fixture_url(&format!("google-compat/{name}"))
+}
+
+#[test]
+fn onload_runs_external_challenge_before_load() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(
+        &google_compat_fixture("onload-external-challenge.html"),
+        true,
+    )
+    .expect("load");
+    assert!(text.contains("onload-challenge-ok"), "{text}");
+    assert!(text.contains("CHALLENGE-OK"), "{text}");
+}
+
+#[test]
+fn async_script_onload_reads_challenge_from_global() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(
+        &google_compat_fixture("async-onload-external-challenge.html"),
+        true,
+    )
+    .expect("load");
+    assert!(text.contains("async-onload-challenge-ok"), "{text}");
+    assert!(text.contains("CHALLENGE-OK"), "{text}");
+}
+
+#[test]
+fn document_write_after_load_fetches_external_script() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(
+        &google_compat_fixture("document-write-post-load-challenge.html"),
+        true,
+    )
+    .expect("load");
+    assert!(text.contains("post-load-write-challenge-ok"), "{text}");
+    assert!(text.contains("CHALLENGE-OK"), "{text}");
+}
+
+#[test]
+fn document_write_fetches_external_script_before_load() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(
+        &google_compat_fixture("document-write-external-challenge.html"),
+        true,
+    )
+    .expect("load");
+    assert!(text.contains("write-challenge-ok"), "{text}");
+    assert!(text.contains("CHALLENGE-OK"), "{text}");
 }

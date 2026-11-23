@@ -9,11 +9,284 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use blitz_traits::net::http::{self, HeaderMap, Method};
-use blitz_traits::net::{Body, Bytes, Request};
+use blitz_traits::net::{Body, Bytes, EntryValue, FormData, Request};
 use url::Url;
 
+fn normalize_form_field(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(current) = chars.next() {
+        match (current, chars.peek()) {
+            ('\r', Some('\n')) => {
+                result.push_str("\r\n");
+                chars.next();
+            }
+            ('\r' | '\n', _) => result.push_str("\r\n"),
+            _ => result.push(current),
+        }
+    }
+    result
+}
+
+/// Encode a form entry list as `application/x-www-form-urlencoded` bytes.
+pub fn encode_form_urlencoded(form: &FormData) -> Vec<u8> {
+    let mut body = String::new();
+    {
+        let mut ser = url::form_urlencoded::Serializer::new(&mut body);
+        for entry in form.iter() {
+            let name = normalize_form_field(&entry.name);
+            let value = match &entry.value {
+                EntryValue::String(s) => normalize_form_field(s),
+                EntryValue::File(p) => normalize_form_field(p.to_str().unwrap_or("")),
+                EntryValue::EmptyFile => String::new(),
+            };
+            ser.append_pair(&name, &value);
+        }
+    }
+    body.into_bytes()
+}
+
+/// `text/plain` form submission body (HTML encoding algorithm).
+pub fn encode_form_text_plain(form: &FormData) -> Result<Vec<u8>, String> {
+    let mut out = String::new();
+    for entry in form.iter() {
+        let name = normalize_form_field(&entry.name);
+        let value = match &entry.value {
+            EntryValue::String(s) => normalize_form_field(s),
+            EntryValue::File(p) => normalize_form_field(p.to_str().unwrap_or("")),
+            EntryValue::EmptyFile => String::new(),
+        };
+        out.push_str(&name);
+        out.push('=');
+        out.push_str(&value);
+        out.push_str("\r\n");
+    }
+    Ok(out.into_bytes())
+}
+
+fn origin_header_value(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    let mut origin = format!("{}://{}", url.scheme(), host);
+    if let Some(port) = url.port() {
+        let default = match url.scheme() {
+            "http" => 80,
+            "https" => 443,
+            _ => return Some(origin),
+        };
+        if port != default {
+            origin.push(':');
+            origin.push_str(&port.to_string());
+        }
+    }
+    Some(origin)
+}
+
 const MAX_REDIRECTS: usize = 20;
-const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/81.0";
+
+/// Honest Glide user agent naming the host OS at compile time (shared with vendored blitz-net).
+pub fn user_agent() -> &'static str {
+    blitz_net::user_agent()
+}
+
+/// `Sec-Fetch-Dest` values Glide sends on HTTP requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecFetchDest {
+    Document,
+    Script,
+    Style,
+    Image,
+    Empty,
+}
+
+impl SecFetchDest {
+    fn header_value(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Script => "script",
+            Self::Style => "style",
+            Self::Image => "image",
+            Self::Empty => "empty",
+        }
+    }
+
+    fn accept_value(self) -> &'static str {
+        match self {
+            Self::Document => "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            Self::Script => "*/*",
+            Self::Style => "text/css,*/*;q=0.1",
+            Self::Image => "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            Self::Empty => "*/*",
+        }
+    }
+}
+
+/// `Sec-Fetch-Mode` values Glide sends on HTTP requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecFetchMode {
+    Navigate,
+    Cors,
+    NoCors,
+    SameOrigin,
+}
+
+impl SecFetchMode {
+    fn header_value(self) -> &'static str {
+        match self {
+            Self::Navigate => "navigate",
+            Self::Cors => "cors",
+            Self::NoCors => "no-cors",
+            Self::SameOrigin => "same-origin",
+        }
+    }
+}
+
+/// Per-request Fetch Metadata headers ([`default_fetch_metadata_headers`]).
+#[derive(Debug, Clone)]
+pub struct FetchMetadata {
+    pub dest: SecFetchDest,
+    pub mode: SecFetchMode,
+    /// When `None`, `Sec-Fetch-Site` is `none` (address bar / cold navigation).
+    pub initiator: Option<Url>,
+    /// Emit `Sec-Fetch-User: ?1` only for user-activated top-level navigations.
+    pub user_activation: bool,
+}
+
+impl FetchMetadata {
+    pub fn navigation(initiator: Option<Url>, user_activation: bool) -> Self {
+        Self {
+            dest: SecFetchDest::Document,
+            mode: SecFetchMode::Navigate,
+            initiator,
+            user_activation,
+        }
+    }
+
+    pub fn script(initiator: Option<Url>) -> Self {
+        Self {
+            dest: SecFetchDest::Script,
+            mode: SecFetchMode::NoCors,
+            initiator,
+            user_activation: false,
+        }
+    }
+
+    pub fn style(initiator: Option<Url>) -> Self {
+        Self {
+            dest: SecFetchDest::Style,
+            mode: SecFetchMode::NoCors,
+            initiator,
+            user_activation: false,
+        }
+    }
+
+    pub fn image(initiator: Option<Url>) -> Self {
+        Self {
+            dest: SecFetchDest::Image,
+            mode: SecFetchMode::NoCors,
+            initiator,
+            user_activation: false,
+        }
+    }
+
+    pub fn fetch_api(initiator: Option<Url>, mode: SecFetchMode) -> Self {
+        Self {
+            dest: SecFetchDest::Empty,
+            mode,
+            initiator,
+            user_activation: false,
+        }
+    }
+}
+
+/// Cookie and Fetch Metadata context for a top-level document navigation.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentNavigationContext {
+    pub cookie_document: Option<Url>,
+    pub initiator: Option<Url>,
+    pub user_activation: bool,
+}
+
+static PUBLIC_SUFFIX_LIST: OnceLock<publicsuffix::List> = OnceLock::new();
+
+fn public_suffix_list() -> &'static publicsuffix::List {
+    PUBLIC_SUFFIX_LIST.get_or_init(|| {
+        let bytes = include_bytes!("../third_party/publicsuffix/public_suffix_list.dat");
+        publicsuffix::List::from_bytes(bytes).expect("embedded public suffix list")
+    })
+}
+
+fn registrable_domain(host: &str) -> Option<String> {
+    use publicsuffix::Psl;
+    let domain = public_suffix_list().domain(host.as_bytes())?;
+    Some(String::from_utf8_lossy(domain.as_bytes()).to_string())
+}
+
+/// `Sec-Fetch-Site` for a request given its initiator URL and target URL.
+pub fn sec_fetch_site(initiator: Option<&Url>, request: &Url) -> &'static str {
+    let Some(init) = initiator else {
+        return "none";
+    };
+    if same_origin(init, request) {
+        return "same-origin";
+    }
+    let (Some(init_host), Some(req_host)) = (init.host_str(), request.host_str()) else {
+        return "cross-site";
+    };
+    match (registrable_domain(init_host), registrable_domain(req_host)) {
+        (Some(a), Some(b)) if a == b => "same-site",
+        _ => "cross-site",
+    }
+}
+
+/// Infer Fetch Metadata for a classic subresource request from its URL path.
+pub fn subresource_fetch_metadata(request: &Request, document: Option<Url>) -> FetchMetadata {
+    let path = request.url.path().to_ascii_lowercase();
+    if path.ends_with(".js") || path.contains(".js?") {
+        return FetchMetadata::script(document);
+    }
+    if path.ends_with(".css") || path.contains(".css?") {
+        return FetchMetadata::style(document);
+    }
+    if path.ends_with(".png")
+        || path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".gif")
+        || path.ends_with(".webp")
+        || path.ends_with(".svg")
+        || path.ends_with(".avif")
+        || path.contains(".png?")
+        || path.contains(".jpg?")
+    {
+        return FetchMetadata::image(document);
+    }
+    FetchMetadata {
+        dest: SecFetchDest::Empty,
+        mode: SecFetchMode::NoCors,
+        initiator: document,
+        user_activation: false,
+    }
+}
+
+/// `Sec-Fetch-Mode` for page `fetch()` / XHR given credentials and document URL.
+pub fn fetch_api_sec_mode(
+    request_url: &Url,
+    document: Option<&Url>,
+    credentials: crate::cookies::FetchCredentials,
+) -> SecFetchMode {
+    use crate::cookies::FetchCredentials;
+    if credentials == FetchCredentials::SameOrigin
+        && document.is_some_and(|doc| same_origin(doc, request_url))
+    {
+        SecFetchMode::SameOrigin
+    } else {
+        SecFetchMode::Cors
+    }
+}
+
+const ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 
 /// A completed HTTP exchange after redirects have been followed.
 #[derive(Debug, Clone)]
@@ -51,11 +324,21 @@ struct Hop {
     cookie_document: Option<Url>,
     cookie_kind: crate::cookies::CookieRequestKind,
     cookie_credentials: crate::cookies::FetchCredentials,
+    fetch_metadata: FetchMetadata,
 }
 
-/// `http` and `https` requests this module can send. Form bodies stay on blitz-net.
+/// `http` and `https` top-level navigations this module can send.
+///
+/// POST submissions use [`Body::Form`] with `application/x-www-form-urlencoded`
+/// encoding in [`send`]. Multipart navigations are not supported here.
 pub fn is_navigable_http(request: &Request) -> bool {
-    matches!(request.url.scheme(), "http" | "https") && !matches!(request.body, Body::Form(_))
+    if !matches!(request.url.scheme(), "http" | "https") {
+        return false;
+    }
+    match &request.body {
+        Body::Form(_) => request.method == Method::POST,
+        _ => true,
+    }
 }
 
 /// Status codes a browser follows for a navigation or subresource.
@@ -148,24 +431,26 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
-/// Follow redirects, then return the last status and body.
+/// Follow redirects, then return the last status and body (legacy default metadata).
 pub async fn fetch_followed(request: Request) -> Result<Followed, String> {
     let document = request.url.clone();
     fetch_followed_with_cookie_context(
         request,
-        Some(document),
-        crate::cookies::CookieRequestKind::Navigation,
+        Some(document.clone()),
+        crate::cookies::CookieRequestKind::Fetch,
         crate::cookies::FetchCredentials::Include,
+        FetchMetadata::fetch_api(Some(document), SecFetchMode::Cors),
     )
     .await
 }
 
-/// Same as [`fetch_followed`] with an explicit document URL and credentials mode.
+/// Same as [`fetch_followed`] with an explicit document URL, credentials mode, and Fetch Metadata.
 pub async fn fetch_followed_with_cookie_context(
     request: Request,
     cookie_document: Option<Url>,
     cookie_kind: crate::cookies::CookieRequestKind,
     cookie_credentials: crate::cookies::FetchCredentials,
+    fetch_metadata: FetchMetadata,
 ) -> Result<Followed, String> {
     let mut hop = Hop {
         url: request.url,
@@ -175,6 +460,7 @@ pub async fn fetch_followed_with_cookie_context(
         cookie_document,
         cookie_kind,
         cookie_credentials,
+        fetch_metadata,
     };
     hop.url.set_fragment(None);
     let mut redirected = false;
@@ -233,14 +519,27 @@ pub async fn fetch_followed_with_cookie_context(
 /// scripting is disabled: the HTML parser does not create `<noscript>` children
 /// while scripting is enabled, so the fallback Google serves for script-less
 /// clients must stay inert. See [`meta_refresh_url`].
-pub async fn fetch_document(request: Request, scripting_enabled: bool) -> DocumentFetch {
+pub async fn fetch_document(
+    request: Request,
+    scripting_enabled: bool,
+    ctx: DocumentNavigationContext,
+) -> DocumentFetch {
     let original = request.url.to_string();
     let mut request = request;
     let mut seen = HashSet::new();
     seen.insert(request.url.to_string());
     let mut meta_hops = 0u16;
+    let fetch_metadata = FetchMetadata::navigation(ctx.initiator.clone(), ctx.user_activation);
     loop {
-        match fetch_followed(request).await {
+        match fetch_followed_with_cookie_context(
+            request,
+            ctx.cookie_document.clone(),
+            crate::cookies::CookieRequestKind::Navigation,
+            crate::cookies::FetchCredentials::Include,
+            fetch_metadata.clone(),
+        )
+        .await
+        {
             Ok(resp) if render_http_body(resp.status, resp.body.is_empty()) => {
                 if meta_hops < MAX_REDIRECTS as u16
                     && is_html_document(&resp.content_type, &resp.body)
@@ -672,6 +971,7 @@ fn next_hop(status: u16, headers: &HeaderMap, hop: &Hop) -> Option<Hop> {
         cookie_document: hop.cookie_document.clone(),
         cookie_kind: hop.cookie_kind,
         cookie_credentials: hop.cookie_credentials,
+        fetch_metadata: hop.fetch_metadata.clone(),
     })
 }
 
@@ -681,6 +981,41 @@ fn same_origin(a: &Url, b: &Url) -> bool {
         && a.port_or_known_default() == b.port_or_known_default()
 }
 
+fn push_default_header(
+    out: &mut Vec<(http::header::HeaderName, http::header::HeaderValue)>,
+    hop: &Hop,
+    name: &str,
+    value: &str,
+) {
+    let Ok(n) = http::header::HeaderName::from_bytes(name.as_bytes()) else {
+        return;
+    };
+    if hop.headers.contains_key(&n) {
+        return;
+    }
+    let Ok(v) = http::header::HeaderValue::from_str(value) else {
+        return;
+    };
+    out.push((n, v));
+}
+
+fn default_fetch_metadata_headers(
+    hop: &Hop,
+) -> Vec<(http::header::HeaderName, http::header::HeaderValue)> {
+    let meta = &hop.fetch_metadata;
+    let mut out = Vec::new();
+    push_default_header(&mut out, hop, "accept-language", ACCEPT_LANGUAGE);
+    push_default_header(&mut out, hop, "accept", meta.dest.accept_value());
+    push_default_header(&mut out, hop, "sec-fetch-dest", meta.dest.header_value());
+    push_default_header(&mut out, hop, "sec-fetch-mode", meta.mode.header_value());
+    if meta.user_activation {
+        push_default_header(&mut out, hop, "sec-fetch-user", "?1");
+    }
+    let site = sec_fetch_site(meta.initiator.as_ref(), &hop.url);
+    push_default_header(&mut out, hop, "sec-fetch-site", site);
+    out
+}
+
 async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
     let mut headers = hop.headers.clone();
     crate::cookies::CookieJar::global().append_request_cookies(
@@ -688,17 +1023,52 @@ async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
         hop.cookie_document.as_ref(),
         hop.cookie_kind,
         hop.cookie_credentials,
+        hop.method.clone(),
         &mut headers,
     );
+    if hop.method == Method::POST {
+        let origin_base = hop.cookie_document.as_ref().unwrap_or(&hop.url);
+        if let Some(origin) = origin_header_value(origin_base)
+            && let Ok(value) = http::HeaderValue::from_str(&origin)
+        {
+            headers.insert(http::header::ORIGIN, value);
+        }
+    }
     let mut builder = client().request(hop.method.clone(), hop.url.clone());
     builder = builder.headers(headers);
     if !hop.headers.contains_key(http::header::USER_AGENT) {
-        builder = builder.header(http::header::USER_AGENT, USER_AGENT);
+        builder = builder.header(http::header::USER_AGENT, user_agent());
+    }
+    for (name, value) in default_fetch_metadata_headers(hop) {
+        builder = builder.header(name, value);
     }
     builder = match &hop.body {
         Body::Empty => builder,
         Body::Bytes(bytes) => builder.body(bytes.clone()),
-        Body::Form(_) => return Err("form upload is not sent on this path".to_string()),
+        Body::Form(form) => {
+            let ct = hop
+                .headers
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if ct.starts_with("multipart/") {
+                return Err("multipart/form-data document navigation is not supported".to_string());
+            }
+            let (encoded, default_ct) = if ct.starts_with("text/plain") {
+                (encode_form_text_plain(form)?, "text/plain".to_string())
+            } else if ct.is_empty() || ct.starts_with("application/x-www-form-urlencoded") {
+                (
+                    encode_form_urlencoded(form),
+                    "application/x-www-form-urlencoded".into(),
+                )
+            } else {
+                return Err(format!("unsupported document form enctype: {ct}"));
+            };
+            if !hop.headers.contains_key(http::header::CONTENT_TYPE) {
+                builder = builder.header(http::header::CONTENT_TYPE, default_ct);
+            }
+            builder.body(encoded)
+        }
     };
     builder.send().await.map_err(|err| transport_reason(&err))
 }
@@ -717,6 +1087,70 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn encode_form_urlencoded_pairs() {
+        use blitz_traits::net::{Entry, EntryValue, FormData};
+        let form = FormData(vec![
+            Entry {
+                name: "q".into(),
+                value: EntryValue::String("a+b".into()),
+            },
+            Entry {
+                name: "empty".into(),
+                value: EntryValue::String(String::new()),
+            },
+        ]);
+        assert_eq!(
+            String::from_utf8(encode_form_urlencoded(&form)).expect("utf8"),
+            "q=a%2Bb&empty="
+        );
+    }
+
+    #[test]
+    fn encode_form_urlencoded_normalizes_newlines() {
+        use blitz_traits::net::{Entry, EntryValue, FormData};
+        let form = FormData(vec![Entry {
+            name: "n".into(),
+            value: EntryValue::String("a\nb".into()),
+        }]);
+        assert_eq!(
+            String::from_utf8(encode_form_urlencoded(&form)).expect("utf8"),
+            "n=a%0D%0Ab"
+        );
+    }
+
+    #[test]
+    fn encode_form_text_plain_uses_plain_algorithm() {
+        use blitz_traits::net::{Entry, EntryValue, FormData};
+        let form = FormData(vec![
+            Entry {
+                name: "a".into(),
+                value: EntryValue::String("1".into()),
+            },
+            Entry {
+                name: "b".into(),
+                value: EntryValue::String("2".into()),
+            },
+        ]);
+        let body = encode_form_text_plain(&form).expect("plain");
+        assert_eq!(body, b"a=1\r\nb=2\r\n");
+    }
+
+    #[test]
+    fn navigable_http_allows_post_form_body() {
+        let mut url = Url::parse("https://example.test/post").unwrap();
+        let mut req = Request::get(url.clone());
+        assert!(is_navigable_http(&req));
+        req.method = Method::POST;
+        req.body = Body::Form(FormData::default());
+        assert!(is_navigable_http(&req));
+        req.method = Method::GET;
+        assert!(!is_navigable_http(&req));
+        url.set_scheme("file").ok();
+        req.url = url;
+        assert!(!is_navigable_http(&req));
+    }
 
     #[test]
     fn redirect_method_turns_post_into_get() {
@@ -876,13 +1310,102 @@ mod tests {
     }
 
     #[test]
+    fn post_navigation_includes_origin_and_content_type() {
+        use blitz_traits::net::{Entry, EntryValue, FormData};
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("POST /submit") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: text/html\r\n", "<p>ok</p>");
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/submit")).unwrap();
+        let mut request = Request::get(url);
+        request.method = Method::POST;
+        request.content_type = Some("application/x-www-form-urlencoded".into());
+        request.body = Body::Form(FormData(vec![Entry {
+            name: "q".into(),
+            value: EntryValue::String("x".into()),
+        }]));
+        match rt.block_on(fetch_document(
+            request,
+            false,
+            DocumentNavigationContext::default(),
+        )) {
+            DocumentFetch::Page { .. } => {}
+            DocumentFetch::Failed { reason, .. } => panic!("post failed: {reason}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        assert!(req.lines().any(|l| l.starts_with("POST ")));
+        let expect_origin = format!("origin: http://127.0.0.1:{port}");
+        assert!(
+            req.lines().any(|l| l.eq_ignore_ascii_case(&expect_origin)),
+            "missing Origin: {req}"
+        );
+        assert!(
+            req.lines().any(|l| {
+                l.to_ascii_lowercase()
+                    .starts_with("content-type: application/x-www-form-urlencoded")
+            }),
+            "missing content-type: {req}"
+        );
+    }
+
+    #[test]
+    fn post_form_document_navigation_is_urlencoded() {
+        use blitz_traits::net::{Entry, EntryValue, FormData};
+        use std::sync::{Arc, Mutex};
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let posted2 = posted.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("POST /submit") {
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                posted2.lock().expect("lock").push(body);
+                return http_response("200 OK", "Content-Type: text/html\r\n", "<p>posted</p>");
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/submit")).unwrap();
+        let mut request = Request::get(url);
+        request.method = Method::POST;
+        request.body = Body::Form(FormData(vec![Entry {
+            name: "user".into(),
+            value: EntryValue::String("demo".into()),
+        }]));
+        match rt.block_on(fetch_document(
+            request,
+            false,
+            DocumentNavigationContext::default(),
+        )) {
+            DocumentFetch::Page { body, .. } => {
+                assert!(String::from_utf8_lossy(&body).contains("posted"));
+            }
+            DocumentFetch::Failed { reason, .. } => panic!("post navigation failed: {reason}"),
+        }
+        let bodies = posted.lock().expect("lock");
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0], "user=demo");
+    }
+
+    #[test]
     fn follows_redirect_chain_and_keeps_error_body() {
         let port = spawn_server(local_router);
         let rt = crate::runtime::tokio_runtime();
         let _guard = rt.enter();
 
         let start = Url::parse(&format!("http://127.0.0.1:{port}/start")).unwrap();
-        match rt.block_on(fetch_document(Request::get(start), false)) {
+        match rt.block_on(fetch_document(
+            Request::get(start),
+            false,
+            DocumentNavigationContext::default(),
+        )) {
             DocumentFetch::Page { url, body, .. } => {
                 assert!(url.ends_with("/land"), "{url}");
                 assert!(String::from_utf8_lossy(&body).contains("landed"));
@@ -901,7 +1424,11 @@ mod tests {
         }
 
         let missing = Url::parse(&format!("http://127.0.0.1:{port}/missing")).unwrap();
-        match rt.block_on(fetch_document(Request::get(missing), false)) {
+        match rt.block_on(fetch_document(
+            Request::get(missing),
+            false,
+            DocumentNavigationContext::default(),
+        )) {
             DocumentFetch::Page {
                 body,
                 status,
@@ -916,7 +1443,11 @@ mod tests {
         }
 
         let meta = Url::parse(&format!("http://127.0.0.1:{port}/meta")).unwrap();
-        match rt.block_on(fetch_document(Request::get(meta), false)) {
+        match rt.block_on(fetch_document(
+            Request::get(meta),
+            false,
+            DocumentNavigationContext::default(),
+        )) {
             DocumentFetch::Page { url, body, .. } => {
                 assert!(url.ends_with("/land"), "{url}");
                 assert!(String::from_utf8_lossy(&body).contains("landed"));
@@ -925,13 +1456,21 @@ mod tests {
         }
 
         let noscript = Url::parse(&format!("http://127.0.0.1:{port}/noscript")).unwrap();
-        match rt.block_on(fetch_document(Request::get(noscript.clone()), false)) {
+        match rt.block_on(fetch_document(
+            Request::get(noscript.clone()),
+            false,
+            DocumentNavigationContext::default(),
+        )) {
             DocumentFetch::Page { url, .. } => assert!(url.ends_with("/land"), "{url}"),
             DocumentFetch::Failed { reason, .. } => {
                 panic!("noscript-only refresh should land: {reason}")
             }
         }
-        match rt.block_on(fetch_document(Request::get(noscript), true)) {
+        match rt.block_on(fetch_document(
+            Request::get(noscript),
+            true,
+            DocumentNavigationContext::default(),
+        )) {
             DocumentFetch::Page { url, .. } => assert!(url.ends_with("/noscript"), "{url}"),
             DocumentFetch::Failed { reason, .. } => {
                 panic!("noscript refresh must stay inert: {reason}")
@@ -939,7 +1478,11 @@ mod tests {
         }
 
         let keep = Url::parse(&format!("http://127.0.0.1:{port}/keep")).unwrap();
-        match rt.block_on(fetch_document(Request::get(keep), false)) {
+        match rt.block_on(fetch_document(
+            Request::get(keep),
+            false,
+            DocumentNavigationContext::default(),
+        )) {
             DocumentFetch::Page { body, .. } => {
                 assert!(String::from_utf8_lossy(&body).contains("stay"));
             }
@@ -947,7 +1490,11 @@ mod tests {
         }
 
         let empty = Url::parse(&format!("http://127.0.0.1:{port}/empty")).unwrap();
-        match rt.block_on(fetch_document(Request::get(empty), false)) {
+        match rt.block_on(fetch_document(
+            Request::get(empty),
+            false,
+            DocumentNavigationContext::default(),
+        )) {
             DocumentFetch::Failed { reason, .. } => {
                 assert!(reason.contains("503"), "{reason}");
             }
@@ -1014,6 +1561,349 @@ mod tests {
         assert_eq!(
             seen_cookie.lock().expect("lock").as_deref(),
             Some("sid=alpha")
+        );
+    }
+
+    #[test]
+    fn cross_port_post_uses_initiating_document_for_origin_and_cookies() {
+        use blitz_traits::net::{Body, Entry, EntryValue, FormData};
+        use std::sync::{Arc, Mutex};
+
+        let port_a = spawn_server(|_| http_response("200 OK", "", "page"));
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port_b = spawn_server(move |req| {
+            if req.starts_with("POST /submit") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: text/html\r\n", "<p>ok</p>");
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let page = Url::parse(&format!("http://127.0.0.1:{port_a}/page")).unwrap();
+        crate::cookies::CookieJar::global().store_response_headers(
+            &page,
+            &[("Set-Cookie".into(), "lax=1; Path=/; SameSite=Lax".into())],
+        );
+        let submit = Url::parse(&format!("http://127.0.0.1:{port_b}/submit")).unwrap();
+        let mut request = Request::get(submit);
+        request.method = Method::POST;
+        request.body = Body::Form(FormData(vec![Entry {
+            name: "q".into(),
+            value: EntryValue::String("x".into()),
+        }]));
+        let nav_ctx = DocumentNavigationContext {
+            cookie_document: Some(page.clone()),
+            initiator: Some(page),
+            user_activation: true,
+        };
+        match rt.block_on(fetch_document(request, false, nav_ctx)) {
+            DocumentFetch::Page { .. } => {}
+            DocumentFetch::Failed { reason, .. } => panic!("cross port post failed: {reason}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        let expect_origin = format!("origin: http://127.0.0.1:{port_a}");
+        assert!(
+            req.lines().any(|l| l.eq_ignore_ascii_case(&expect_origin)),
+            "missing initiating Origin: {req}"
+        );
+        assert!(
+            !req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("cookie:")),
+            "cross-site lax cookie must not be sent: {req}"
+        );
+    }
+
+    #[test]
+    fn user_agent_names_glide_not_firefox_81() {
+        let ua = user_agent();
+        assert!(!ua.contains("Firefox/81"));
+        assert!(ua.contains("Glide/"));
+        #[cfg(target_os = "linux")]
+        assert!(ua.contains("Linux"));
+        #[cfg(target_os = "macos")]
+        assert!(ua.contains("Macintosh"));
+        #[cfg(target_os = "windows")]
+        assert!(ua.contains("Windows NT"));
+    }
+
+    #[test]
+    fn navigation_request_includes_accept_language_and_sec_fetch() {
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("GET /nav") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: text/html\r\n", "<p>ok</p>");
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/nav")).unwrap();
+        match rt.block_on(fetch_document(
+            Request::get(url),
+            false,
+            DocumentNavigationContext::default(),
+        )) {
+            DocumentFetch::Page { .. } => {}
+            DocumentFetch::Failed { reason, .. } => panic!("nav failed: {reason}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        let ua = req
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+            .expect("user-agent header");
+        assert!(!ua.to_ascii_lowercase().contains("firefox/81"), "{req}");
+        assert!(ua.contains("Glide/"), "{req}");
+        assert!(
+            req.lines()
+                .any(|l| { l.to_ascii_lowercase().starts_with("accept-language: en-us") }),
+            "{req}"
+        );
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-dest: document")),
+            "{req}"
+        );
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-mode: navigate")),
+            "{req}"
+        );
+        assert!(
+            !req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-user:")),
+            "cold navigation must not send sec-fetch-user: {req}"
+        );
+        assert!(
+            req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-site: none")),
+            "{req}"
+        );
+    }
+
+    #[test]
+    fn subresource_request_includes_sec_fetch_and_glide_user_agent() {
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("GET /res") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response(
+                    "200 OK",
+                    "Content-Type: text/css\r\n",
+                    "body { color: red }",
+                );
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let doc = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let res = Url::parse(&format!("http://127.0.0.1:{port}/res")).unwrap();
+        let meta = FetchMetadata::style(Some(doc.clone()));
+        match rt.block_on(fetch_followed_with_cookie_context(
+            Request::get(res),
+            Some(doc),
+            crate::cookies::CookieRequestKind::Subresource,
+            crate::cookies::FetchCredentials::Include,
+            meta,
+        )) {
+            Ok(_) => {}
+            Err(err) => panic!("subresource failed: {err}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        let ua = req
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+            .expect("user-agent");
+        assert!(ua.contains("Glide/"), "{req}");
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-mode: no-cors")),
+            "{req}"
+        );
+        assert!(
+            req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-dest: style")),
+            "{req}"
+        );
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-site: same-origin")),
+            "{req}"
+        );
+    }
+
+    #[test]
+    fn user_agent_matches_blitz_net_export() {
+        assert_eq!(user_agent(), blitz_net::user_agent());
+    }
+
+    #[test]
+    fn sec_fetch_site_classifies_registrable_domains() {
+        let news = Url::parse("https://news.example.test/page").unwrap();
+        let www = Url::parse("https://www.example.test/res").unwrap();
+        let other = Url::parse("https://other.test/res").unwrap();
+        assert_eq!(sec_fetch_site(Some(&news), &www), "same-site");
+        assert_eq!(sec_fetch_site(Some(&news), &other), "cross-site");
+        assert_eq!(sec_fetch_site(None, &www), "none");
+    }
+
+    #[test]
+    fn script_subresource_sends_script_dest() {
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("GET /app.js") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: text/javascript\r\n", "1");
+            }
+            http_response("404", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let doc = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let res = Url::parse(&format!("http://127.0.0.1:{port}/app.js")).unwrap();
+        let meta = FetchMetadata::script(Some(doc.clone()));
+        match rt.block_on(fetch_followed_with_cookie_context(
+            Request::get(res),
+            Some(doc),
+            crate::cookies::CookieRequestKind::Subresource,
+            crate::cookies::FetchCredentials::Include,
+            meta,
+        )) {
+            Ok(_) => {}
+            Err(err) => panic!("{err}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        assert!(
+            req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-dest: script")),
+            "{req}"
+        );
+    }
+
+    #[test]
+    fn image_subresource_sends_image_dest() {
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("GET /logo.png") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: image/png\r\n", "");
+            }
+            http_response("404", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let doc = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let res = Url::parse(&format!("http://127.0.0.1:{port}/logo.png")).unwrap();
+        let meta = FetchMetadata::image(Some(doc.clone()));
+        match rt.block_on(fetch_followed_with_cookie_context(
+            Request::get(res),
+            Some(doc),
+            crate::cookies::CookieRequestKind::Subresource,
+            crate::cookies::FetchCredentials::Include,
+            meta,
+        )) {
+            Ok(_) => {}
+            Err(err) => panic!("{err}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        assert!(
+            req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-dest: image")),
+            "{req}"
+        );
+    }
+
+    #[test]
+    fn fetch_api_sends_empty_dest_and_cors_mode() {
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("GET /api") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: application/json\r\n", "{}");
+            }
+            http_response("404", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let doc = Url::parse(&format!("http://127.0.0.1:{port}/page")).unwrap();
+        let api = Url::parse(&format!("http://127.0.0.1:{port}/api")).unwrap();
+        let meta = FetchMetadata::fetch_api(Some(doc.clone()), SecFetchMode::Cors);
+        match rt.block_on(fetch_followed_with_cookie_context(
+            Request::get(api),
+            Some(doc),
+            crate::cookies::CookieRequestKind::Fetch,
+            crate::cookies::FetchCredentials::Include,
+            meta,
+        )) {
+            Ok(_) => {}
+            Err(err) => panic!("{err}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        assert!(
+            req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-dest: empty")),
+            "{req}"
+        );
+        assert!(
+            req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-mode: cors")),
+            "{req}"
+        );
+    }
+
+    #[test]
+    fn user_activated_navigation_includes_sec_fetch_user() {
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("GET /nav") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: text/html\r\n", "<p>ok</p>");
+            }
+            http_response("404", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let prev = Url::parse(&format!("http://127.0.0.1:{port}/prev")).unwrap();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/nav")).unwrap();
+        let ctx = DocumentNavigationContext {
+            cookie_document: Some(prev.clone()),
+            initiator: Some(prev),
+            user_activation: true,
+        };
+        match rt.block_on(fetch_document(Request::get(url), false, ctx)) {
+            DocumentFetch::Page { .. } => {}
+            DocumentFetch::Failed { reason, .. } => panic!("{reason}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        assert!(
+            req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-user: ?1")),
+            "{req}"
+        );
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-site: same-origin")),
+            "{req}"
         );
     }
 }

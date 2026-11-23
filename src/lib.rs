@@ -28,6 +28,7 @@ pub mod menu;
 #[cfg(target_os = "macos")]
 mod native_menu;
 pub mod nav;
+pub mod nav_request;
 pub mod net;
 pub mod network_feed;
 pub mod parse;

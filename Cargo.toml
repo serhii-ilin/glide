@@ -46,7 +46,10 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "system-proxy",
 ] }
 # sync: Notify in src/net.rs for in-flight load coordination.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+# F-077: page WebSocket client (one tokio task per socket, RFC 6455 via tungstenite).
+tokio-tungstenite = "0.30.0"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 # Official MCP SDK: stdio server with tool macros for glide --mcp (F-066).
 rmcp = { version = "3.11", default-features = false, features = [
     "server",
@@ -82,6 +85,10 @@ publicsuffix = "2.3"
 # F-049: native macOS menu bar (NSApp main menu via muda).
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
+
+[patch.crates-io]
+blitz-dom = { path = "third_party/blitz-dom" }
+blitz-net = { path = "third_party/blitz-net" }
 
 [dev-dependencies]
 # Constructs Blitz pointer events in wheel/hover tests (same crate blitz-traits uses).

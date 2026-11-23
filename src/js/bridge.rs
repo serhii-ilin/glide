@@ -47,6 +47,22 @@ pub enum DomRequest {
         submitter: u64,
         reply: u64,
     },
+    /// Live `value` / `checked` from Blitz for domino getters (F-039).
+    ControlField {
+        node: u64,
+        field: String,
+        reply: u64,
+    },
+    /// Blitz control state for every field in a form before submit (F-039).
+    SyncFormControls {
+        form: u64,
+        reply: u64,
+    },
+    /// Domino control `value` strings applied to Blitz before form submit (F-078).
+    PushFormValues {
+        json: String,
+        reply: u64,
+    },
     ListenTarget {
         node: u64,
         event_type: String,
@@ -64,6 +80,28 @@ pub enum DomRequest {
     /// `document.cookie` setter (F-058).
     CookieSet {
         value: String,
+        reply: u64,
+    },
+    WebSocketConnect {
+        socket_id: u64,
+        url: String,
+        protocols: String,
+        reply: u64,
+    },
+    WebSocketSend {
+        socket_id: u64,
+        data: String,
+        binary: bool,
+        reply: u64,
+    },
+    WebSocketClose {
+        socket_id: u64,
+        code: u16,
+        reason: String,
+        reply: u64,
+    },
+    WebSocketBuffered {
+        socket_id: u64,
         reply: u64,
     },
     /// Test hook: number of live Blitz nodes. Dispatched only from debug builds.

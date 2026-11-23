@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p id="status">loading</p>
+<script>
+window.onload = function () {
+  try {
+    challenge();
+    document.getElementById('status').textContent = 'onload-challenge-ok';
+  } catch (e) {
+    document.getElementById('status').textContent = 'onload-challenge-fail:' + e;
+  }
+};
+</script>
+<script src="challenge.js"></script>
+</body>
+</html>

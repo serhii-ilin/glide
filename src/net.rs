@@ -311,6 +311,7 @@ impl GlideNet {
             return;
         }
 
+        let initiating_document = self.state.document_url.lock().unwrap().clone();
         *self.state.document_url.lock().unwrap() = Some(request.url.clone());
         let original_url = request.url.to_string();
         let blitz_abort = request.signal.clone();
@@ -347,6 +348,7 @@ impl GlideNet {
                 &cancel_notify,
                 test_delay_ms,
                 scripting_enabled,
+                initiating_document,
             )
             .await;
 
@@ -418,12 +420,15 @@ impl GlideNet {
             initiator: NetworkInitiator::Subresource,
         });
         let document_url = self.state.document_url.lock().ok().and_then(|g| g.clone());
+        let fetch_metadata =
+            crate::http::subresource_fetch_metadata(&request, document_url.clone());
         tokio::spawn(async move {
             match crate::http::fetch_followed_with_cookie_context(
                 request,
                 document_url,
                 crate::cookies::CookieRequestKind::Subresource,
                 crate::cookies::FetchCredentials::Include,
+                fetch_metadata,
             )
             .await
             {
@@ -622,6 +627,7 @@ enum LoadFail {
     Failed(String),
 }
 
+#[allow(clippy::too_many_arguments)] // cancel racing shares one future with the page loader.
 async fn fetch_racing_aborts(
     provider: &Provider,
     request: Request,
@@ -630,8 +636,15 @@ async fn fetch_racing_aborts(
     cancel_notify: &Notify,
     test_delay_ms: usize,
     scripting_enabled: bool,
+    cookie_document: Option<Url>,
 ) -> Result<PageLoadSuccess, LoadFail> {
-    let fetch_fut = page_fetch(provider, request, test_delay_ms, scripting_enabled);
+    let fetch_fut = page_fetch(
+        provider,
+        request,
+        test_delay_ms,
+        scripting_enabled,
+        cookie_document,
+    );
     tokio::pin!(fetch_fut);
     tokio::select! {
         res = &mut fetch_fut => res,
@@ -644,15 +657,19 @@ async fn page_fetch(
     request: Request,
     test_delay_ms: usize,
     scripting_enabled: bool,
+    cookie_document: Option<Url>,
 ) -> Result<PageLoadSuccess, LoadFail> {
     if test_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
     }
-    if matches!(request.url.scheme(), "http" | "https")
-        && !matches!(request.body, blitz_traits::net::Body::Form(_))
-    {
+    if matches!(request.url.scheme(), "http" | "https") {
         if crate::http::is_navigable_http(&request) {
-            return match crate::http::fetch_document(request, scripting_enabled).await {
+            let ctx = crate::http::DocumentNavigationContext {
+                cookie_document: cookie_document.clone(),
+                initiator: cookie_document,
+                user_activation: true,
+            };
+            return match crate::http::fetch_document(request, scripting_enabled, ctx).await {
                 crate::http::DocumentFetch::Page {
                     url,
                     body,
@@ -1416,5 +1433,70 @@ mod tests {
         assert!(record.lock().expect("record").is_none());
         assert!(!state.page_loading());
         assert_eq!(state.load_generation(), gen_before);
+    }
+
+    #[test]
+    fn document_post_records_method_post() {
+        use blitz_traits::net::http::Method;
+        use blitz_traits::net::{Body, Entry, EntryValue, FormData};
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let body = if req.starts_with("POST ") {
+                "<p>ok</p>"
+            } else {
+                ""
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(1);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
+
+        let record = Arc::new(StdMutex::new(None));
+        let handler = Box::new(RecordHandler {
+            done: record.clone(),
+        });
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/post")).unwrap();
+        let mut request = Request::get(url);
+        request.method = Method::POST;
+        request.body = Body::Form(FormData(vec![Entry {
+            name: "x".into(),
+            value: EntryValue::String("1".into()),
+        }]));
+        net.fetch(1, request, handler);
+
+        for _ in 0..300 {
+            if record.lock().expect("record").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let events = crate::network_feed::drain_pending();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.method == "POST" && e.initiator == NetworkInitiator::Document),
+            "{events:?}"
+        );
     }
 }

@@ -50,6 +50,11 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Cmd/Ctrl+- / Numpad- | Zoom page out |
 | Cmd/Ctrl+0 | Reset zoom to 100% (non-100% zoom shows a **%** label in the toolbar) |
 | Cmd/Ctrl+D | Bookmark or unbookmark the current page (toolbar star outline / filled) |
+| Cmd/Ctrl+Alt+B | Show bookmarks |
+| Cmd/Ctrl+. | Stop loading |
+| Cmd/Ctrl+M | Minimize the window |
+| Cmd/Ctrl+Shift+W | Close the window |
+| Cmd/Ctrl+Shift+/ | Keyboard shortcuts help |
 | Space / Shift+Space / PgUp / PgDn / Home / End / arrows | Scroll the page when no text field is focused |
 
 The in-window **DevTools** panel (F12) has Console, Elements, and Network tabs. The Network tab lists completed document loads, subresources, and page `fetch` / `XHR` for the active tab (filter box, **Clear**, and per-row detail); the per-tab log clears on navigation.
@@ -189,7 +194,7 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 - HTML and CSS, including flex, floats, and SVG (`blitz-dom` features `floats`, `svg`, and `woff`).
 - http, https, and file pages, plus stylesheets, images, and web fonts.
 - Link clicks, in-page fragment jumps, scrolling, text selection, and form controls that Blitz implements (the address bar is one of those).
-- Tabs with a tab strip, new-tab button, per-tab close controls, and an in-window File/Edit/View/History/Bookmarks/Tabs/Help menu bar.
+- Tabs with a tab strip, new-tab button, per-tab close controls, and menus: on macOS the system menu bar (Glide, File, Edit, View, History, Bookmarks, Develop, Window, Help, laid out like Safari's, with each item running the same action as its shortcut), elsewhere an in-window File/Edit/View/History/Bookmarks/Tabs/Help menu bar. Both are built from one menu model.
 - A Safari-like (macOS light) look: one neutral grey chrome surface in the system font, thin line icons for back and forward, a centered borderless address field with reload inside it that shows the page title and switches to the URL (with a blue focus ring) when you click it, and the zoom, JavaScript and bookmark controls on the right. Tabs sit below the toolbar as equal-width segments with the close button at the leading edge, and the find bar has chevrons and Done. The window always shows at least one tab.
 - Back, forward, and reload. Redirects replace the current history entry. A link click pushes a new one. Each tab keeps its own history, address, title, loading state, find state and zoom.
 - Loading indicator, stop (Esc or the toolbar **Stop** button while a page is loading), and a readable error page when a page fails to load. **Retry** on the error page reloads the same URL. HTTP redirects (301, 302, 303, 307, 308, a `Refresh` header, and a zero-delay `<meta http-equiv="refresh">`) are followed and the address bar shows the final URL. A refresh that sits only inside `<noscript>` is followed when that is the page's only content. A 4xx or 5xx response with a body is shown as that page; an empty error status or a host that cannot be reached still uses Glide's error page.
@@ -201,7 +206,7 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 ## What does not
 
 - **Full browser JavaScript.** The bootstrap is intentionally tiny; the new Web API shims are in-memory or no-op. Boa in Kitesurf implements far more of the Web platform. DuckDuckGo's JS-heavy UI may still break; the HTML frontend is the default search target.
-- **Many browser features.** No native macOS menu bar, modified-click link opening in new tabs, durable Web Storage, real media queries or mutation observation, downloads, or extensions. Only one page iframe is live at a time; switching tabs reloads its document while per-tab state is restored. Blitz's own gaps apply too: incomplete CSS and limited form controls.
+- **Many browser features.** Native menus on Linux and Windows (the in-window bar is used), modified-click link opening in new tabs, durable Web Storage, real media queries or mutation observation, downloads, or extensions. Only one page iframe is live at a time; switching tabs reloads its document while per-tab state is restored. Blitz's own gaps apply too: incomplete CSS and limited form controls.
 - **Find scroll target.** Find scrolls the inline root that contains the match into view, not the exact line box; tall paragraphs and scrollable subcontainers may not place the caret optimally.
 - **Stop vs. subresources.** Stopping a navigation aborts the in-flight main document load, but Blitz also aborts the previous page's subresource fetches when a new navigation starts, so images or scripts on the page you return to may stay missing until you reload.
 - **Kitesurf's Workers runtime.** No Chrome DevTools Protocol, no Dynamic Workers, no PDF export. Those live in Kitesurf's TypeScript and Wasm layers.

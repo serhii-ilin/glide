@@ -85,6 +85,15 @@ publicsuffix = "2.3"
 # F-049: native macOS menu bar (NSApp main menu via muda).
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
+# F-079: Dock icon via NSApplication.setApplicationIconImage; versions match Cargo.lock.
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSImage",
+    "NSResponder",
+] }
 
 [patch.crates-io]
 blitz-dom = { path = "third_party/blitz-dom" }

@@ -1386,7 +1386,9 @@ mod tests {
         let (_worker, _console) = worker_test_lock();
         let page_html = concat!(
             "<!DOCTYPE html><html><body><p id=\"t\">pending</p>",
-            "<script>document.getElementById('t').textContent='inline';</script>",
+            "<script>document.getElementById('t').textContent='inline';",
+            "window.addEventListener('load', function () {",
+            "document.getElementById('t').textContent='loaded';});</script>",
             "<script async src=\"missing.js\"></script></body></html>"
         );
         let mut doc = parse::document_from_html(page_html, DocumentConfig::default(), true);
@@ -1406,5 +1408,11 @@ mod tests {
             host.pump(&mut doc, Instant::now());
             std::thread::sleep(Duration::from_millis(5));
         }
+        let text = doc
+            .get_element_by_id("t")
+            .and_then(|id| doc.get_node(id))
+            .map(|node| node.text_content())
+            .unwrap_or_default();
+        assert_eq!(text.trim(), "loaded", "load must still fire");
     }
 }

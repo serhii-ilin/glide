@@ -9,7 +9,10 @@ Feature: F-058 document.cookie / cookie-jar bridge
   #        js::apply::tests::cookie_rpc_get_hides_httponly,
   #        js::integration::document_cookie_get_set_visible_to_scripts,
   #        js::integration::document_cookie_expired_assignment_does_not_throw,
-  #        cookies::tests::expired_cookie_assignment_is_ignored
+  #        js::integration::document_cookie_rejected_assignment_does_not_throw,
+  #        cookies::tests::expired_cookie_assignment_is_ignored,
+  #        cookies::tests::expired_assignment_deletes_existing_cookie,
+  #        cookies::tests::rejected_document_cookie_assignment_is_ignored
   # MCP: n/a (engine behavior; observable via glide_eval)
 
   Background:
@@ -40,3 +43,18 @@ Feature: F-058 document.cookie / cookie-jar bridge
     When the script runs document.cookie = "x=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/"
     Then the assignment does not throw
     And document.cookie does not contain the cookie name
+
+  Scenario: Expiring an existing cookie deletes it
+  # Source / basis: RFC 6265 §5.3 step 11 — a past expiry expires the matching cookie
+    Given a page at http://example.test/ with a cookie "stay=1; Path=/"
+    When the script runs document.cookie = "stay=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/"
+    Then the assignment does not throw
+    And document.cookie does not contain "stay"
+
+  Scenario: A rejected document.cookie assignment is ignored
+  # Source / basis: HTML Living Standard document.cookie setter — rejected cookies are
+  #                silently ignored, never thrown
+    Given a page at http://example.test/
+    When the script runs document.cookie = "a=1; Domain=example.com; Path=/"
+    Then the assignment does not throw
+    And document.cookie does not contain "a=1"

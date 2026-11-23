@@ -10,6 +10,7 @@ Feature: F-074 Module and dynamic script execution
   #        headless_js::inline_module_script_runs,
   #        headless_js::module_runs_between_parser_scripts_and_dom_content_loaded,
   #        headless_js::parser_async_script_runs_before_load_event,
+  #        headless_js::parser_async_missing_script_fires_error_before_load_event,
   #        headless_js::external_module_script_runs,
   #        headless_js::module_import_resolves_relative_dependency,
   #        headless_js::module_import_missing_dependency_leaves_page_intact,
@@ -114,3 +115,10 @@ Feature: F-074 Module and dynamic script execution
     Given a page with inline classic, DOMContentLoaded, load listeners and an async script
     When the page finishes loading
     Then scripts run in order classic, dom, async, load
+
+  Scenario: A failed parser async script fires error before the load event
+  # Source / basis: HTML Living Standard — script error events fire during script
+  #                processing, and the load event waits for that processing
+    Given a page with an async script whose src cannot be fetched
+    When the page finishes loading
+    Then the script's error event runs before the window load event

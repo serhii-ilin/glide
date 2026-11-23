@@ -34,8 +34,16 @@ Feature: F-057 Observers, idle scheduling and feature-detect shims
   # Source / basis: DOM Standard — observe(target) accepts any Node including CharacterData
     When a script observes a Text node and a Comment node with characterData
     And it changes each node's data
-    Then takeRecords returns characterData records whose target is the observed node
+    Then takeRecords returns exactly one characterData record whose target is the observed node
     And observing a non-Node still throws TypeError
+
+  Scenario: MutationObserver reports detached subtree character data
+  # Source / basis: DOM Standard — observing a node observes its subtree regardless of
+  #                whether the tree is connected to a document
+    When a script observes a detached element and a cloned detached element with
+         characterData and subtree
+    And it changes the data of a text node already in each subtree
+    Then each observer receives exactly one characterData record for its text node
 
   Scenario: IntersectionObserver reports viewport intersection
     When a script observes visible and display:none elements

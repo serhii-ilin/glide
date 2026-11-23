@@ -984,6 +984,38 @@ fn mutation_observer_honors_attribute_filter_and_character_data() {
 }
 
 #[test]
+fn mutation_observer_accepts_text_and_comment_targets() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var parts = [];
+      var text = document.createTextNode('a');
+      var comment = document.createComment('b');
+      document.body.appendChild(text);
+      document.body.appendChild(comment);
+      var textMo = new MutationObserver(function () {});
+      var commentMo = new MutationObserver(function () {});
+      textMo.observe(text, { characterData: true });
+      commentMo.observe(comment, { characterData: true });
+      text.data = 'x';
+      comment.data = 'y';
+      var textRec = textMo.takeRecords().filter(function (r) { return r.type === 'characterData'; })[0];
+      var commentRec = commentMo.takeRecords().filter(function (r) { return r.type === 'characterData'; })[0];
+      parts.push(textRec && textRec.target === text ? 'text-ok' : 'text-bad');
+      parts.push(commentRec && commentRec.target === comment ? 'comment-ok' : 'comment-bad');
+      var threw = false;
+      try {
+        textMo.observe({}, { characterData: true });
+      } catch (e) {
+        threw = e instanceof TypeError;
+      }
+      parts.push(threw ? 'type-ok' : 'type-bad');
+      document.getElementById('t').textContent = parts.join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "text-ok|comment-ok|type-ok");
+}
+
+#[test]
 fn intersection_observer_fires_for_visible_and_hidden_elements() {
     let html = r#"<!DOCTYPE html><html><body>
       <div id="vis" style="width:40px;height:10px"></div>

@@ -423,7 +423,7 @@
       moRegistry.add(this);
     }
     observe(target, options) {
-      if (!target || (target.nodeType !== 1 && target.nodeType !== 9 && target.nodeType !== 11)) {
+      if (!target || typeof target.nodeType !== 'number') {
         throw new TypeError('MutationObserver.observe: target must be a Node');
       }
       this._targets.set(target, normalizeMoOptions(options));

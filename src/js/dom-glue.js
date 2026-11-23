@@ -37,23 +37,42 @@
   ]);
   const ceRegistry = new Map();
   const cePending = new Map();
+  const ceConstructors = new Set();
   const ceUpgraded = new WeakSet();
+  const ceFailed = new WeakSet();
   const ceReactionQueue = [];
+  let ceQueueHead = 0;
   let ceDraining = false;
+  let ceUpgradeTarget = null;
+  let ceHTMLElementPatched = false;
+
+  // Potential custom element name (HTML Living Standard, valid element local name).
+  const PCEN_CONTINUATION =
+    /^[a-z0-9._\-\u00B7\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u037D\u037F-\u1FFF\u200C-\u200D\u203F-\u2040\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD][a-z0-9._\-\u00B7\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u037D\u037F-\u1FFF\u200C-\u200D\u203F-\u2040\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]*$/u;
 
   function validCustomElementName(name) {
     const n = String(name);
+    const lower = n.toLowerCase();
     if (!n.includes('-')) return false;
     if (/[A-Z]/.test(n)) return false;
-    if (CE_RESERVED.has(n.toLowerCase())) return false;
-    return /^[a-z][a-z0-9._-]*-[a-z0-9._-]+$/.test(n);
+    if (CE_RESERVED.has(lower)) return false;
+    const i = n.indexOf('-');
+    if (i <= 0) return false;
+    const before = n.slice(0, i);
+    const after = n.slice(i + 1);
+    if (!/^[a-z]/.test(before)) return false;
+    if (!PCEN_CONTINUATION.test(after)) return false;
+    return PCEN_CONTINUATION.test(before);
   }
 
   function resetCustomElementState() {
     ceRegistry.clear();
     cePending.clear();
+    ceConstructors.clear();
     ceReactionQueue.length = 0;
+    ceQueueHead = 0;
     ceDraining = false;
+    ceUpgradeTarget = null;
   }
 
   function setElementDefinedState(el, defined) {
@@ -97,8 +116,9 @@
     if (ceDraining) return;
     ceDraining = true;
     try {
-      while (ceReactionQueue.length) {
-        const { el, callbackName, args } = ceReactionQueue.shift();
+      while (ceQueueHead < ceReactionQueue.length) {
+        const { el, callbackName, args } = ceReactionQueue[ceQueueHead];
+        ceQueueHead += 1;
         if (!el || el.nodeType !== 1 || !ceUpgraded.has(el)) continue;
         const name = String(el.localName || el.nodeName).toLowerCase();
         const ctor = ceRegistry.get(name);
@@ -107,41 +127,124 @@
       }
     } finally {
       ceDraining = false;
+      ceReactionQueue.length = 0;
+      ceQueueHead = 0;
+    }
+  }
+
+  function isElementConnected(el) {
+    if (!el) return false;
+    let n = el;
+    while (n) {
+      if (n.nodeType === 11) return false;
+      if (n === pageDocument) return true;
+      n = n.parentNode;
+    }
+    return false;
+  }
+
+  function walkUpgradedInSubtree(root, visitor) {
+    walkElementTree(root, (el) => {
+      if (ceUpgraded.has(el)) visitor(el);
+    });
+  }
+
+  function installHTMLElementConstructorPatch() {
+    if (ceHTMLElementPatched) return;
+    const Orig = domino.impl.HTMLElement;
+    if (!Orig) return;
+    function HTMLElement() {
+      if (new.target === undefined) {
+        throw new TypeError('Illegal constructor');
+      }
+      if (ceUpgradeTarget != null) {
+        const existing = ceUpgradeTarget;
+        return existing;
+      }
+      return Reflect.construct(Orig, arguments, new.target);
+    }
+    Object.setPrototypeOf(HTMLElement, Orig);
+    HTMLElement.prototype = Orig.prototype;
+    domino.impl.HTMLElement = HTMLElement;
+    global.HTMLElement = HTMLElement;
+    ceHTMLElementPatched = true;
+  }
+
+  function customElementExtendsHTMLElement(ctor) {
+    const root = global.HTMLElement && global.HTMLElement.prototype;
+    if (!root) return false;
+    let p = ctor.prototype;
+    while (p && p !== Object.prototype) {
+      if (p === root) return true;
+      p = Object.getPrototypeOf(p);
+    }
+    return false;
+  }
+
+  function customElementConstructorIsClass(ctor) {
+    try {
+      const src = Function.prototype.toString.call(ctor);
+      return /^\s*class[\s{]/.test(src) || src.startsWith('class ');
+    } catch (_) {
+      return false;
     }
   }
 
   function runCustomElementConstructor(el, ctor) {
-    const prev = Object.getPrototypeOf(el);
+    if (ceFailed.has(el)) return false;
+    const prevProto = Object.getPrototypeOf(el);
     Object.setPrototypeOf(el, ctor.prototype);
+    setElementDefinedState(el, true);
+    ceUpgradeTarget = el;
     try {
-      ctor.call(el);
+      const mustNew =
+        customElementExtendsHTMLElement(ctor) && customElementConstructorIsClass(ctor);
+      if (mustNew) {
+        const result = Reflect.construct(ctor, [], ctor);
+        if (result !== el) {
+          ceFailed.add(el);
+          Object.setPrototypeOf(el, prevProto);
+          setElementDefinedState(el, false);
+          return false;
+        }
+        return true;
+      }
+      const ret = ctor.call(el);
+      if (ret && typeof ret === 'object' && ret !== el) {
+        ceFailed.add(el);
+        Object.setPrototypeOf(el, prevProto);
+        setElementDefinedState(el, false);
+        return false;
+      }
+      return true;
     } catch (err) {
+      ceFailed.add(el);
+      Object.setPrototypeOf(el, prevProto);
+      setElementDefinedState(el, false);
       consoleError(err);
-      Object.setPrototypeOf(el, prev);
       return false;
+    } finally {
+      ceUpgradeTarget = null;
     }
-    return true;
   }
 
   function upgradeCustomElement(el) {
-    if (!el || el.nodeType !== 1 || ceUpgraded.has(el)) return;
+    if (!el || el.nodeType !== 1 || ceUpgraded.has(el) || ceFailed.has(el)) return;
     const name = String(el.localName || el.nodeName).toLowerCase();
     if (!validCustomElementName(name)) return;
     const ctor = ceRegistry.get(name);
     if (!ctor) return;
     if (!runCustomElementConstructor(el, ctor)) return;
     ceUpgraded.add(el);
-    setElementDefinedState(el, true);
-    const doc = el.ownerDocument || pageDocument;
-    if (doc && el.parentNode) {
-      enqueueCeReaction(el, 'connectedCallback', null);
-    }
     const observed = observedAttributesOf(ctor);
     for (let i = 0; i < observed.length; i += 1) {
       const attr = observed[i];
       if (el.hasAttribute(attr)) {
-        enqueueCeReaction(el, 'attributeChangedCallback', [attr, null, el.getAttribute(attr)]);
+        invokeCeCallback(el, ctor, 'attributeChangedCallback', [attr, null, el.getAttribute(attr)]);
       }
+    }
+    if (isElementConnected(el)) {
+      invokeCeCallback(el, ctor, 'connectedCallback', null);
     }
   }
 
@@ -153,10 +256,26 @@
 
   function upgradeInSubtree(root) {
     if (!root) return;
+    const stack = [];
     walkElementTree(root, (el) => {
       const name = String(el.localName || el.nodeName).toLowerCase();
-      if (validCustomElementName(name) && !ceUpgraded.has(el)) upgradeCustomElement(el);
+      if (validCustomElementName(name) && !ceUpgraded.has(el) && !ceFailed.has(el)) stack.push(el);
     });
+    for (let i = 0; i < stack.length; i += 1) {
+      upgradeCustomElement(stack[i]);
+    }
+  }
+
+  function patchDocumentCreateElement(doc) {
+    if (!doc || doc.__glide_ce_create_patched) return;
+    const orig = doc.createElement.bind(doc);
+    doc.createElement = function createElementPatched(tag, options) {
+      const el = orig(tag, options);
+      const name = String(tag).toLowerCase();
+      if (validCustomElementName(name) && ceRegistry.has(name)) upgradeCustomElement(el);
+      return el;
+    };
+    doc.__glide_ce_create_patched = true;
   }
 
   function resolveWhenDefined(name) {
@@ -168,6 +287,7 @@
   }
 
   function installCustomElementsRegistry() {
+    installHTMLElementConstructorPatch();
     const registry = {
       define(name, ctor, options) {
         const n = String(name);
@@ -181,6 +301,13 @@
           err.name = 'NotSupportedError';
           throw err;
         }
+        if (ceConstructors.has(ctor)) {
+          const err = typeof DOMException !== 'undefined' && DOMException.NOT_SUPPORTED_ERR != null
+            ? new DOMException(DOMException.NOT_SUPPORTED_ERR)
+            : new Error('Constructor already used with another custom element name');
+          err.name = 'NotSupportedError';
+          throw err;
+        }
         if (typeof ctor !== 'function') throw new TypeError('Constructor must be a function');
         if (options && options.extends) {
           diagUnsupported('custom-elements', 'is= customized built-ins');
@@ -189,9 +316,9 @@
           throw err;
         }
         ceRegistry.set(n, ctor);
+        ceConstructors.add(ctor);
         resolveWhenDefined(n);
         if (pageDocument) upgradeInSubtree(pageDocument);
-        drainCeReactions();
         flushMutations();
       },
       get(name) {
@@ -199,6 +326,9 @@
       },
       whenDefined(name) {
         const n = String(name);
+        if (!validCustomElementName(n)) {
+          return Promise.reject(new SyntaxError('Invalid custom element name'));
+        }
         if (ceRegistry.has(n)) return Promise.resolve(ceRegistry.get(n));
         if (!cePending.has(n)) {
           let resolve;
@@ -500,7 +630,7 @@
           target: rec.target,
           attributeName: a.localName || a.name,
           attributeNamespace: a.namespaceURI || null,
-          oldValue: null,
+          oldValue: rec.oldValue != null ? rec.oldValue : null,
         });
         break;
       }
@@ -512,7 +642,7 @@
           target: rec.target,
           attributeName: a.localName || a.name,
           attributeNamespace: a.namespaceURI || null,
-          oldValue: null,
+          oldValue: rec.oldValue != null ? rec.oldValue : null,
         });
         break;
       }
@@ -849,7 +979,16 @@
         assignFormOwners(rec.node, false);
         subtreeOps(rec.target, followingRef(rec.node), rec.node, pendingBatch);
         if (rec.node) {
+          const upgradedBefore = new WeakSet();
+          walkElementTree(rec.node, (el) => {
+            if (ceUpgraded.has(el)) upgradedBefore.add(el);
+          });
           upgradeInSubtree(rec.node);
+          walkUpgradedInSubtree(rec.node, (el) => {
+            if (upgradedBefore.has(el) && isElementConnected(el)) {
+              enqueueCeReaction(el, 'connectedCallback', null);
+            }
+          });
           drainCeReactions();
         }
         break;
@@ -857,10 +996,10 @@
       case MUTATE.REMOVE: {
         const node = rec.node;
         if (!node) return;
-        if (node.nodeType === 1 && ceUpgraded.has(node)) {
-          enqueueCeReaction(node, 'disconnectedCallback', null);
-          drainCeReactions();
-        }
+        walkUpgradedInSubtree(node, (el) => {
+          enqueueCeReaction(el, 'disconnectedCallback', null);
+        });
+        drainCeReactions();
         assignFormOwners(node, true);
         const ref = refOf(node);
         forgetSubtree(node);
@@ -877,6 +1016,13 @@
         const before = followingRef(node);
         if (before != null) op.before = before;
         pendingBatch.push(op);
+        if (node && node.nodeType === 1) {
+          walkUpgradedInSubtree(node, (el) => {
+            enqueueCeReaction(el, 'disconnectedCallback', null);
+            if (isElementConnected(el)) enqueueCeReaction(el, 'connectedCallback', null);
+          });
+          drainCeReactions();
+        }
         break;
       }
       case MUTATE.ATTR: {
@@ -900,9 +1046,10 @@
             const observed = observedAttributesOf(ctor);
             const lname = String(name || '').toLowerCase();
             if (observed.some((n) => String(n).toLowerCase() === lname)) {
+              const prev = rec.oldValue != null ? rec.oldValue : null;
               enqueueCeReaction(rec.target, 'attributeChangedCallback', [
                 name,
-                null,
+                prev,
                 a.value,
               ]);
               drainCeReactions();
@@ -933,7 +1080,8 @@
             const observed = observedAttributesOf(ctor);
             const lname = String(name || '').toLowerCase();
             if (observed.some((n) => String(n).toLowerCase() === lname)) {
-              enqueueCeReaction(rec.target, 'attributeChangedCallback', [name, null, null]);
+              const prev = rec.oldValue != null ? rec.oldValue : null;
+              enqueueCeReaction(rec.target, 'attributeChangedCallback', [name, prev, null]);
               drainCeReactions();
             }
           }
@@ -1745,12 +1893,15 @@
     }
     assignFormOwners(pageDocument, false);
     mergeDominoWindowOntoGlobal(domWin);
+    patchDocumentCreateElement(pageDocument);
     pageDocument._setMutationHandler(onMutation);
     Object.defineProperty(pageDocument, 'defaultView', {
       configurable: true,
       get: () => global,
     });
     installGlobals(pageUrl || 'about:blank');
+    ceHTMLElementPatched = false;
+    installHTMLElementConstructorPatch();
     if (typeof global.__glide_reset_page_history === 'function') {
       global.__glide_reset_page_history();
     }

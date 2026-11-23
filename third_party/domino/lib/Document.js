@@ -587,7 +587,8 @@ Document.prototype = Object.create(ContainerNode.prototype, {
       this.mutationHandler({
         type: MUTATE.ATTR,
         target: attr.ownerElement,
-        attr: attr
+        attr: attr,
+        oldValue: oldval
       });
     }
   }},
@@ -605,7 +606,8 @@ Document.prototype = Object.create(ContainerNode.prototype, {
       this.mutationHandler({
         type: MUTATE.REMOVE_ATTR,
         target: attr.ownerElement,
-        attr: attr
+        attr: attr,
+        oldValue: attr.value
       });
     }
   }},

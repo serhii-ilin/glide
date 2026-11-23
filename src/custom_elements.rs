@@ -58,9 +58,8 @@ pub fn show_unupgraded(doc: &mut BaseDocument) {
     // A UA `!important` declaration outranks the page's own `visibility` rules.
     // Standard descendants are covered too: pages usually hide every
     // `:not(:defined)` element, including the plain elements inside the shell.
-    // `html` and `body` are named because Blitz's painter skips a hidden
-    // subtree outright instead of painting a visible descendant, so the
-    // document root must stay visible.
+    // Built-in `html` and `body` stay `:defined` after parse (F-076), so the UA
+    // rule does not need to name them explicitly.
     let selectors = names
         .iter()
         .map(|name| format!("{name}:not(:defined),{name}:not(:defined) *"))

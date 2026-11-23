@@ -29,11 +29,12 @@
     var g = document.getElementById('g');
     g.setAttribute('msg', '1');
     var w = getComputedStyle(g).visibility;
+    var disp = getComputedStyle(g).display;
     var el = document.createElement('x-greet');
     el.id = 'dyn';
     document.body.appendChild(el);
     document.body.removeChild(el);
-    document.getElementById('t').textContent = [log.join('|'), w].join(';');
+    document.getElementById('t').textContent = [log.join('|'), w, disp].join(';');
   </script>
 </body>
 </html>

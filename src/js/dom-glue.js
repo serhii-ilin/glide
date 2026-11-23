@@ -2304,13 +2304,17 @@
         let fname = filename != null ? String(filename) : '';
         if (!fname && typeof File !== 'undefined' && value instanceof File) fname = value.name;
         if (!fname) fname = 'blob';
-        return {
+        const entry = {
           name: n,
           valueKind: 'file',
           dataBase64,
           filename: fname,
           type: value.type || 'application/octet-stream',
         };
+        if (typeof File !== 'undefined' && value instanceof File) {
+          entry.lastModified = value.lastModified;
+        }
+        return entry;
       }
       return { name: n, valueKind: 'text', data: String(value) };
     }
@@ -2345,17 +2349,37 @@
       }
       set(name, value, filename) {
         const key = String(name);
-        this._entries = this._entries.filter((e) => e.name !== key);
-        this.append(key, value, filename);
+        let replaced = false;
+        const next = [];
+        for (let i = 0; i < this._entries.length; i += 1) {
+          const e = this._entries[i];
+          if (e.name === key) {
+            if (!replaced) {
+              next.push(entryFromValue(key, value, filename));
+              replaced = true;
+            }
+          } else {
+            next.push(e);
+          }
+        }
+        if (!replaced) {
+          next.push(entryFromValue(key, value, filename));
+        }
+        this._entries = next;
+      }
+      fileFromEntry(e) {
+        const bytes = base64ToBytes(e.dataBase64 || '');
+        const opts = { type: e.type || 'application/octet-stream' };
+        if (e.lastModified != null) opts.lastModified = e.lastModified;
+        return new File([bytes], e.filename || 'blob', opts);
       }
       get(name) {
         const key = String(name);
-        for (let i = this._entries.length - 1; i >= 0; i -= 1) {
+        for (let i = 0; i < this._entries.length; i += 1) {
           if (this._entries[i].name === key) {
             const e = this._entries[i];
             if (e.valueKind === 'file') {
-              const bytes = base64ToBytes(e.dataBase64 || '');
-              return new File([bytes], e.filename || 'blob', { type: e.type || 'application/octet-stream' });
+              return this.fileFromEntry(e);
             }
             return e.data || '';
           }
@@ -2368,8 +2392,7 @@
         this._entries.forEach((e) => {
           if (e.name !== key) return;
           if (e.valueKind === 'file') {
-            const bytes = base64ToBytes(e.dataBase64 || '');
-            out.push(new File([bytes], e.filename || 'blob', { type: e.type || 'application/octet-stream' }));
+            out.push(this.fileFromEntry(e));
           } else {
             out.push(e.data || '');
           }
@@ -2386,17 +2409,13 @@
       }
       forEach(callback, thisArg) {
         this._entries.slice().forEach((e) => {
-          const value = e.valueKind === 'file'
-            ? new File([base64ToBytes(e.dataBase64 || '')], e.filename || 'blob', { type: e.type || 'application/octet-stream' })
-            : (e.data || '');
+          const value = e.valueKind === 'file' ? this.fileFromEntry(e) : (e.data || '');
           callback.call(thisArg, value, e.name, this);
         });
       }
       *entries() {
         for (const e of this._entries) {
-          const value = e.valueKind === 'file'
-            ? new File([base64ToBytes(e.dataBase64 || '')], e.filename || 'blob', { type: e.type || 'application/octet-stream' })
-            : (e.data || '');
+          const value = e.valueKind === 'file' ? this.fileFromEntry(e) : (e.data || '');
           yield [e.name, value];
         }
       }

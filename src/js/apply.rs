@@ -945,6 +945,30 @@ mod tests {
     }
 
     #[test]
+    fn build_fetch_request_formdata_respects_request_content_type() {
+        let url = Url::parse("http://127.0.0.1/").unwrap();
+        let body_json =
+            r#"{"kind":"formData","entries":[{"name":"x","valueKind":"text","data":"1"}]}"#;
+        let req = build_fetch_request(
+            url,
+            "POST",
+            &[("Content-Type".into(), "text/plain".into())],
+            body_json,
+        )
+        .unwrap();
+        let ct = req
+            .headers
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .expect("ct");
+        assert_eq!(ct, "text/plain");
+        let Body::Bytes(bytes) = req.body else {
+            panic!("expected multipart bytes");
+        };
+        assert!(bytes.starts_with(b"--"));
+    }
+
+    #[test]
     fn build_fetch_request_url_search_params_sets_urlencoded() {
         let url = Url::parse("http://127.0.0.1/").unwrap();
         let req = build_fetch_request(

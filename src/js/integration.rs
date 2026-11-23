@@ -2539,6 +2539,23 @@ fn websocket_rejects_mixed_content_and_bad_url() {
 }
 
 #[test]
+fn form_data_get_returns_first_entry_set_replaces_first_only() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var fd = new FormData();
+      fd.append('a', '1');
+      fd.append('b', '2');
+      fd.append('a', '3');
+      var before = fd.get('a') + '|' + fd.getAll('a').join(',');
+      fd.set('a', '9');
+      var parts = [];
+      fd.forEach(function (v, k) { parts.push(k + '=' + v); });
+      document.getElementById('t').textContent = before + '|' + parts.join(';');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "1|1,3|a=9;b=2");
+}
+
+#[test]
 fn form_data_append_set_and_iterate() {
     let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
       var fd = new FormData();
@@ -2556,6 +2573,89 @@ fn form_data_append_set_and_iterate() {
     </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(200));
     assert_eq!(result.final_text, "only|1|false|a=only;b=blob:2");
+}
+
+#[test]
+fn file_last_modified_zero_preserved() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var f = new File(['x'], 'a.txt', { lastModified: 0 });
+      var fd = new FormData();
+      fd.append('f', f);
+      var back = fd.get('f');
+      document.getElementById('t').textContent = String(f.lastModified) + '|' + String(back.lastModified);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "0|0");
+}
+
+#[test]
+fn form_data_from_form_matches_control_values() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form id="f"><input name="q" value="hi"><input type="submit" name="go" value="1"></form>
+      <p id="t">x</p>
+      <script>
+        var fd = new FormData(document.getElementById('f'));
+        document.getElementById('t').textContent = fd.get('q') + '|' + (fd.get('go') == null ? 'null' : fd.get('go'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    assert_eq!(result.final_text, "hi|null");
+}
+
+#[test]
+fn form_data_from_form_with_submitter_includes_button() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form id="f"><input name="q" value="hi"><button type="submit" name="go" value="send" id="sub"></button></form>
+      <p id="t">x</p>
+      <script>
+        var fd = new FormData(document.getElementById('f'), document.getElementById('sub'));
+        document.getElementById('t').textContent = fd.get('go');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(400));
+    assert_eq!(result.final_text, "send");
+}
+
+#[test]
+fn fetch_formdata_blob_without_filename_posts_default_blob_name() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen2 = seen.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = vec![0u8; 65536];
+        let n = stream.read(&mut buf).expect("read");
+        *seen2.lock().expect("lock") = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let body = "ok";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write");
+    });
+
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p><script>
+      var fd = new FormData();
+      fd.append('f', new Blob(['z']));
+      fetch('http://127.0.0.1:{port}/', {{ method: 'POST', body: fd }})
+        .then(function (r) {{ return r.text(); }})
+        .then(function (t) {{ document.getElementById('t').textContent = t; }});
+    </script></body></html>"#
+    );
+    let result = super::harness::run_inline_page_on_base(
+        &html,
+        &format!("http://127.0.0.1:{port}/"),
+        Duration::from_millis(800),
+    );
+    assert_eq!(result.final_text, "ok");
+    let body = seen.lock().expect("lock");
+    assert!(body.contains("filename=\"blob\""), "{body}");
 }
 
 #[test]

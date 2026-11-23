@@ -1598,7 +1598,9 @@
     constructor(parts, name, options) {
       super(parts, options || {});
       this.name = String(name);
-      this.lastModified = (options && options.lastModified) || Date.now();
+      this.lastModified = (options && Object.prototype.hasOwnProperty.call(options, 'lastModified'))
+        ? Number(options.lastModified)
+        : Date.now();
     }
   }
   global.File = File;

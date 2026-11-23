@@ -61,14 +61,16 @@ pub fn apply_fetch_body(request: &mut Request, body_json: &str) -> Result<(), St
         "formData" => {
             let fields = parse_form_data_entries(&value)?;
             let (boundary, body) = crate::http::encode_multipart_form_data(&fields)?;
-            let ct = format!("multipart/form-data; boundary={boundary}");
-            request.content_type = Some(ct.clone());
-            let header_value = http::header::HeaderValue::from_str(&ct)
-                .map_err(|_| "invalid multipart content-type".to_string())?;
-            request
-                .headers
-                .insert(http::header::CONTENT_TYPE, header_value);
             request.body = Body::Bytes(Bytes::from(body));
+            if !request.headers.contains_key(http::header::CONTENT_TYPE) {
+                let ct = format!("multipart/form-data; boundary={boundary}");
+                request.content_type = Some(ct.clone());
+                let header_value = http::header::HeaderValue::from_str(&ct)
+                    .map_err(|_| "invalid multipart content-type".to_string())?;
+                request
+                    .headers
+                    .insert(http::header::CONTENT_TYPE, header_value);
+            }
         }
         other => return Err(format!("unsupported fetch body kind: {other}")),
     }
@@ -189,6 +191,48 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         assert!(ct.starts_with("application/x-www-form-urlencoded"));
+    }
+
+    #[test]
+    fn form_data_keeps_existing_content_type_header() {
+        let mut req =
+            blitz_traits::net::Request::get(url::Url::parse("http://127.0.0.1/").unwrap());
+        req.method = Method::POST;
+        let header_value = http::header::HeaderValue::from_static("text/plain");
+        req.headers.insert(http::header::CONTENT_TYPE, header_value);
+        apply_fetch_body(
+            &mut req,
+            r#"{"kind":"formData","entries":[{"name":"a","valueKind":"text","data":"x"}]}"#,
+        )
+        .expect("apply");
+        let ct = req
+            .headers
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .expect("ct");
+        assert_eq!(ct, "text/plain");
+        let Body::Bytes(body) = req.body else {
+            panic!("bytes");
+        };
+        assert!(body.starts_with(b"--"));
+    }
+
+    #[test]
+    fn url_search_params_content_type_is_exact_charset_suffix() {
+        let mut req =
+            blitz_traits::net::Request::get(url::Url::parse("http://127.0.0.1/").unwrap());
+        req.method = Method::POST;
+        apply_fetch_body(
+            &mut req,
+            r#"{"kind":"urlSearchParams","pairs":[["q","a b"]]}"#,
+        )
+        .expect("apply");
+        let ct = req
+            .headers
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .expect("ct");
+        assert_eq!(ct, "application/x-www-form-urlencoded;charset=UTF-8");
     }
 
     #[test]

@@ -29,17 +29,22 @@ fn normalize_form_field(input: &str) -> String {
 }
 
 /// Encode URLSearchParams pairs as `application/x-www-form-urlencoded` bytes (UTF-8).
+///
+/// Uses the URL Standard serializer (percent-encoding only; no HTML newline normalization).
 pub fn encode_url_search_params(pairs: &[(String, String)]) -> Vec<u8> {
     let mut body = String::new();
     {
         let mut ser = url::form_urlencoded::Serializer::new(&mut body);
         for (name, value) in pairs {
-            let name = normalize_form_field(name);
-            let value = normalize_form_field(value);
-            ser.append_pair(&name, &value);
+            ser.append_pair(name, value);
         }
     }
     body.into_bytes()
+}
+
+/// Multipart text field bodies use CRLF line endings per the HTML encoding algorithm.
+fn normalize_multipart_text_value(input: &str) -> String {
+    normalize_form_field(input)
 }
 
 /// One part of a `multipart/form-data` body from page script `FormData`.
@@ -113,7 +118,8 @@ pub fn encode_multipart_form_data_with_boundary(
                     format!("Content-Disposition: form-data; name=\"{escaped_name}\"\r\n\r\n")
                         .as_bytes(),
                 );
-                body.extend_from_slice(text.as_bytes());
+                let normalized = normalize_multipart_text_value(text);
+                body.extend_from_slice(normalized.as_bytes());
                 body.extend_from_slice(b"\r\n");
             }
             MultipartValue::File {
@@ -1219,6 +1225,25 @@ mod tests {
         assert!(text.contains("name=\"a%22b%0D%0A\""));
         assert!(text.contains("\r\nhello\r\n"));
         assert!(text.ends_with("--testboundary--\r\n"));
+    }
+
+    #[test]
+    fn encode_multipart_text_value_normalizes_lf_to_crlf() {
+        use super::{MultipartField, MultipartValue};
+        let fields = vec![MultipartField {
+            name: "n".into(),
+            value: MultipartValue::Text("a\nb".into()),
+        }];
+        let (_, body) = encode_multipart_form_data_with_boundary(&fields, Some("b")).expect("enc");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.contains("\r\na\r\nb\r\n"));
+    }
+
+    #[test]
+    fn encode_url_search_params_uses_url_standard_not_html_newlines() {
+        let bytes =
+            encode_url_search_params(&[("q".into(), "a b".into()), ("n".into(), "a\nb".into())]);
+        assert_eq!(&bytes[..], b"q=a+b&n=a%0Ab");
     }
 
     #[test]

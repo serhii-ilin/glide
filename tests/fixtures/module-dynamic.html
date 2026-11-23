@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script type="module">
+    const ns = await import('./module-dynamic-dep.js');
+    document.getElementById('t').textContent = ns.label;
+  </script>
+</body>
+</html>

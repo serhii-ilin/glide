@@ -147,6 +147,7 @@ pub struct PageCounts {
     pub uncaught: u64,
     pub console_errors: u64,
     pub unsupported: u64,
+    pub loader_failures: u64,
     pub kinds: std::collections::BTreeSet<String>,
 }
 
@@ -262,6 +263,12 @@ pub fn record_unsupported(feature: &str, detail: &str) {
     logging::warn("js.unsupported", "page feature is not implemented", &fields);
 }
 
+/// A module graph fetch or compile failure reported by the glide-js loader.
+pub fn record_loader_failure() {
+    COUNTS.with(|slot| slot.borrow_mut().loader_failures += 1);
+    count_kind("loader");
+}
+
 /// Report an unsupported feature from the UI thread, where there is no script
 /// context. Used by script discovery (module scripts).
 pub fn report_unsupported(page_url: &str, feature: &str, detail: &str) {
@@ -315,9 +322,9 @@ fn unsupported_hint(feature: &str) -> &'static str {
         }
         "module-script" => "The module script could not be executed; check its syntax.",
         "module-import" => {
-            "The module imports another module; the loader does not fetch module dependencies yet."
+            "A module import failed (missing URL, bare specifier, or import maps are unsupported)."
         }
-        "dynamic-import" => "import() is not wired to the script loader.",
+        "dynamic-import" => "Dynamic import() failed to load or evaluate the requested module.",
         _ => "A page feature reached the DOM bridge with no implementation; see F-032/F-036.",
     }
 }
@@ -328,7 +335,10 @@ fn unsupported_hint(feature: &str) -> &'static str {
 /// page logs at DEBUG, where it is diagnosis material rather than a warning.
 pub fn log_page_summary(scripts_run: u64) {
     let counts = counts();
-    let degraded = counts.uncaught > 0 || counts.console_errors > 0 || counts.unsupported > 0;
+    let degraded = counts.uncaught > 0
+        || counts.console_errors > 0
+        || counts.unsupported > 0
+        || counts.loader_failures > 0;
     if scripts_run == 0 && !degraded {
         return;
     }

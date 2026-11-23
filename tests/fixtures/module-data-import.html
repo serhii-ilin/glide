@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script type="module">
+    const m = await import('data:text/javascript,export%20const%20v%3D42');
+    document.getElementById('t').textContent = 'data-' + m.v;
+  </script>
+</body>
+</html>

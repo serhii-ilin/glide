@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script type="module" src="./module-cache-counter.js"></script>
+  <script type="module" src="./module-cache-counter.js"></script>
+  <script type="module">
+    const m = await import('./module-cache-counter.js');
+    document.getElementById('t').textContent = String(m.count);
+  </script>
+</body>
+</html>

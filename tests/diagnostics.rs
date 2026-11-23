@@ -25,7 +25,11 @@ fn uncaught_script_error_is_logged_with_context() {
     assert!(stderr.contains("msg=\"Uncaught"), "{stderr}");
     assert!(stderr.contains("__glideMissingDiagnosticProbe"), "{stderr}");
     assert!(stderr.contains("page_url=\""), "{stderr}");
-    assert!(stderr.contains("script=\"script-0\""), "{stderr}");
+    assert!(
+        stderr.contains("script=\"script-0\"")
+            || stderr.contains("#inline-script-0\""),
+        "{stderr}"
+    );
     assert!(stderr.contains("error_kind=\"missing_api\""), "{stderr}");
     assert!(stderr.contains("hint=\""), "{stderr}");
 }
@@ -134,13 +138,12 @@ fn module_script_runs() {
 }
 
 #[test]
-fn module_import_is_reported_as_unsupported() {
-    let (stdout, stderr) = run_fixture("module-import.html", "debug");
+fn module_import_missing_dependency_is_logged() {
+    let (stdout, stderr) = run_fixture("module-import-missing.html", "debug");
 
     assert!(
-        stderr.contains("target=\"js.unsupported\"")
-            && stderr.contains("feature=\"module-import\""),
-        "expected a module-import record: {stderr}"
+        stderr.contains("target=\"js.loader\"") && stderr.contains("module fetch failed"),
+        "expected a module loader record: {stderr}"
     );
     assert!(
         stderr.contains("msg=\"page scripts settled\"") && stderr.contains("status=\"degraded\""),
@@ -148,4 +151,17 @@ fn module_import_is_reported_as_unsupported() {
     );
     assert!(stdout.contains("before"), "dump: {stdout}");
     assert!(!stdout.contains("imported"), "dump: {stdout}");
+}
+
+#[test]
+fn bare_module_specifier_is_reported_as_unsupported() {
+    let (stdout, stderr) = run_fixture("module-bare.html", "debug");
+
+    assert!(
+        stderr.contains("target=\"js.unsupported\"")
+            && stderr.contains("feature=\"module-import\""),
+        "expected a bare-import record: {stderr}"
+    );
+    assert!(stdout.contains("before"), "dump: {stdout}");
+    assert!(!stdout.contains("bare ran"), "dump: {stdout}");
 }

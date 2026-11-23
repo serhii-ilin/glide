@@ -331,12 +331,200 @@ fn external_module_script_runs() {
 }
 
 #[test]
-fn module_import_is_left_to_the_loader() {
+fn module_import_resolves_relative_dependency() {
     let rt = tokio_runtime();
     let _guard = rt.enter();
-    let text = dump_text(&fixture_url("module-import.html"), true).expect("load");
+    let text = dump_text(&fixture_url("module-import-ok.html"), true).expect("load");
+    assert!(text.contains("imported 7"), "{text}");
+}
+
+#[test]
+fn module_import_missing_dependency_leaves_page_intact() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-import-missing.html"), true).expect("load");
     assert!(text.contains("before"), "{text}");
     assert!(!text.contains("imported"), "{text}");
+}
+
+#[test]
+fn module_graph_handles_import_cycle() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-cycle.html"), true).expect("load");
+    assert!(text.contains("cycle ok"), "{text}");
+}
+
+#[test]
+fn dynamic_import_resolves_module() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-dynamic.html"), true).expect("load");
+    assert!(text.contains("dynamic ok"), "{text}");
+}
+
+#[test]
+fn import_meta_url_matches_module_resource() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let dep = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module-meta-dep.js");
+    let expected = format!("file://{}", dep.display());
+    let text = dump_text(&fixture_url("module-meta.html"), true).expect("load");
+    assert!(text.contains(&expected), "{text}");
+}
+
+#[test]
+fn bare_module_specifier_is_rejected() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-bare.html"), true).expect("load");
+    assert!(text.contains("before"), "{text}");
+    assert!(!text.contains("bare ran"), "{text}");
+}
+
+#[test]
+fn http_module_script_fetch_cookie_same_origin_and_not_cross_port() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    const MODULE: &str = "export const msg = 'cookie-module';";
+    let listener_a = TcpListener::bind("127.0.0.1:0").expect("bind a");
+    let port_a = listener_a.local_addr().expect("a").port();
+    let listener_b = TcpListener::bind("127.0.0.1:0").expect("bind b");
+    let port_b = listener_b.local_addr().expect("b").port();
+    let seen = Arc::new(Mutex::new(Vec::<(u16, String)>::new()));
+
+    let serve = |listener: TcpListener, port: u16, seen: Arc<Mutex<Vec<(u16, String)>>>| {
+        thread::spawn(move || {
+            for _ in 0..6 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let Ok(n) = stream.read(&mut buf) else {
+                    continue;
+                };
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("");
+                let cookie = req
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("cookie:"))
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .to_string();
+                if path.ends_with(".js") {
+                    seen.lock().expect("lock").push((port, cookie));
+                }
+                let (ctype, body, extra) = if path.ends_with("index.html") {
+                    (
+                        "text/html",
+                        format!(
+                            r#"<!DOCTYPE html><html><body><p id="t">x</p>
+<script type="module" src="http://127.0.0.1:{port_b}/cross.js"></script>
+<script type="module">
+import {{ msg }} from "http://127.0.0.1:{port_a}/same.js";
+document.getElementById('t').textContent = msg;
+</script></body></html>"#
+                        ),
+                        "Set-Cookie: jar=1; Path=/; SameSite=Lax\r\n",
+                    )
+                } else if path.ends_with("same.js") {
+                    ("application/javascript", MODULE.to_string(), "")
+                } else {
+                    (
+                        "application/javascript",
+                        "export const msg='cross';".into(),
+                        "",
+                    )
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+    };
+    serve(listener_a, port_a, Arc::clone(&seen));
+    serve(listener_b, port_b, Arc::clone(&seen));
+    thread::sleep(Duration::from_millis(20));
+
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port_a}/index.html");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("cookie-module"), "{text}");
+    let hits = seen.lock().expect("lock").clone();
+    let cross = hits
+        .iter()
+        .find(|(p, _)| *p == port_b)
+        .map(|(_, c)| c.as_str())
+        .unwrap_or("");
+    let same = hits
+        .iter()
+        .find(|(p, _)| *p == port_a)
+        .map(|(_, c)| c.as_str())
+        .unwrap_or("");
+    assert!(
+        !cross.to_ascii_lowercase().contains("jar="),
+        "Lax cookie must not cross port: {cross}"
+    );
+    assert!(
+        same.to_ascii_lowercase().contains("jar=1"),
+        "same-origin module fetch should send cookie: {same}"
+    );
+}
+
+#[test]
+fn http_module_import_resolves() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    const MODULE: &str = "export const msg = 'http module';";
+    const PAGE: &str = r#"<!DOCTYPE html><html><body><p id="t">x</p>
+<script type="module">
+import { msg } from "./entry.js";
+document.getElementById("t").textContent = msg;
+</script></body></html>"#;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    thread::spawn(move || {
+        for _ in 0..8 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = [0u8; 4096];
+            let Ok(n) = stream.read(&mut buf) else {
+                continue;
+            };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("");
+            let (ctype, body) = if path.ends_with("entry.js") {
+                ("application/javascript", MODULE)
+            } else {
+                ("text/html", PAGE)
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/index.html");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("http module"), "{text}");
 }
 
 #[test]
@@ -371,4 +559,56 @@ fn module_runs_between_parser_scripts_and_dom_content_loaded() {
     let _guard = rt.enter();
     let text = dump_text(&fixture_url("module-order.html"), true).expect("load");
     assert!(text.contains("classic,module,dom"), "{text}");
+}
+
+#[test]
+fn classic_script_dynamic_import_resolves_relative_module() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("classic-dynamic-import.html"), true).expect("load");
+    assert!(text.contains("imported 7"), "{text}");
+}
+
+#[test]
+fn classic_script_bare_dynamic_import_rejects_without_aborting() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("classic-import-bare.html"), true).expect("load");
+    assert!(text.contains("after"), "{text}");
+}
+
+#[test]
+fn nomodule_classic_script_is_skipped() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("nomodule-vs-module.html"), true).expect("load");
+    assert!(text.contains("module"), "{text}");
+    assert!(!text.contains("nomodule"), "{text}");
+}
+
+#[test]
+fn module_cache_evaluates_same_url_once() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-cache-twice.html"), true).expect("load");
+    assert!(text.contains('1'), "expected counter 1, got: {text}");
+}
+
+#[test]
+fn dynamic_import_runs_after_timers_on_pump() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("import-async-order.html"), true).expect("load");
+    assert!(
+        text.contains("a,b,t0,imp"),
+        "expected pump ordering, got: {text}"
+    );
+}
+
+#[test]
+fn module_imports_data_url() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-data-import.html"), true).expect("load");
+    assert!(text.contains("data-42"), "{text}");
 }

@@ -1,7 +1,7 @@
 //! Fallbacks for pages whose UI is built from custom elements.
 //!
-//! Glide does not upgrade custom elements and does not execute module scripts,
-//! so a page's own element definitions never run. Two server-rendered
+//! Glide does not upgrade custom elements yet (see F-057), so a page's own
+//! element definitions never run. Two server-rendered
 //! conventions depend on that upgrade and are applied here while parsing:
 //!
 //! - `show_unupgraded`: pages hide their custom-element shell with

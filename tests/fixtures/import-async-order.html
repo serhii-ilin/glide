@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">start</p>
+  <script type="module">
+    const el = document.getElementById('t');
+    el.textContent = 'a';
+    import('./module-dep.js').then(() => { el.textContent += ',imp'; });
+    el.textContent += ',b';
+    setTimeout(() => { el.textContent += ',t0'; }, 0);
+  </script>
+</body>
+</html>

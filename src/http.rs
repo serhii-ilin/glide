@@ -48,6 +48,9 @@ struct Hop {
     method: Method,
     headers: HeaderMap,
     body: Body,
+    cookie_document: Option<Url>,
+    cookie_kind: crate::cookies::CookieRequestKind,
+    cookie_credentials: crate::cookies::FetchCredentials,
 }
 
 /// `http` and `https` requests this module can send. Form bodies stay on blitz-net.
@@ -147,11 +150,31 @@ fn client() -> &'static reqwest::Client {
 
 /// Follow redirects, then return the last status and body.
 pub async fn fetch_followed(request: Request) -> Result<Followed, String> {
+    let document = request.url.clone();
+    fetch_followed_with_cookie_context(
+        request,
+        Some(document),
+        crate::cookies::CookieRequestKind::Navigation,
+        crate::cookies::FetchCredentials::Include,
+    )
+    .await
+}
+
+/// Same as [`fetch_followed`] with an explicit document URL and credentials mode.
+pub async fn fetch_followed_with_cookie_context(
+    request: Request,
+    cookie_document: Option<Url>,
+    cookie_kind: crate::cookies::CookieRequestKind,
+    cookie_credentials: crate::cookies::FetchCredentials,
+) -> Result<Followed, String> {
     let mut hop = Hop {
         url: request.url,
         method: request.method,
         headers: request.headers,
         body: request.body,
+        cookie_document,
+        cookie_kind,
+        cookie_credentials,
     };
     hop.url.set_fragment(None);
     let mut redirected = false;
@@ -646,6 +669,9 @@ fn next_hop(status: u16, headers: &HeaderMap, hop: &Hop) -> Option<Hop> {
         method,
         headers,
         body,
+        cookie_document: hop.cookie_document.clone(),
+        cookie_kind: hop.cookie_kind,
+        cookie_credentials: hop.cookie_credentials,
     })
 }
 
@@ -657,7 +683,13 @@ fn same_origin(a: &Url, b: &Url) -> bool {
 
 async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
     let mut headers = hop.headers.clone();
-    crate::cookies::CookieJar::global().append_request_cookies(&hop.url, &mut headers);
+    crate::cookies::CookieJar::global().append_request_cookies(
+        &hop.url,
+        hop.cookie_document.as_ref(),
+        hop.cookie_kind,
+        hop.cookie_credentials,
+        &mut headers,
+    );
     let mut builder = client().request(hop.method.clone(), hop.url.clone());
     builder = builder.headers(headers);
     if !hop.headers.contains_key(http::header::USER_AGENT) {
@@ -928,7 +960,8 @@ mod tests {
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 
-        crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
+        crate::cookies::CookieJar::reset_global();
+        crate::cookies::CookieJar::ensure_process_global(None);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let seen_cookie: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));

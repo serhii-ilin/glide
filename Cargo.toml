@@ -72,7 +72,10 @@ getrandom = "0.4"
 cookie = "0.18.2"
 cookie_store = { version = "0.22.1", default-features = false, features = [
     "serde_json",
+    "public_suffix",
 ] }
+# F-058: registrable-domain checks for Set-Cookie Domain= (via cookie_store's public_suffix feature).
+publicsuffix = "2.3"
 
 [dev-dependencies]
 # Constructs Blitz pointer events in wheel/hover tests (same crate blitz-traits uses).

@@ -768,12 +768,14 @@ fn map_dom_op(
                 method,
                 headers,
                 body,
+                credentials,
             } = fetch_options(scope, args, 3)?;
             DomRequest::Fetch(FetchRequest {
                 url,
                 method,
                 headers,
                 body,
+                credentials,
                 reply,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             })
@@ -784,12 +786,14 @@ fn map_dom_op(
                 method,
                 headers,
                 body,
+                credentials,
             } = fetch_options(scope, args, 3)?;
             DomRequest::Fetch(FetchRequest {
                 url,
                 method,
                 headers,
                 body,
+                credentials,
                 reply,
                 initiator: crate::devtools::network::NetworkInitiator::Xhr,
             })
@@ -878,6 +882,7 @@ struct ParsedFetchOptions {
     method: String,
     headers: Vec<(String, String)>,
     body: String,
+    credentials: String,
 }
 
 fn fetch_options(
@@ -890,6 +895,7 @@ fn fetch_options(
             method: String::from("GET"),
             headers: Vec::new(),
             body: String::new(),
+            credentials: String::from("same-origin"),
         });
     }
     let raw = args.get(idx);
@@ -898,6 +904,7 @@ fn fetch_options(
             method: String::from("GET"),
             headers: Vec::new(),
             body: String::new(),
+            credentials: String::from("same-origin"),
         });
     }
     let json = raw.to_rust_string_lossy(scope);
@@ -906,6 +913,7 @@ fn fetch_options(
             method: String::from("GET"),
             headers: Vec::new(),
             body: String::new(),
+            credentials: String::from("same-origin"),
         });
     }
     let opts: serde_json::Value =
@@ -928,10 +936,16 @@ fn fetch_options(
         .and_then(|b| b.as_str())
         .unwrap_or("")
         .to_string();
+    let credentials = opts
+        .get("credentials")
+        .and_then(|b| b.as_str())
+        .unwrap_or("same-origin")
+        .to_string();
     Ok(ParsedFetchOptions {
         method,
         headers,
         body,
+        credentials,
     })
 }
 

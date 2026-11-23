@@ -107,7 +107,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         history_log,
     } = launch;
     let cookie_jar = crate::cookies::bootstrap_from_profile(profile.data_dir());
-    cookie_jar.install_global();
+    crate::cookies::CookieJar::install_global(cookie_jar);
     let profile = Arc::new(profile);
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());

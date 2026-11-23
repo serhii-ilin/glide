@@ -1372,6 +1372,7 @@ dependencies = [
  "once_cell",
  "peniko",
  "png",
+ "publicsuffix",
  "reqwest",
  "rmcp",
  "schemars",

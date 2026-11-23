@@ -208,6 +208,7 @@ pub fn start_fetch(
         method,
         headers,
         body,
+        credentials,
         reply,
         initiator,
     } = fetch;
@@ -245,7 +246,15 @@ pub fn start_fetch(
             return;
         }
     };
-    crate::cookies::CookieJar::global().append_request_cookies(&request.url, &mut request.headers);
+    let page_url = Url::parse(base_url).ok();
+    let creds = crate::cookies::FetchCredentials::parse(&credentials);
+    crate::cookies::CookieJar::global().append_request_cookies(
+        &request.url,
+        page_url.as_ref(),
+        crate::cookies::CookieRequestKind::Fetch,
+        creds,
+        &mut request.headers,
+    );
     let method_for_log = method.clone();
     let url_for_log = url.clone();
     handle.spawn(async move {
@@ -919,6 +928,7 @@ mod tests {
                 method: "GET".into(),
                 headers: Vec::new(),
                 body: String::new(),
+                credentials: "same-origin".into(),
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
@@ -962,6 +972,7 @@ mod tests {
                 method: "GET".into(),
                 headers: Vec::new(),
                 body: String::new(),
+                credentials: "same-origin".into(),
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
@@ -992,6 +1003,7 @@ mod tests {
                 method: "GET".into(),
                 headers: Vec::new(),
                 body: String::new(),
+                credentials: "same-origin".into(),
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Xhr,
             },
@@ -1019,6 +1031,7 @@ mod tests {
                 method: "GET".into(),
                 headers: Vec::new(),
                 body: String::new(),
+                credentials: "same-origin".into(),
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
@@ -1051,6 +1064,7 @@ mod tests {
                 method: "GET".into(),
                 headers: Vec::new(),
                 body: String::new(),
+                credentials: "same-origin".into(),
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
@@ -1077,6 +1091,7 @@ mod tests {
                 method: "GET".into(),
                 headers: Vec::new(),
                 body: String::new(),
+                credentials: "same-origin".into(),
                 reply: 2,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },

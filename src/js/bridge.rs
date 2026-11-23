@@ -91,6 +91,7 @@ pub struct FetchRequest {
     pub method: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    pub credentials: String,
     pub reply: u64,
     pub initiator: crate::devtools::network::NetworkInitiator,
 }

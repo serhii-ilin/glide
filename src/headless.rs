@@ -214,6 +214,7 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
 }
 
 fn load_once(url: &str, js_enabled: bool) -> Result<(HtmlPageDocument, Option<url::Url>), String> {
+    crate::cookies::CookieJar::ensure_process_global(None);
     let net_impl = Arc::new(Provider::new(None));
     let handle = tokio::runtime::Handle::current();
     let (final_url, bytes) = fetch_page(url, js_enabled, &handle, &net_impl)?;

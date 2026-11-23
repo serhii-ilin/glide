@@ -54,6 +54,7 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::RandomBytes { reply, .. }
         | DomRequest::CookieGet { reply }
         | DomRequest::CookieSet { reply, .. }
+        | DomRequest::StorageCall { reply, .. }
         | DomRequest::WebSocketConnect { reply, .. }
         | DomRequest::WebSocketSend { reply, .. }
         | DomRequest::WebSocketClose { reply, .. }
@@ -131,6 +132,27 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
         DomRequest::RandomBytes { size, reply } => apply_random_bytes(size, reply),
         DomRequest::CookieGet { reply } => apply_cookie_get(base_url, reply),
         DomRequest::CookieSet { value, reply } => apply_cookie_set(base_url, &value, reply),
+        DomRequest::StorageCall {
+            method,
+            area,
+            key,
+            value,
+            index,
+            page_url,
+            tab_id,
+            doc_generation,
+            reply,
+        } => apply_storage_call(
+            &method,
+            &area,
+            key.as_deref(),
+            value.as_deref(),
+            index,
+            &page_url,
+            tab_id,
+            doc_generation,
+            reply,
+        ),
         DomRequest::ListenTarget {
             node,
             event_type,
@@ -231,6 +253,102 @@ fn navigate(doc: &BaseDocument, base_url: &str, raw: &str) {
 }
 
 const MAX_RANDOM_BYTES: usize = 65_536;
+
+#[allow(clippy::too_many_arguments)] // one DOM RPC maps many storage methods
+fn apply_storage_call(
+    method: &str,
+    area: &str,
+    key: Option<&str>,
+    value: Option<&str>,
+    index: Option<u32>,
+    page_url: &str,
+    tab_id: u64,
+    doc_generation: u64,
+    reply: u64,
+) -> DomResponse {
+    let store = crate::web_storage::WebStorage::global();
+    let area = match crate::web_storage::parse_area(area) {
+        Ok(a) => a,
+        Err(err) => return DomResponse::err(reply, err),
+    };
+    if page_url.is_empty() {
+        return DomResponse::err(reply, "missing page url");
+    }
+    let page = page_url.to_string();
+    match method {
+        "attach" => {
+            let Ok(parsed) = Url::parse(&page) else {
+                return DomResponse::ok(reply, DomValue::Null);
+            };
+            let origin = if parsed.scheme() == "data" || !parsed.origin().is_tuple() {
+                return DomResponse::ok(reply, DomValue::Null);
+            } else {
+                parsed.origin().ascii_serialization()
+            };
+            crate::js::storage_events::attach(doc_generation, origin, page);
+            DomResponse::ok(reply, DomValue::Null)
+        }
+        "snapshot" => match store.snapshot_json(&page, tab_id, doc_generation) {
+            Ok(json) => DomResponse::ok(reply, DomValue::Json(json)),
+            Err(err) => DomResponse::err(reply, err),
+        },
+        "getItem" => {
+            let Some(key) = key else {
+                return DomResponse::err(reply, "missing key");
+            };
+            match store.get_item(area, key, &page, tab_id, doc_generation) {
+                Ok(None) => DomResponse::ok(reply, DomValue::Null),
+                Ok(Some(v)) => DomResponse::ok(reply, DomValue::String(v)),
+                Err(err) => DomResponse::err(reply, err),
+            }
+        }
+        "setItem" => {
+            let Some(key) = key else {
+                return DomResponse::err(reply, "missing key");
+            };
+            let value = value.unwrap_or("");
+            match store.set_item(
+                area,
+                key,
+                value,
+                &page,
+                tab_id,
+                doc_generation,
+                doc_generation,
+            ) {
+                Ok(()) => DomResponse::ok(reply, DomValue::Null),
+                Err(err) if err == "QuotaExceededError" => DomResponse::err(reply, err),
+                Err(err) => DomResponse::err(reply, err),
+            }
+        }
+        "removeItem" => {
+            let Some(key) = key else {
+                return DomResponse::err(reply, "missing key");
+            };
+            match store.remove_item(area, key, &page, tab_id, doc_generation, doc_generation) {
+                Ok(()) => DomResponse::ok(reply, DomValue::Null),
+                Err(err) => DomResponse::err(reply, err),
+            }
+        }
+        "clear" => match store.clear(area, &page, tab_id, doc_generation, doc_generation) {
+            Ok(()) => DomResponse::ok(reply, DomValue::Null),
+            Err(err) => DomResponse::err(reply, err),
+        },
+        "length" => match store.length(area, &page, tab_id, doc_generation) {
+            Ok(n) => DomResponse::ok(reply, DomValue::Number(n as f64)),
+            Err(err) => DomResponse::err(reply, err),
+        },
+        "key" => {
+            let index = index.unwrap_or(0);
+            match store.key_at(area, index, &page, tab_id, doc_generation) {
+                Ok(None) => DomResponse::ok(reply, DomValue::Null),
+                Ok(Some(k)) => DomResponse::ok(reply, DomValue::String(k)),
+                Err(err) => DomResponse::err(reply, err),
+            }
+        }
+        other => DomResponse::err(reply, format!("unknown storage method: {other}")),
+    }
+}
 
 fn apply_cookie_get(base_url: &str, reply: u64) -> DomResponse {
     let Ok(page_url) = Url::parse(base_url) else {

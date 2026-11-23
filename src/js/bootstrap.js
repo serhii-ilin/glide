@@ -339,55 +339,7 @@
     };
   };
 
-  function createStorage() {
-    const data = new Map();
-    const store = {
-      get length() { return data.size; },
-      key(index) {
-        const keys = Array.from(data.keys());
-        return index >= 0 && index < keys.length ? keys[index] : null;
-      },
-      getItem(key) {
-        const name = String(key);
-        return data.has(name) ? data.get(name) : null;
-      },
-      setItem(key, value) { data.set(String(key), String(value)); },
-      removeItem(key) { data.delete(String(key)); },
-      clear() { data.clear(); },
-    };
-    return new Proxy(store, {
-      get(target, prop) {
-        if (prop in target) return target[prop];
-        return typeof prop === 'string' && data.has(prop) ? data.get(prop) : undefined;
-      },
-      set(target, prop, value) {
-        if (typeof prop === 'string' && !(prop in target)) {
-          data.set(prop, String(value));
-          return true;
-        }
-        target[prop] = value;
-        return true;
-      },
-      deleteProperty(target, prop) {
-        if (typeof prop === 'string' && data.delete(prop)) return true;
-        return delete target[prop];
-      },
-      has(target, prop) {
-        return prop in target || (typeof prop === 'string' && data.has(prop));
-      },
-      ownKeys(target) {
-        return Array.from(new Set(Reflect.ownKeys(target).concat(Array.from(data.keys()))));
-      },
-      getOwnPropertyDescriptor(target, prop) {
-        if (typeof prop === 'string' && data.has(prop)) {
-          return { value: data.get(prop), writable: true, enumerable: true, configurable: true };
-        }
-        return Reflect.getOwnPropertyDescriptor(target, prop);
-      },
-    });
-  }
-  global.localStorage = createStorage();
-  global.sessionStorage = createStorage();
+  // `localStorage` / `sessionStorage` are installed from `dom-glue.js` once a page loads (F-081).
 
   class AbortSignalShim {
     constructor() {

@@ -254,6 +254,8 @@ impl JsHost {
         self.dom_generation = self.dom_generation.wrapping_add(1);
         super::websocket::close_for_dom_generation(retiring);
         super::websocket::unregister_command_sender(retiring);
+        super::storage_events::unregister_command_sender(retiring);
+        super::storage_events::detach(retiring);
         self.worker = None;
         self.started_for = None;
         self.pending_sources = None;
@@ -315,9 +317,24 @@ impl JsHost {
                 .unwrap_or_else(|| snapshot::snapshot_tree(chrome)),
         )
         .unwrap_or_else(|_| "[]".into());
+        let storage_json = crate::web_storage::WebStorage::global()
+            .snapshot_json(page_url, self.console_tab_id, self.dom_generation)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| r#"{"local":{},"session":{}}"#.to_string());
+        if let Ok(parsed) = url::Url::parse(page_url)
+            && parsed.scheme() != "data"
+            && parsed.origin().is_tuple()
+        {
+            crate::js::storage_events::attach(
+                self.dom_generation,
+                parsed.origin().ascii_serialization(),
+                page_url.to_string(),
+            );
+        }
         worker.init_page(
             snapshot_json,
             page_url.to_string(),
+            storage_json,
             self.console_tab_id,
             self.console_page_epoch,
         );

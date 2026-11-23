@@ -40,6 +40,7 @@ thread_local! {
     static DOM_FETCH_REPLY: std::cell::Cell<u64> = const { std::cell::Cell::new(16_384) };
     static DOM_TX: std::cell::RefCell<Option<Sender<DomRpc>>> = const { std::cell::RefCell::new(None) };
     static DOM_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static WORKER_TAB_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static WORKER_RETIRED: std::cell::RefCell<Option<Arc<AtomicBool>>> =
         const { std::cell::RefCell::new(None) };
     static HOST_WAKE: std::cell::RefCell<Option<Arc<HostWake>>> = const { std::cell::RefCell::new(None) };
@@ -57,6 +58,7 @@ pub enum WorkerCommand {
     InitPage {
         snapshot_json: String,
         page_url: String,
+        storage_json: String,
         tab_id: u64,
         page_epoch: u64,
     },
@@ -91,6 +93,9 @@ pub enum WorkerCommand {
         reply: Option<EvalReply>,
     },
     WebSocketEvent {
+        json: String,
+    },
+    StorageEvent {
         json: String,
     },
     Shutdown,
@@ -129,6 +134,7 @@ impl JsWorker {
         init_v8();
         let (tx, rx) = unbounded();
         super::websocket::register_command_sender(generation, tx.clone());
+        super::storage_events::register_command_sender(generation, tx.clone());
         let retired = Arc::new(AtomicBool::new(false));
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let wake_deadline_ms = Arc::new(AtomicU64::new(WAKE_NONE));
@@ -163,10 +169,18 @@ impl JsWorker {
         }
     }
 
-    pub fn init_page(&self, snapshot_json: String, page_url: String, tab_id: u64, page_epoch: u64) {
+    pub fn init_page(
+        &self,
+        snapshot_json: String,
+        page_url: String,
+        storage_json: String,
+        tab_id: u64,
+        page_epoch: u64,
+    ) {
         let _ = self.tx.send(WorkerCommand::InitPage {
             snapshot_json,
             page_url,
+            storage_json,
             tab_id,
             page_epoch,
         });
@@ -346,11 +360,13 @@ fn worker_main(state: WorkerThreadState) {
             WorkerCommand::InitPage {
                 snapshot_json,
                 page_url,
+                storage_json,
                 tab_id,
                 page_epoch,
             } => {
                 diagnostics::set_page_url(page_url.clone());
                 super::console_feed::set_worker_route(tab_id, page_epoch);
+                WORKER_TAB_ID.with(|t| t.set(tab_id));
                 super::promise_console::clear_promise_rows();
                 clear_module_graph();
                 PENDING_DYNAMIC_IMPORTS.with(|p| p.borrow_mut().clear());
@@ -360,7 +376,12 @@ fn worker_main(state: WorkerThreadState) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 let snap = v8::String::new(scope, &snapshot_json).unwrap();
                 let url = v8::String::new(scope, &page_url).unwrap();
-                call_global_fn(scope, "__glide_init_page", &[snap.into(), url.into()]);
+                let storage = v8::String::new(scope, &storage_json).unwrap();
+                call_global_fn(
+                    scope,
+                    "__glide_init_page",
+                    &[snap.into(), url.into(), storage.into()],
+                );
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
@@ -493,6 +514,15 @@ fn worker_main(state: WorkerThreadState) {
                 call_global_fn(scope, "__glide_ws_deliver", &[payload.into()]);
                 settle_task(scope);
                 request_host_wake();
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
+            }
+            WorkerCommand::StorageEvent { json } => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
+                let payload = v8::String::new(scope, &json).unwrap();
+                call_global_fn(scope, "__glide_on_storage_event", &[payload.into()]);
+                settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
             WorkerCommand::Shutdown => break,
@@ -929,6 +959,17 @@ fn map_dom_op(
             value: arg_string(scope, args, 2)?,
             reply,
         },
+        "storageCall" => DomRequest::StorageCall {
+            method: arg_string(scope, args, 2)?,
+            area: arg_string(scope, args, 3)?,
+            key: arg_optional_string(scope, args, 4),
+            value: arg_optional_string(scope, args, 5),
+            index: arg_optional_u32(scope, args, 6),
+            page_url: arg_string(scope, args, 7)?,
+            tab_id: WORKER_TAB_ID.with(|t| t.get()),
+            doc_generation: DOM_GENERATION.with(|g| g.get()),
+            reply,
+        },
         "wsConnect" => DomRequest::WebSocketConnect {
             socket_id: arg_u64(scope, args, 2)?,
             url: arg_string(scope, args, 3)?,
@@ -1005,6 +1046,30 @@ fn arg_string(
     idx: i32,
 ) -> Result<String, String> {
     Ok(args.get(idx).to_rust_string_lossy(scope))
+}
+
+fn arg_optional_string(
+    scope: &v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    idx: i32,
+) -> Option<String> {
+    if args.length() <= idx {
+        return None;
+    }
+    let raw = args.get(idx);
+    if raw.is_null() || raw.is_undefined() {
+        return None;
+    }
+    Some(raw.to_rust_string_lossy(scope))
+}
+
+fn arg_optional_u32(
+    scope: &v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    idx: i32,
+) -> Option<u32> {
+    let text = arg_optional_string(scope, args, idx)?;
+    text.parse::<u32>().ok()
 }
 
 struct ParsedFetchOptions {

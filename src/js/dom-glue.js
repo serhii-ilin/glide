@@ -361,6 +361,142 @@
   let pageLocation = null;
   let formSubmissionInstalled = false;
   let formControlMirrorInstalled = false;
+  let localStorageData = new Map();
+  let sessionStorageData = new Map();
+
+  function throwQuotaExceeded() {
+    try {
+      const DomEx = global.DOMException;
+      if (typeof DomEx === 'function') {
+        throw new DomEx('The quota has been exceeded.', 'QuotaExceededError');
+      }
+    } catch (err) {
+      if (err && err.name === 'QuotaExceededError') throw err;
+    }
+    const err = new Error('The quota has been exceeded.');
+    err.name = 'QuotaExceededError';
+    throw err;
+  }
+
+  function storageRpc(method, area, key, value, index) {
+    const args = [
+      method,
+      area,
+      key == null ? null : String(key),
+      value == null ? null : String(value),
+      index == null ? null : String(index),
+      currentPageUrl,
+    ];
+    try {
+      return rpc('storageCall', ...args);
+    } catch (err) {
+      if (err && String(err.message) === 'QuotaExceededError') throwQuotaExceeded();
+      throw err;
+    }
+  }
+
+  function buildStorage(area, data) {
+    const store = {
+      get length() {
+        return data.size;
+      },
+      key(index) {
+        const keys = Array.from(data.keys());
+        return index >= 0 && index < keys.length ? keys[index] : null;
+      },
+      getItem(name) {
+        const key = String(name);
+        return data.has(key) ? data.get(key) : null;
+      },
+      setItem(key, value) {
+        const name = String(key);
+        const val = String(value);
+        storageRpc('setItem', area, name, val);
+        data.set(name, val);
+      },
+      removeItem(key) {
+        const name = String(key);
+        storageRpc('removeItem', area, name);
+        data.delete(name);
+      },
+      clear() {
+        storageRpc('clear', area);
+        data.clear();
+      },
+    };
+    return new Proxy(store, {
+      get(target, prop) {
+        if (prop in target) return target[prop];
+        if (typeof prop === 'string' && data.has(prop)) return data.get(prop);
+        return undefined;
+      },
+      set(target, prop, value) {
+        if (typeof prop === 'string' && !(prop in target)) {
+          store.setItem(prop, value);
+          return true;
+        }
+        target[prop] = value;
+        return true;
+      },
+      deleteProperty(target, prop) {
+        if (typeof prop === 'string' && data.has(prop)) {
+          store.removeItem(prop);
+          return true;
+        }
+        return delete target[prop];
+      },
+      has(target, prop) {
+        return prop in target || (typeof prop === 'string' && data.has(prop));
+      },
+      ownKeys(target) {
+        return Array.from(new Set(Reflect.ownKeys(target).concat(Array.from(data.keys()))));
+      },
+      getOwnPropertyDescriptor(target, prop) {
+        if (typeof prop === 'string' && data.has(prop)) {
+          return { value: data.get(prop), writable: true, enumerable: true, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, prop);
+      },
+    });
+  }
+
+  function installWebStorage(storageJson) {
+    localStorageData = new Map();
+    sessionStorageData = new Map();
+    let snap = storageJson;
+  if (typeof snap === 'string') {
+      try { snap = JSON.parse(snap); } catch (_) { snap = {}; }
+    }
+    const local = (snap && snap.local) || {};
+    const session = (snap && snap.session) || {};
+    Object.keys(local).forEach((k) => localStorageData.set(k, String(local[k])));
+    Object.keys(session).forEach((k) => sessionStorageData.set(k, String(session[k])));
+    global.localStorage = buildStorage('local', localStorageData);
+    global.sessionStorage = buildStorage('session', sessionStorageData);
+  }
+
+  global.__glide_on_storage_event = function (json) {
+    let payload;
+    try {
+      payload = typeof json === 'string' ? JSON.parse(json) : json;
+    } catch (_) {
+      return;
+    }
+    if (!payload || payload.storageArea !== 'localStorage') return;
+    const key = payload.key;
+    const data = localStorageData;
+    if (payload.newValue == null) data.delete(key);
+    else data.set(String(key), String(payload.newValue));
+    try {
+      const event = new global.Event('storage');
+      event.key = key;
+      event.oldValue = payload.oldValue == null ? null : String(payload.oldValue);
+      event.newValue = payload.newValue == null ? null : String(payload.newValue);
+      event.url = String(payload.url || '');
+      event.storageArea = global.localStorage;
+      global.dispatchEvent(event);
+    } catch (_) { /* storage notifications must not throw */ }
+  };
 
   function rpc(op, ...args) {
     const reply = nextReply++;
@@ -1705,7 +1841,7 @@
     syncLocationObject(parsedPageUrl(currentPageUrl), currentPageUrl);
   }
 
-  function installGlobals(pageUrl) {
+  function installGlobals(pageUrl, storageJson) {
     currentPageUrl = pageUrl || 'about:blank';
     global.document = pageDocument;
     if (global.navigator == null) global.navigator = { userAgent: 'Glide' };
@@ -1768,6 +1904,7 @@
         },
       });
     } catch (_) { /* domino defines these as readonly */ }
+    installWebStorage(storageJson);
   }
 
   const EVENT_HANDLER_TYPES = [
@@ -2057,7 +2194,7 @@
   global.__glide_set_page_url = setPageUrl;
   global.__glide_get_page_url = function () { return currentPageUrl; };
 
-  global.__glide_init_page = function (snapshotJson, pageUrl) {
+  global.__glide_init_page = function (snapshotJson, pageUrl, storageJson) {
     // Must run before the snapshot creates elements, so they inherit the
     // prototype that carries `submit` / `requestSubmit`.
     installFormSubmission();
@@ -2110,7 +2247,7 @@
       configurable: true,
       get: () => global,
     });
-    installGlobals(pageUrl || 'about:blank');
+    installGlobals(pageUrl || 'about:blank', storageJson);
     ceHTMLElementPatched = false;
     installHTMLElementConstructorPatch();
     if (typeof global.__glide_reset_page_history === 'function') {

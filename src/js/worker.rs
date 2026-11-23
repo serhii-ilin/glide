@@ -128,7 +128,7 @@ impl JsWorker {
     pub fn spawn(dom_tx: Sender<DomRpc>, generation: u64, host_wake: Arc<HostWake>) -> Self {
         init_v8();
         let (tx, rx) = unbounded();
-        super::websocket::set_command_sender(tx.clone());
+        super::websocket::register_command_sender(generation, tx.clone());
         let retired = Arc::new(AtomicBool::new(false));
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let wake_deadline_ms = Arc::new(AtomicU64::new(WAKE_NONE));

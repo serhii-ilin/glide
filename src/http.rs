@@ -314,14 +314,26 @@ pub async fn fetch_followed_with_cookie_context(
 /// scripting is disabled: the HTML parser does not create `<noscript>` children
 /// while scripting is enabled, so the fallback Google serves for script-less
 /// clients must stay inert. See [`meta_refresh_url`].
-pub async fn fetch_document(request: Request, scripting_enabled: bool) -> DocumentFetch {
+pub async fn fetch_document(
+    request: Request,
+    scripting_enabled: bool,
+    cookie_document: Option<Url>,
+) -> DocumentFetch {
     let original = request.url.to_string();
     let mut request = request;
     let mut seen = HashSet::new();
     seen.insert(request.url.to_string());
     let mut meta_hops = 0u16;
+    let cookie_document = cookie_document.unwrap_or_else(|| request.url.clone());
     loop {
-        match fetch_followed(request).await {
+        match fetch_followed_with_cookie_context(
+            request,
+            Some(cookie_document.clone()),
+            crate::cookies::CookieRequestKind::Navigation,
+            crate::cookies::FetchCredentials::Include,
+        )
+        .await
+        {
             Ok(resp) if render_http_body(resp.status, resp.body.is_empty()) => {
                 if meta_hops < MAX_REDIRECTS as u16
                     && is_html_document(&resp.content_type, &resp.body)
@@ -772,11 +784,13 @@ async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
         hop.method.clone(),
         &mut headers,
     );
-    if hop.method == Method::POST
-        && let Some(origin) = origin_header_value(&hop.url)
-        && let Ok(value) = http::HeaderValue::from_str(&origin)
-    {
-        headers.insert(http::header::ORIGIN, value);
+    if hop.method == Method::POST {
+        let origin_base = hop.cookie_document.as_ref().unwrap_or(&hop.url);
+        if let Some(origin) = origin_header_value(origin_base)
+            && let Ok(value) = http::HeaderValue::from_str(&origin)
+        {
+            headers.insert(http::header::ORIGIN, value);
+        }
     }
     let mut builder = client().request(hop.method.clone(), hop.url.clone());
     builder = builder.headers(headers);
@@ -1073,7 +1087,7 @@ mod tests {
             name: "q".into(),
             value: EntryValue::String("x".into()),
         }]));
-        match rt.block_on(fetch_document(request, false)) {
+        match rt.block_on(fetch_document(request, false, None)) {
             DocumentFetch::Page { .. } => {}
             DocumentFetch::Failed { reason, .. } => panic!("post failed: {reason}"),
         }
@@ -1116,7 +1130,7 @@ mod tests {
             name: "user".into(),
             value: EntryValue::String("demo".into()),
         }]));
-        match rt.block_on(fetch_document(request, false)) {
+        match rt.block_on(fetch_document(request, false, None)) {
             DocumentFetch::Page { body, .. } => {
                 assert!(String::from_utf8_lossy(&body).contains("posted"));
             }
@@ -1134,7 +1148,7 @@ mod tests {
         let _guard = rt.enter();
 
         let start = Url::parse(&format!("http://127.0.0.1:{port}/start")).unwrap();
-        match rt.block_on(fetch_document(Request::get(start), false)) {
+        match rt.block_on(fetch_document(Request::get(start), false, None)) {
             DocumentFetch::Page { url, body, .. } => {
                 assert!(url.ends_with("/land"), "{url}");
                 assert!(String::from_utf8_lossy(&body).contains("landed"));
@@ -1153,7 +1167,7 @@ mod tests {
         }
 
         let missing = Url::parse(&format!("http://127.0.0.1:{port}/missing")).unwrap();
-        match rt.block_on(fetch_document(Request::get(missing), false)) {
+        match rt.block_on(fetch_document(Request::get(missing), false, None)) {
             DocumentFetch::Page {
                 body,
                 status,
@@ -1168,7 +1182,7 @@ mod tests {
         }
 
         let meta = Url::parse(&format!("http://127.0.0.1:{port}/meta")).unwrap();
-        match rt.block_on(fetch_document(Request::get(meta), false)) {
+        match rt.block_on(fetch_document(Request::get(meta), false, None)) {
             DocumentFetch::Page { url, body, .. } => {
                 assert!(url.ends_with("/land"), "{url}");
                 assert!(String::from_utf8_lossy(&body).contains("landed"));
@@ -1177,13 +1191,13 @@ mod tests {
         }
 
         let noscript = Url::parse(&format!("http://127.0.0.1:{port}/noscript")).unwrap();
-        match rt.block_on(fetch_document(Request::get(noscript.clone()), false)) {
+        match rt.block_on(fetch_document(Request::get(noscript.clone()), false, None)) {
             DocumentFetch::Page { url, .. } => assert!(url.ends_with("/land"), "{url}"),
             DocumentFetch::Failed { reason, .. } => {
                 panic!("noscript-only refresh should land: {reason}")
             }
         }
-        match rt.block_on(fetch_document(Request::get(noscript), true)) {
+        match rt.block_on(fetch_document(Request::get(noscript), true, None)) {
             DocumentFetch::Page { url, .. } => assert!(url.ends_with("/noscript"), "{url}"),
             DocumentFetch::Failed { reason, .. } => {
                 panic!("noscript refresh must stay inert: {reason}")
@@ -1191,7 +1205,7 @@ mod tests {
         }
 
         let keep = Url::parse(&format!("http://127.0.0.1:{port}/keep")).unwrap();
-        match rt.block_on(fetch_document(Request::get(keep), false)) {
+        match rt.block_on(fetch_document(Request::get(keep), false, None)) {
             DocumentFetch::Page { body, .. } => {
                 assert!(String::from_utf8_lossy(&body).contains("stay"));
             }
@@ -1199,7 +1213,7 @@ mod tests {
         }
 
         let empty = Url::parse(&format!("http://127.0.0.1:{port}/empty")).unwrap();
-        match rt.block_on(fetch_document(Request::get(empty), false)) {
+        match rt.block_on(fetch_document(Request::get(empty), false, None)) {
             DocumentFetch::Failed { reason, .. } => {
                 assert!(reason.contains("503"), "{reason}");
             }
@@ -1266,6 +1280,52 @@ mod tests {
         assert_eq!(
             seen_cookie.lock().expect("lock").as_deref(),
             Some("sid=alpha")
+        );
+    }
+
+    #[test]
+    fn cross_port_post_uses_initiating_document_for_origin_and_cookies() {
+        use blitz_traits::net::{Body, Entry, EntryValue, FormData};
+        use std::sync::{Arc, Mutex};
+
+        let port_a = spawn_server(|_| http_response("200 OK", "", "page"));
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port_b = spawn_server(move |req| {
+            if req.starts_with("POST /submit") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: text/html\r\n", "<p>ok</p>");
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let page = Url::parse(&format!("http://127.0.0.1:{port_a}/page")).unwrap();
+        crate::cookies::CookieJar::global().store_response_headers(
+            &page,
+            &[("Set-Cookie".into(), "lax=1; Path=/; SameSite=Lax".into())],
+        );
+        let submit = Url::parse(&format!("http://127.0.0.1:{port_b}/submit")).unwrap();
+        let mut request = Request::get(submit);
+        request.method = Method::POST;
+        request.body = Body::Form(FormData(vec![Entry {
+            name: "q".into(),
+            value: EntryValue::String("x".into()),
+        }]));
+        match rt.block_on(fetch_document(request, false, Some(page))) {
+            DocumentFetch::Page { .. } => {}
+            DocumentFetch::Failed { reason, .. } => panic!("cross port post failed: {reason}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        let expect_origin = format!("origin: http://127.0.0.1:{port_a}");
+        assert!(
+            req.lines().any(|l| l.eq_ignore_ascii_case(&expect_origin)),
+            "missing initiating Origin: {req}"
+        );
+        assert!(
+            !req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("cookie:")),
+            "cross-site lax cookie must not be sent: {req}"
         );
     }
 }

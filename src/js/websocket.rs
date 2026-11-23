@@ -1,6 +1,6 @@
 //! Page `WebSocket` connections: one tokio task per socket, cookie-aware handshake.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -9,17 +9,21 @@ use base64::Engine as _;
 use blitz_traits::net::http::Method;
 use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::http::header::{COOKIE, SEC_WEBSOCKET_PROTOCOL};
+use tokio_tungstenite::tungstenite::http::header::{
+    COOKIE, SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_PROTOCOL,
+};
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use url::Url;
 
 use super::worker;
 use crate::cookies::{CookieJar, CookieRequestKind, FetchCredentials};
 use crate::devtools::network::NetworkInitiator;
+use crate::js::console_feed::truncate_field;
 use crate::logging;
 use crate::network_feed;
 use crate::tabs::TabId;
@@ -27,37 +31,37 @@ use crate::tabs::TabId;
 type ConnMap = HashMap<u64, Arc<SocketRecord>>;
 
 static CONNECTIONS: OnceLock<Mutex<ConnMap>> = OnceLock::new();
-static COMMAND_TX: OnceLock<Mutex<Option<Sender<worker::WorkerCommand>>>> = OnceLock::new();
+type SenderMap = HashMap<u64, Sender<worker::WorkerCommand>>;
+static COMMAND_SENDERS: OnceLock<Mutex<SenderMap>> = OnceLock::new();
 
 fn connections() -> &'static Mutex<ConnMap> {
     CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Register the JS worker command channel used to deliver socket events.
-pub fn set_command_sender(tx: Sender<worker::WorkerCommand>) {
-    *COMMAND_TX
-        .get_or_init(|| Mutex::new(None))
+fn command_senders() -> &'static Mutex<SenderMap> {
+    COMMAND_SENDERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_connections() -> std::sync::MutexGuard<'static, ConnMap> {
+    connections()
         .lock()
-        .expect("command tx lock") = Some(tx);
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn command_tx() -> Option<Sender<worker::WorkerCommand>> {
-    COMMAND_TX
-        .get()
-        .and_then(|m| m.lock().ok().and_then(|g| g.clone()))
+fn lock_command_senders() -> std::sync::MutexGuard<'static, SenderMap> {
+    command_senders()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-enum Outbound {
-    Send(Message),
-    Close,
+/// Register the JS worker command channel for a DOM generation.
+pub fn register_command_sender(dom_generation: u64, tx: Sender<worker::WorkerCommand>) {
+    lock_command_senders().insert(dom_generation, tx);
 }
 
-struct SocketRecord {
-    dom_generation: u64,
-    tab_id: TabId,
-    network_epoch: u64,
-    outbound: mpsc::UnboundedSender<Outbound>,
-    buffered: Arc<AtomicUsize>,
+/// Drop the command channel when a page worker retires.
+pub fn unregister_command_sender(dom_generation: u64) {
+    lock_command_senders().remove(&dom_generation);
 }
 
 #[derive(serde::Serialize)]
@@ -75,29 +79,80 @@ struct WireEvent<'a> {
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     was_clean: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol: Option<String>,
 }
 
-fn deliver_event(event: WireEvent<'_>) {
+fn deliver_event(event: WireEvent<'_>, dom_generation: u64) {
     let Ok(json) = serde_json::to_string(&event) else {
         return;
     };
-    if let Some(tx) = command_tx() {
+    if let Some(tx) = lock_command_senders().get(&dom_generation) {
         let _ = tx.send(worker::WorkerCommand::WebSocketEvent { json });
     }
 }
 
 fn log_websocket(action: &str, url: &str, fields: &[(&str, String)]) {
-    let mut out = fields.to_vec();
-    out.push(("url", url.to_string()));
+    let truncated_url = truncate_field(url, 120);
+    let mut out: Vec<(&str, String)> = fields
+        .iter()
+        .map(|(k, v)| {
+            if *k == "detail" {
+                (*k, truncate_field(v, 120))
+            } else {
+                (*k, v.clone())
+            }
+        })
+        .collect();
+    out.push(("url", truncated_url));
     out.push(("action", action.to_string()));
     logging::debug("net.websocket", "websocket", &out);
 }
 
-pub fn validate_connect_url(page_base: &str, raw_url: &str) -> Result<Url, String> {
+fn ws_url_for_api(url: &Url) -> String {
+    let mut u = url.clone();
+    if let Some(port) = u.port() {
+        let default = if u.scheme() == "wss" { 443 } else { 80 };
+        if port == default {
+            let _ = u.set_port(None);
+        }
+    }
+    u.to_string()
+}
+
+fn is_protocol_token(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .bytes()
+            .all(|b| matches!(b, 0x21 | 0x23..=0x2B | 0x2D..=0x3A | 0x3C..=0x5B | 0x5D..=0x7E))
+}
+
+pub fn validate_protocols(protocols_json: &str) -> Result<Vec<String>, String> {
+    let list: Vec<String> =
+        serde_json::from_str(protocols_json).map_err(|_| "invalid protocols".to_string())?;
+    let mut seen = HashSet::new();
+    for entry in &list {
+        if entry.is_empty() {
+            return Err("empty protocol".into());
+        }
+        if !is_protocol_token(entry) {
+            return Err("invalid protocol token".into());
+        }
+        if !seen.insert(entry.clone()) {
+            return Err("duplicate protocol".into());
+        }
+    }
+    Ok(list)
+}
+
+pub fn validate_connect_url(page_base: &str, raw_url: &str) -> Result<String, String> {
     let page = Url::parse(page_base).map_err(|_| "invalid document url")?;
     let resolved = Url::parse(raw_url)
         .or_else(|_| Url::parse(page_base).and_then(|b| b.join(raw_url)))
         .map_err(|_| "invalid url")?;
+    if resolved.fragment().is_some() {
+        return Err("url has fragment".into());
+    }
     let scheme = resolved.scheme();
     if scheme != "ws" && scheme != "wss" {
         return Err("invalid url".into());
@@ -105,7 +160,21 @@ pub fn validate_connect_url(page_base: &str, raw_url: &str) -> Result<Url, Strin
     if page.scheme() == "https" && scheme == "ws" {
         return Err("mixed content blocked".into());
     }
-    Ok(resolved)
+    Ok(ws_url_for_api(&resolved))
+}
+
+enum Outbound {
+    Send(Message),
+    Close { code: u16, reason: String },
+}
+
+struct SocketRecord {
+    dom_generation: u64,
+    tab_id: TabId,
+    network_epoch: u64,
+    outbound: mpsc::UnboundedSender<Outbound>,
+    buffered: Arc<AtomicUsize>,
+    close_tx: watch::Sender<bool>,
 }
 
 pub fn start_connect(
@@ -114,8 +183,10 @@ pub fn start_connect(
     url: &str,
     protocols: &str,
     dom_generation: u64,
-) -> Result<(), String> {
-    let ws_url = validate_connect_url(page_base, url)?;
+) -> Result<String, String> {
+    let ws_url_str = validate_connect_url(page_base, url)?;
+    let ws_url = Url::parse(&ws_url_str).map_err(|_| "invalid url".to_string())?;
+    validate_protocols(protocols)?;
     let page_url = Url::parse(page_base).ok();
     let stamp = network_feed::capture_worker_stamp();
     let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
@@ -127,9 +198,10 @@ pub fn start_connect(
         network_epoch: stamp.network_epoch,
         outbound: outbound_tx,
         buffered: Arc::clone(&buffered),
+        close_tx,
     });
     {
-        let mut map = connections().lock().expect("connections lock");
+        let mut map = lock_connections();
         map.insert(socket_id, Arc::clone(&record));
     }
     log_websocket(
@@ -146,6 +218,7 @@ pub fn start_connect(
     handle.spawn(async move {
         run_socket(SocketIo {
             socket_id,
+            dom_generation,
             ws_url,
             page_url,
             page_base,
@@ -158,12 +231,12 @@ pub fn start_connect(
         .await;
         remove_socket(socket_id);
     });
-    let _ = (close_tx, dom_generation);
-    Ok(())
+    Ok(ws_url_str)
 }
 
 struct SocketIo {
     socket_id: u64,
+    dom_generation: u64,
     ws_url: Url,
     page_url: Option<Url>,
     page_base: String,
@@ -174,12 +247,50 @@ struct SocketIo {
     buffered: Arc<AtomicUsize>,
 }
 
+fn negotiated_protocol(
+    requested: &[String],
+    response: &tokio_tungstenite::tungstenite::http::HeaderMap,
+) -> Result<String, String> {
+    let Some(raw) = response
+        .get(SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return Ok(String::new());
+    };
+    let picked = raw.trim();
+    if picked.is_empty() {
+        return Ok(String::new());
+    }
+    if requested.is_empty() {
+        return Err("server selected unrequested protocol".into());
+    }
+    if !requested.iter().any(|p| p == picked) {
+        return Err("server selected unrequested protocol".into());
+    }
+    Ok(picked.to_string())
+}
+
+fn reject_handshake_extensions(
+    response: &tokio_tungstenite::tungstenite::http::HeaderMap,
+) -> Result<(), String> {
+    if let Some(value) = response
+        .get(SEC_WEBSOCKET_EXTENSIONS)
+        .and_then(|v| v.to_str().ok())
+        && !value.trim().is_empty()
+    {
+        return Err("server selected extensions".into());
+    }
+    Ok(())
+}
+
 async fn run_socket(io: SocketIo) {
     let socket_id = io.socket_id;
+    let dom_generation = io.dom_generation;
     let ws_url = io.ws_url;
     let page_url = io.page_url;
     let page_base = io.page_base;
-    let protocols = io.protocols;
+    let protocols_json = io.protocols;
+    let requested_protocols = validate_protocols(&protocols_json).unwrap_or_default();
     let stamp = io.stamp;
     let mut close_rx = io.close_rx;
     let mut outbound_rx = io.outbound_rx;
@@ -188,7 +299,7 @@ async fn run_socket(io: SocketIo) {
     let http_url = match crate::cookies::ws_to_http_url(&ws_url) {
         Some(u) => u,
         None => {
-            deliver_failure(socket_id);
+            deliver_failure(socket_id, dom_generation);
             record_network(stamp, ws_url.as_str(), None, Some("invalid url"), started);
             return;
         }
@@ -196,7 +307,7 @@ async fn run_socket(io: SocketIo) {
     let mut request = match ws_url.as_str().into_client_request() {
         Ok(req) => req,
         Err(err) => {
-            deliver_failure(socket_id);
+            deliver_failure(socket_id, dom_generation);
             record_network(
                 stamp,
                 ws_url.as_str(),
@@ -207,9 +318,8 @@ async fn run_socket(io: SocketIo) {
             return;
         }
     };
-    if let Ok(list) = serde_json::from_str::<Vec<String>>(&protocols)
-        && !list.is_empty()
-        && let Ok(v) = HeaderValue::from_str(&list.join(", "))
+    if !requested_protocols.is_empty()
+        && let Ok(v) = HeaderValue::from_str(&requested_protocols.join(", "))
     {
         request.headers_mut().insert(SEC_WEBSOCKET_PROTOCOL, v);
     }
@@ -240,6 +350,19 @@ async fn run_socket(io: SocketIo) {
     }
     match tokio_tungstenite::connect_async(request).await {
         Ok((ws, response)) => {
+            if let Err(err) = reject_handshake_extensions(response.headers()) {
+                deliver_failure(socket_id, dom_generation);
+                record_network(stamp, ws_url.as_str(), None, Some(&err), started);
+                return;
+            }
+            let protocol = match negotiated_protocol(&requested_protocols, response.headers()) {
+                Ok(p) => p,
+                Err(err) => {
+                    deliver_failure(socket_id, dom_generation);
+                    record_network(stamp, ws_url.as_str(), None, Some(&err), started);
+                    return;
+                }
+            };
             CookieJar::global().store_response_header_map(
                 &http_url,
                 &response_headers_to_blitz(response.headers()),
@@ -253,23 +376,35 @@ async fn run_socket(io: SocketIo) {
                     ("status", status.to_string()),
                 ],
             );
-            deliver_event(WireEvent {
-                id: socket_id,
-                kind: "open",
-                data: None,
-                binary: None,
-                code: None,
-                reason: None,
-                was_clean: None,
-            });
+            deliver_event(
+                WireEvent {
+                    id: socket_id,
+                    kind: "open",
+                    data: None,
+                    binary: None,
+                    code: None,
+                    reason: None,
+                    was_clean: None,
+                    protocol: if protocol.is_empty() {
+                        None
+                    } else {
+                        Some(protocol)
+                    },
+                },
+                dom_generation,
+            );
             record_network(stamp, ws_url.as_str(), Some(status), None, started);
             let (mut write, mut read) = ws.split();
             loop {
                 tokio::select! {
                     changed = close_rx.changed() => {
                         if changed.is_ok() && *close_rx.borrow() {
-                            let _ = write.send(Message::Close(None)).await;
-                            deliver_close(socket_id, 1001, "", false);
+                            let frame = CloseFrame {
+                                code: CloseCode::Away,
+                                reason: "".into(),
+                            };
+                            let _ = write.send(Message::Close(Some(frame))).await;
+                            deliver_close(socket_id, dom_generation, 1001, "", false);
                             break;
                         }
                     }
@@ -281,16 +416,20 @@ async fn run_socket(io: SocketIo) {
                                     Message::Binary(b) => b.len(),
                                     _ => 0,
                                 };
-                                buffered.store(len, Ordering::Relaxed);
                                 if write.send(msg).await.is_err() {
-                                    deliver_failure(socket_id);
+                                    buffered.fetch_sub(len, Ordering::Relaxed);
+                                    deliver_failure(socket_id, dom_generation);
                                     break;
                                 }
-                                buffered.store(0, Ordering::Relaxed);
+                                buffered.fetch_sub(len, Ordering::Relaxed);
                             }
-                            Some(Outbound::Close) => {
-                                let _ = write.send(Message::Close(None)).await;
-                                deliver_close(socket_id, 1000, "", true);
+                            Some(Outbound::Close { code, reason }) => {
+                                let frame = CloseFrame {
+                                    code: CloseCode::from(code),
+                                    reason: reason.clone().into(),
+                                };
+                                let _ = write.send(Message::Close(Some(frame))).await;
+                                deliver_close(socket_id, dom_generation, code, &reason, true);
                                 break;
                             }
                             None => break,
@@ -307,7 +446,8 @@ async fn run_socket(io: SocketIo) {
                                     code: None,
                                     reason: None,
                                     was_clean: None,
-                                });
+                                    protocol: None,
+                                }, dom_generation);
                             }
                             Some(Ok(Message::Binary(bytes))) => {
                                 let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -319,7 +459,8 @@ async fn run_socket(io: SocketIo) {
                                     code: None,
                                     reason: None,
                                     was_clean: None,
-                                });
+                                    protocol: None,
+                                }, dom_generation);
                             }
                             Some(Ok(Message::Ping(payload))) => {
                                 let _ = write.send(Message::Pong(payload)).await;
@@ -329,7 +470,7 @@ async fn run_socket(io: SocketIo) {
                                 let (code, reason) = frame
                                     .map(|f| (u16::from(f.code), f.reason.to_string()))
                                     .unwrap_or((1000, String::new()));
-                                deliver_close(socket_id, code, &reason, true);
+                                deliver_close(socket_id, dom_generation, code, &reason, true);
                                 break;
                             }
                             Some(Ok(Message::Frame(_))) => {}
@@ -342,11 +483,11 @@ async fn run_socket(io: SocketIo) {
                                         ("detail", err.to_string()),
                                     ],
                                 );
-                                deliver_failure(socket_id);
+                                deliver_failure(socket_id, dom_generation);
                                 break;
                             }
                             None => {
-                                deliver_close(socket_id, 1006, "", false);
+                                deliver_close(socket_id, dom_generation, 1006, "", false);
                                 break;
                             }
                         }
@@ -363,7 +504,7 @@ async fn run_socket(io: SocketIo) {
                     ("detail", err.to_string()),
                 ],
             );
-            deliver_failure(socket_id);
+            deliver_failure(socket_id, dom_generation);
             record_network(
                 stamp,
                 ws_url.as_str(),
@@ -375,29 +516,37 @@ async fn run_socket(io: SocketIo) {
     }
 }
 
-fn deliver_close(socket_id: u64, code: u16, reason: &str, was_clean: bool) {
-    deliver_event(WireEvent {
-        id: socket_id,
-        kind: "close",
-        data: None,
-        binary: None,
-        code: Some(code),
-        reason: Some(reason.to_string()),
-        was_clean: Some(was_clean),
-    });
+fn deliver_close(socket_id: u64, dom_generation: u64, code: u16, reason: &str, was_clean: bool) {
+    deliver_event(
+        WireEvent {
+            id: socket_id,
+            kind: "close",
+            data: None,
+            binary: None,
+            code: Some(code),
+            reason: Some(reason.to_string()),
+            was_clean: Some(was_clean),
+            protocol: None,
+        },
+        dom_generation,
+    );
 }
 
-fn deliver_failure(socket_id: u64) {
-    deliver_event(WireEvent {
-        id: socket_id,
-        kind: "error",
-        data: None,
-        binary: None,
-        code: None,
-        reason: None,
-        was_clean: None,
-    });
-    deliver_close(socket_id, 1006, "", false);
+fn deliver_failure(socket_id: u64, dom_generation: u64) {
+    deliver_event(
+        WireEvent {
+            id: socket_id,
+            kind: "error",
+            data: None,
+            binary: None,
+            code: None,
+            reason: None,
+            was_clean: None,
+            protocol: None,
+        },
+        dom_generation,
+    );
+    deliver_close(socket_id, dom_generation, 1006, "", false);
 }
 
 fn response_headers_to_blitz(
@@ -411,7 +560,7 @@ fn response_headers_to_blitz(
                 blitz_traits::net::http::HeaderValue::from_str(s),
             )
         {
-            out.insert(n, v);
+            out.append(n, v);
         }
     }
     out
@@ -440,15 +589,14 @@ fn record_network(
 }
 
 fn remove_socket(socket_id: u64) {
-    let mut map = connections().lock().expect("connections lock");
-    map.remove(&socket_id);
+    lock_connections().remove(&socket_id);
 }
 
 fn with_socket<F, T>(socket_id: u64, f: F) -> Result<T, String>
 where
     F: FnOnce(&Arc<SocketRecord>) -> Result<T, String>,
 {
-    let map = connections().lock().expect("connections lock");
+    let map = lock_connections();
     let Some(rec) = map.get(&socket_id) else {
         return Err("unknown socket".into());
     };
@@ -473,15 +621,18 @@ pub fn send_message(socket_id: u64, data: &str, binary: bool) -> Result<usize, S
         rec.outbound
             .send(Outbound::Send(msg))
             .map_err(|_| "socket closed")?;
-        rec.buffered.store(len, Ordering::Relaxed);
-        Ok(len)
+        rec.buffered.fetch_add(len, Ordering::Relaxed);
+        Ok(rec.buffered.load(Ordering::Relaxed))
     })
 }
 
-pub fn close_socket(socket_id: u64, _code: u16, _reason: &str) -> Result<(), String> {
+pub fn close_socket(socket_id: u64, code: u16, reason: &str) -> Result<(), String> {
     with_socket(socket_id, |rec| {
         rec.outbound
-            .send(Outbound::Close)
+            .send(Outbound::Close {
+                code,
+                reason: reason.to_string(),
+            })
             .map_err(|_| "socket closed")?;
         Ok(())
     })
@@ -492,77 +643,101 @@ pub fn buffered_amount(socket_id: u64) -> Result<usize, String> {
 }
 
 pub fn close_for_dom_generation(dom_generation: u64) {
-    let ids: Vec<u64> = {
-        let map = connections().lock().expect("connections lock");
+    let ids: Vec<(u64, watch::Sender<bool>)> = {
+        let map = lock_connections();
         map.iter()
             .filter(|(_, r)| r.dom_generation == dom_generation)
-            .map(|(id, _)| *id)
+            .map(|(id, r)| (*id, r.close_tx.clone()))
             .collect()
     };
-    for id in ids {
-        let _ = close_socket(id, 1001, "page detached");
+    for (_id, tx) in ids {
+        let _ = tx.send(true);
     }
 }
 
 pub fn close_for_tab_network_epoch(tab_id: TabId, network_epoch: u64) {
-    let ids: Vec<u64> = {
-        let map = connections().lock().expect("connections lock");
+    let ids: Vec<(u64, watch::Sender<bool>)> = {
+        let map = lock_connections();
         map.iter()
             .filter(|(_, r)| r.tab_id == tab_id && r.network_epoch < network_epoch)
-            .map(|(id, _)| *id)
+            .map(|(id, r)| (*id, r.close_tx.clone()))
             .collect()
     };
-    for id in ids {
-        let _ = close_socket(id, 1001, "navigation");
+    for (_id, tx) in ids {
+        let _ = tx.send(true);
     }
 }
 
-/// Echo WebSocket test server on `127.0.0.1:0`.
-pub async fn test_server() -> (String, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind test ws listener");
-    let addr = listener.local_addr().expect("local addr");
-    let url = format!("ws://{addr}");
-    let handle = tokio::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                continue;
-            };
-            tokio::spawn(async move {
-                let Ok(ws_stream) = tokio_tungstenite::accept_async(stream).await else {
-                    return;
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    /// Echo WebSocket test server on `127.0.0.1:0`, optionally replying with `Sec-WebSocket-Protocol`.
+    pub async fn test_server(protocol: Option<&str>) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test ws listener");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("ws://{addr}");
+        let protocol = protocol.map(str::to_string);
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    continue;
                 };
-                let (mut write, mut read) = ws_stream.split();
-                while let Some(msg) = read.next().await {
-                    match msg {
-                        Ok(Message::Text(t)) => {
-                            if write.send(Message::Text(t)).await.is_err() {
-                                break;
+                let protocol = protocol.clone();
+                tokio::spawn(async move {
+                    #[allow(clippy::result_large_err)]
+                    let Ok(ws_stream) = tokio_tungstenite::accept_hdr_async(
+                        stream,
+                        |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                         mut resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                            if let Some(proto) = &protocol
+                                && let Ok(v) = HeaderValue::from_str(proto)
+                            {
+                                resp.headers_mut().insert(SEC_WEBSOCKET_PROTOCOL, v);
                             }
-                        }
-                        Ok(Message::Binary(b)) => {
-                            if write.send(Message::Binary(b)).await.is_err() {
-                                break;
+                            Ok(resp)
+                        },
+                    )
+                    .await
+                    else {
+                        return;
+                    };
+                    let (mut write, mut read) = ws_stream.split();
+                    while let Some(msg) = read.next().await {
+                        match msg {
+                            Ok(Message::Text(t)) => {
+                                if write.send(Message::Text(t)).await.is_err() {
+                                    break;
+                                }
                             }
+                            Ok(Message::Binary(b)) => {
+                                if write.send(Message::Binary(b)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(Message::Close(_)) => break,
+                            Ok(Message::Ping(p)) => {
+                                let _ = write.send(Message::Pong(p)).await;
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
                         }
-                        Ok(Message::Close(_)) => break,
-                        Ok(Message::Ping(p)) => {
-                            let _ = write.send(Message::Pong(p)).await;
-                        }
-                        Ok(_) => {}
-                        Err(_) => break,
                     }
-                }
-            });
-        }
-    });
-    (url, handle)
+                });
+            }
+        });
+        (url, handle)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossbeam_channel::unbounded;
+    use std::time::Duration;
 
     #[test]
     fn mixed_content_rejects_ws_from_https_document() {
@@ -579,13 +754,91 @@ mod tests {
     }
 
     #[test]
+    fn rejects_url_fragment() {
+        let err = validate_connect_url("http://example.test/", "ws://example.test/#x").unwrap_err();
+        assert!(err.contains("fragment"), "{err}");
+    }
+
+    #[test]
+    fn serializes_url_without_default_port() {
+        let resolved =
+            validate_connect_url("http://example.test/", "ws://example.test:80/a").expect("url");
+        assert_eq!(resolved, "ws://example.test/a");
+    }
+
+    #[test]
+    fn rejects_duplicate_protocols() {
+        let err = validate_protocols(r#"["a","a"]"#).unwrap_err();
+        assert!(err.contains("duplicate"), "{err}");
+    }
+
+    #[test]
+    fn rejects_empty_protocol_token() {
+        let err = validate_protocols(r#"[""]"#).unwrap_err();
+        assert!(err.contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn buffered_amount_accumulates_two_sends() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (tx, _rx) = unbounded();
+        register_command_sender(1, tx);
+        rt.block_on(async {
+            let (url, _server) = test_support::test_server(None).await;
+            let socket_id = 9_u64;
+            start_connect(socket_id, "http://example.test/", &url, "[]", 1).expect("connect");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let first = send_message(socket_id, "aa", false).expect("send1");
+            let second = send_message(socket_id, "bbb", false).expect("send2");
+            assert_eq!(first + second - second, first);
+            assert!(buffered_amount(socket_id).unwrap() >= 5);
+        });
+        unregister_command_sender(1);
+    }
+
+    #[test]
+    fn retire_delivers_code_1001() {
+        let (tx, rx) = unbounded();
+        register_command_sender(7, tx);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let (url, _server) = test_support::test_server(None).await;
+            let socket_id = 12_u64;
+            start_connect(socket_id, "http://example.test/", &url, "[]", 7).expect("connect");
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            close_for_dom_generation(7);
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        });
+        let mut close_code = None;
+        while let Ok(worker::WorkerCommand::WebSocketEvent { json }) = rx.try_recv() {
+            if json.contains("\"close\"") && json.contains("\"code\":1001") {
+                close_code = Some(1001);
+            }
+        }
+        assert_eq!(close_code, Some(1001));
+        unregister_command_sender(7);
+    }
+
+    #[test]
+    fn log_websocket_truncates_long_fields() {
+        let long = "x".repeat(200);
+        log_websocket("connect", &long, &[("socket_id", "1".into())]);
+    }
+
+    #[test]
     fn test_server_echoes_text() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("runtime");
         rt.block_on(async {
-            let (url, _server) = test_server().await;
+            let (url, _server) = test_support::test_server(None).await;
             let (mut ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .expect("client connect");

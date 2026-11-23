@@ -177,7 +177,7 @@ pub fn start_websocket_connect(
         let _ = reply_tx.send(value);
     };
     match super::websocket::start_connect(socket_id, page_base, &url, &protocols, dom_generation) {
-        Ok(()) => send(DomResponse::ok(reply, DomValue::Null)),
+        Ok(serialized_url) => send(DomResponse::ok(reply, DomValue::String(serialized_url))),
         Err(err) => send(DomResponse::err(reply, err)),
     }
 }

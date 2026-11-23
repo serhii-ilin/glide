@@ -311,6 +311,7 @@ impl GlideNet {
             return;
         }
 
+        let initiating_document = self.state.document_url.lock().unwrap().clone();
         *self.state.document_url.lock().unwrap() = Some(request.url.clone());
         let original_url = request.url.to_string();
         let blitz_abort = request.signal.clone();
@@ -347,6 +348,7 @@ impl GlideNet {
                 &cancel_notify,
                 test_delay_ms,
                 scripting_enabled,
+                initiating_document,
             )
             .await;
 
@@ -622,6 +624,7 @@ enum LoadFail {
     Failed(String),
 }
 
+#[allow(clippy::too_many_arguments)] // cancel racing shares one future with the page loader.
 async fn fetch_racing_aborts(
     provider: &Provider,
     request: Request,
@@ -630,8 +633,15 @@ async fn fetch_racing_aborts(
     cancel_notify: &Notify,
     test_delay_ms: usize,
     scripting_enabled: bool,
+    cookie_document: Option<Url>,
 ) -> Result<PageLoadSuccess, LoadFail> {
-    let fetch_fut = page_fetch(provider, request, test_delay_ms, scripting_enabled);
+    let fetch_fut = page_fetch(
+        provider,
+        request,
+        test_delay_ms,
+        scripting_enabled,
+        cookie_document,
+    );
     tokio::pin!(fetch_fut);
     tokio::select! {
         res = &mut fetch_fut => res,
@@ -644,13 +654,16 @@ async fn page_fetch(
     request: Request,
     test_delay_ms: usize,
     scripting_enabled: bool,
+    cookie_document: Option<Url>,
 ) -> Result<PageLoadSuccess, LoadFail> {
     if test_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
     }
     if matches!(request.url.scheme(), "http" | "https") {
         if crate::http::is_navigable_http(&request) {
-            return match crate::http::fetch_document(request, scripting_enabled).await {
+            return match crate::http::fetch_document(request, scripting_enabled, cookie_document)
+                .await
+            {
                 crate::http::DocumentFetch::Page {
                     url,
                     body,

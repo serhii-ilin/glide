@@ -253,6 +253,7 @@ impl JsHost {
         let retiring = self.dom_generation;
         self.dom_generation = self.dom_generation.wrapping_add(1);
         super::websocket::close_for_dom_generation(retiring);
+        super::websocket::unregister_command_sender(retiring);
         self.worker = None;
         self.started_for = None;
         self.pending_sources = None;

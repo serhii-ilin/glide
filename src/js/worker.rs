@@ -874,6 +874,15 @@ fn map_dom_op(
             submitter: arg_handle(scope, args, 3)?,
             reply,
         },
+        "controlField" => DomRequest::ControlField {
+            node: arg_handle(scope, args, 2)?,
+            field: arg_string(scope, args, 3)?,
+            reply,
+        },
+        "syncFormControls" => DomRequest::SyncFormControls {
+            form: arg_handle(scope, args, 2)?,
+            reply,
+        },
         "randomBytes" => {
             let size = arg_string(scope, args, 2)?
                 .parse::<usize>()

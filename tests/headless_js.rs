@@ -306,6 +306,59 @@ fn counter_fixture_runs_with_js() {
 }
 
 #[test]
+fn headless_post_form_navigation_submits_urlencoded_body() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let posted = Arc::new(Mutex::new(String::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let posted2 = posted.clone();
+    std::thread::spawn(move || {
+        for _ in 0..4 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (status, body, extra) = if req.starts_with("GET /form") {
+                (
+                    "200 OK",
+                    "<!DOCTYPE html><html><body>\
+<form id=f action=\"/done\" method=\"post\"><input name=q value=\"hi\"></form>\
+<script>document.getElementById('f').requestSubmit()</script>\
+</body></html>",
+                    "Content-Type: text/html; charset=utf-8\r\n",
+                )
+            } else if req.starts_with("POST /done") {
+                *posted2.lock().expect("lock") =
+                    req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                (
+                    "200 OK",
+                    "<!DOCTYPE html><html><body><p>posted ok</p></body></html>",
+                    "Content-Type: text/html; charset=utf-8\r\n",
+                )
+            } else {
+                ("404 Not Found", "", "")
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/form");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("posted ok"), "{text}");
+    assert_eq!(posted.lock().expect("lock").as_str(), "q=hi");
+}
+
+#[test]
 fn page_script_navigation_is_followed() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

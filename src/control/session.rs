@@ -367,7 +367,7 @@ impl HeadlessSession {
         timeout: Duration,
         history: LoadHistory,
     ) -> Result<(), String> {
-        self.load_url_at(url, timeout, history, Instant::now(), 0)
+        self.load_url_at(url, timeout, history, Instant::now(), 0, None)
     }
 
     fn load_url_at(
@@ -377,10 +377,16 @@ impl HeadlessSession {
         history: LoadHistory,
         load_started: Instant,
         hop: u32,
+        navigation_request: Option<blitz_traits::net::Request>,
     ) -> Result<(), String> {
         let handle = tokio::runtime::Handle::current();
         let net = Arc::new(Provider::new(None));
-        let (final_url, bytes) = headless::fetch_page(&url, self.opts.js_enabled, &handle, &net)?;
+        let (final_url, bytes) = match navigation_request {
+            Some(request) => {
+                headless::fetch_page_with_request(request, self.opts.js_enabled, &handle, &net)?
+            }
+            None => headless::fetch_page(&url, self.opts.js_enabled, &handle, &net)?,
+        };
         let html = String::from_utf8_lossy(&bytes);
 
         let tap = if self.opts.js_enabled {
@@ -478,12 +484,14 @@ impl HeadlessSession {
         if let Some(next) = navigation.take() {
             let remaining = timeout.saturating_sub(load_started.elapsed());
             if hop < headless::MAX_JS_NAVIGATIONS && remaining > Duration::from_millis(50) {
+                let target = next.url.to_string();
                 return self.load_url_at(
-                    next.to_string(),
+                    target,
                     remaining,
                     history,
                     load_started,
                     hop + 1,
+                    Some(next),
                 );
             }
         }

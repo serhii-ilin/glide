@@ -51,6 +51,11 @@ pub fn fetch_page(
     net: &Arc<Provider>,
 ) -> Result<(String, Vec<u8>), String> {
     if let Ok(parsed) = url::Url::parse(url)
+        && let Some(html) = crate::about::about_document(&parsed)
+    {
+        return Ok((parsed.to_string(), html.as_bytes().to_vec()));
+    }
+    if let Ok(parsed) = url::Url::parse(url)
         && parsed.scheme() == "file"
     {
         let path = parsed
@@ -488,6 +493,18 @@ mod tests {
             true,
         );
         assert_eq!(format_dump_text(&doc, true), "a\nb\n");
+    }
+
+    #[test]
+    fn fetch_about_blank_without_network() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let net = Arc::new(Provider::new(None));
+        let (resolved, body) =
+            fetch_page("about:blank", false, rt.handle(), &net).expect("about:blank loads");
+        assert_eq!(resolved, "about:blank");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.contains("<body></body>"));
     }
 
     #[test]

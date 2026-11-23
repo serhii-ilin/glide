@@ -250,6 +250,14 @@ impl GlideNet {
     }
 
     fn fetch_page(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
+        if request.url.scheme() == "about"
+            && let Some(html) = crate::about::about_document(&request.url)
+        {
+            let resolved = request.url.to_string();
+            self.deliver_internal_page(doc_id, resolved, html.to_string(), handler);
+            return;
+        }
+
         if request.url.scheme() == "glide" {
             if let Some(html) = self.try_internal_glide_page(&request.url) {
                 let resolved = request.url.to_string();
@@ -418,6 +426,15 @@ impl NetProvider for GlideNet {
         }
 
         if request.url.scheme() == "glide" {
+            drop(handler);
+            return;
+        }
+
+        if request.url.scheme() == "about" {
+            if let Some(html) = crate::about::about_document(&request.url) {
+                handler.bytes(request.url.to_string(), Bytes::from(html));
+                return;
+            }
             drop(handler);
             return;
         }
@@ -805,6 +822,43 @@ mod tests {
         assert!(text.contains("File not found"));
         assert!(!state.page_loading());
         assert!(wake_count.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn about_blank_delivers_empty_document() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(7);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
+
+        let record = Arc::new(StdMutex::new(None));
+        let handler = Box::new(RecordHandler {
+            done: record.clone(),
+        });
+        let url = Url::parse("about:blank").expect("about url");
+        net.fetch(7, Request::get(url), handler);
+
+        for _ in 0..200 {
+            if record.lock().expect("record").is_some() && !state.page_loading() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let (resolved, body) = record
+            .lock()
+            .expect("record")
+            .take()
+            .expect("handler should receive bytes");
+        assert_eq!(resolved, "about:blank");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("<body></body>"));
+        assert!(!text.contains("Can't open page"));
+        assert!(!state.page_loading());
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! Cloudflare's Kitesurf embeds in WebAssembly). See the README for why the
 //! Kitesurf crates themselves are not linked here.
 
+pub mod about;
 mod app;
 pub mod args;
 mod bookmarks;

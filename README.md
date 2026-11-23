@@ -216,8 +216,8 @@ The first `--release` build downloads and compiles V8 prebuilts in addition to S
 
 ## What does not
 
-- **Full browser JavaScript.** The bootstrap is intentionally tiny; the new Web API shims are in-memory or no-op. Boa in Kitesurf implements far more of the Web platform. DuckDuckGo's JS-heavy UI may still break; the HTML frontend is the default search target.
-- **Many browser features.** Native menus on Linux and Windows (the in-window bar is used), modified-click link opening in new tabs, durable Web Storage, real media queries or mutation observation, downloads, or extensions. Only one page iframe is live at a time; switching tabs reloads its document while per-tab state is restored. Blitz's own gaps apply too: incomplete CSS and limited form controls.
+- **Full browser JavaScript.** The bootstrap is intentionally tiny; most optional Web API shims are in-memory or no-op, while Web Storage is origin-scoped and persisted. Boa in Kitesurf implements far more of the Web platform. DuckDuckGo's JS-heavy UI may still break; the HTML frontend is the default search target.
+- **Many browser features.** Native menus on Linux and Windows (the in-window bar is used), modified-click link opening in new tabs, real media queries, downloads, or extensions. Only one page iframe is live at a time; switching tabs reloads its document while per-tab state is restored. Blitz's own gaps apply too: incomplete CSS and limited form controls.
 - **Find scroll target.** Find scrolls the inline root that contains the match into view, not the exact line box; tall paragraphs and scrollable subcontainers may not place the caret optimally.
 - **Stop vs. subresources.** Stopping a navigation aborts the in-flight main document load, but Blitz also aborts the previous page's subresource fetches when a new navigation starts, so images or scripts on the page you return to may stay missing until you reload.
 - **Kitesurf's Workers runtime.** No Chrome DevTools Protocol, no Dynamic Workers, no PDF export. Those live in Kitesurf's TypeScript and Wasm layers.

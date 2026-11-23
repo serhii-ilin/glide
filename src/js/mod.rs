@@ -13,6 +13,7 @@ mod repl_eval;
 pub mod scripts;
 mod snapshot;
 mod tap;
+pub mod websocket;
 mod worker;
 
 #[cfg(test)]

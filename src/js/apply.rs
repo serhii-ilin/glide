@@ -51,6 +51,10 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::RandomBytes { reply, .. }
         | DomRequest::CookieGet { reply }
         | DomRequest::CookieSet { reply, .. }
+        | DomRequest::WebSocketConnect { reply, .. }
+        | DomRequest::WebSocketSend { reply, .. }
+        | DomRequest::WebSocketClose { reply, .. }
+        | DomRequest::WebSocketBuffered { reply, .. }
         | DomRequest::NodeCount { reply } => *reply,
         #[cfg(debug_assertions)]
         DomRequest::TestResize { reply, .. } => *reply,
@@ -129,6 +133,51 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
         DomRequest::Fetch(req) => {
             DomResponse::err(req.reply, "fetch must be dispatched off the UI thread")
         }
+        DomRequest::WebSocketConnect { reply, .. }
+        | DomRequest::WebSocketSend { reply, .. }
+        | DomRequest::WebSocketClose { reply, .. }
+        | DomRequest::WebSocketBuffered { reply, .. } => {
+            DomResponse::err(reply, "websocket rpc must be dispatched off the UI thread")
+        }
+    }
+}
+
+pub fn start_websocket_connect(
+    page_base: &str,
+    socket_id: u64,
+    url: String,
+    protocols: String,
+    dom_generation: u64,
+    reply: u64,
+    reply_tx: crossbeam_channel::Sender<DomResponse>,
+) {
+    let send = |value: DomResponse| {
+        let _ = reply_tx.send(value);
+    };
+    match super::websocket::start_connect(socket_id, page_base, &url, &protocols, dom_generation) {
+        Ok(()) => send(DomResponse::ok(reply, DomValue::Null)),
+        Err(err) => send(DomResponse::err(reply, err)),
+    }
+}
+
+pub fn apply_websocket_send(socket_id: u64, data: &str, binary: bool, reply: u64) -> DomResponse {
+    match super::websocket::send_message(socket_id, data, binary) {
+        Ok(n) => DomResponse::ok(reply, DomValue::Number(n as f64)),
+        Err(err) => DomResponse::err(reply, err),
+    }
+}
+
+pub fn apply_websocket_close(socket_id: u64, code: u16, reason: &str, reply: u64) -> DomResponse {
+    match super::websocket::close_socket(socket_id, code, reason) {
+        Ok(()) => DomResponse::ok(reply, DomValue::Null),
+        Err(err) => DomResponse::err(reply, err),
+    }
+}
+
+pub fn apply_websocket_buffered(socket_id: u64, reply: u64) -> DomResponse {
+    match super::websocket::buffered_amount(socket_id) {
+        Ok(n) => DomResponse::ok(reply, DomValue::Number(n as f64)),
+        Err(err) => DomResponse::err(reply, err),
     }
 }
 

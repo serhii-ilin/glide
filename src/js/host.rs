@@ -250,7 +250,9 @@ impl JsHost {
     }
 
     fn reset_page_js_state(&mut self) {
+        let retiring = self.dom_generation;
         self.dom_generation = self.dom_generation.wrapping_add(1);
+        super::websocket::close_for_dom_generation(retiring);
         self.worker = None;
         self.started_for = None;
         self.pending_sources = None;
@@ -519,6 +521,48 @@ impl JsHost {
         match rpc.request {
             DomRequest::Fetch(fetch) => {
                 super::apply::start_fetch(self.net.clone(), &self.base_url, fetch, rpc.reply);
+                false
+            }
+            DomRequest::WebSocketConnect {
+                socket_id,
+                url,
+                protocols,
+                reply,
+            } => {
+                super::apply::start_websocket_connect(
+                    &self.base_url,
+                    socket_id,
+                    url,
+                    protocols,
+                    rpc.generation,
+                    reply,
+                    rpc.reply,
+                );
+                false
+            }
+            DomRequest::WebSocketSend {
+                socket_id,
+                data,
+                binary,
+                reply,
+            } => {
+                let response = super::apply::apply_websocket_send(socket_id, &data, binary, reply);
+                let _ = rpc.reply.send(response);
+                false
+            }
+            DomRequest::WebSocketClose {
+                socket_id,
+                code,
+                reason,
+                reply,
+            } => {
+                let response = super::apply::apply_websocket_close(socket_id, code, &reason, reply);
+                let _ = rpc.reply.send(response);
+                false
+            }
+            DomRequest::WebSocketBuffered { socket_id, reply } => {
+                let response = super::apply::apply_websocket_buffered(socket_id, reply);
+                let _ = rpc.reply.send(response);
                 false
             }
             request => {

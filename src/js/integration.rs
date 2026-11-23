@@ -2147,3 +2147,53 @@ fn custom_element_unicode_and_invalid_names() {
     let result = super::harness::run_inline_page(html, Duration::from_millis(120));
     assert_eq!(result.final_text, "r|u");
 }
+
+#[test]
+fn websocket_loopback_echo_and_close() {
+    let server_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("server runtime");
+    let (ws_url, _server) = server_rt.block_on(super::websocket::test_server());
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var ws = new WebSocket({url:?});
+        var log = [];
+        ws.onopen = function() {{ ws.send('hello'); }};
+        ws.onmessage = function(ev) {{ log.push('msg:' + ev.data); ws.close(1000, 'done'); }};
+        ws.onclose = function(ev) {{
+          log.push('close:' + ev.code + ':' + ev.wasClean);
+          document.getElementById('t').textContent = log.join('|');
+        }};
+      </script></body></html>"#,
+        url = ws_url
+    );
+    let page_rt = super::harness::harness_tokio_runtime();
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        &html,
+        Duration::from_millis(1200),
+        page_rt.handle(),
+        80,
+        "http://example.test/",
+    );
+    let text = result.final_text;
+    assert!(text.contains("msg:hello"), "{text}");
+    assert!(text.contains("close:1000:true"), "{text}");
+}
+
+#[test]
+fn websocket_rejects_mixed_content_and_bad_url() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var out = [];
+        try { new WebSocket('ws://insecure.test/'); } catch (e) { out.push('mixed:' + e.name); }
+        try { new WebSocket('https://bad.example/ws'); } catch (e) { out.push('bad:' + e.name); }
+        document.getElementById('t').textContent = out.join('|');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    let text = result.final_text;
+    assert!(text.contains("mixed:SecurityError"), "{text}");
+    assert!(text.contains("bad:SyntaxError"), "{text}");
+}

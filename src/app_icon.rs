@@ -56,16 +56,21 @@ fn warn_unavailable(error_kind: &str, detail: String) {
     logging::warn(
         "app.icon",
         "app icon unavailable",
-        &[
-            ("feature", "F-079".into()),
-            ("error_kind", error_kind.into()),
-            ("detail", detail),
-            (
-                "hint",
-                "The window keeps the default icon; see F-079 in docs/features.md.".into(),
-            ),
-        ],
+        &icon_warning_fields(error_kind, detail),
     );
+}
+
+/// Fields of the one `app.icon` warning: which icon failed and why.
+fn icon_warning_fields(error_kind: &str, detail: String) -> Vec<(&'static str, String)> {
+    vec![
+        ("feature", "F-079".into()),
+        ("error_kind", error_kind.into()),
+        ("detail", detail),
+        (
+            "hint",
+            "The window keeps the default icon; see F-079 in docs/features.md.".into(),
+        ),
+    ]
 }
 
 /// Set the Dock icon. Must run on the main thread after the application has launched.
@@ -96,7 +101,7 @@ mod tests {
 
     const PLIST_TEMPLATE: &str = include_str!("../assets/macos/Info.plist.in");
 
-    // Basis: Apple Info.plist keys (CFBundleName/CFBundleIconFile), F-079.
+    // Basis: PNG specification (W3C, colour types and tRNS), F-079.
     #[test]
     fn embedded_window_icon_decodes_to_256_square_rgba() {
         let (rgba, w, h) = decode_png_rgba(WINDOW_ICON_PNG).expect("embedded icon decodes");
@@ -117,13 +122,76 @@ mod tests {
         assert_eq!(decode_png_rgba(&palette).unwrap().0, vec![1, 2, 3, 255]);
     }
 
+    #[test]
+    fn decode_png_rgba_expands_gray_transparent_palette_and_16_bit_images() {
+        let gray = encode(png::ColorType::Grayscale, None, &[7]);
+        assert_eq!(decode_png_rgba(&gray).unwrap().0, vec![7, 7, 7, 255]);
+        let gray_alpha = encode(png::ColorType::GrayscaleAlpha, None, &[7, 128]);
+        assert_eq!(decode_png_rgba(&gray_alpha).unwrap().0, vec![7, 7, 7, 128]);
+        let transparent = encode_with(
+            png::ColorType::Indexed,
+            png::BitDepth::Eight,
+            Some(vec![1, 2, 3]),
+            Some(vec![64]),
+            &[0],
+        );
+        assert_eq!(decode_png_rgba(&transparent).unwrap().0, vec![1, 2, 3, 64]);
+        let rgba16 = encode_with(
+            png::ColorType::Rgba,
+            png::BitDepth::Sixteen,
+            None,
+            None,
+            &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0],
+        );
+        assert_eq!(
+            decode_png_rgba(&rgba16).unwrap().0,
+            vec![0x12, 0x56, 0x9a, 0xde]
+        );
+    }
+
+    // Basis: AGENTS.md logging schema (feature, error_kind, detail, hint).
+    #[test]
+    fn icon_warning_uses_schema_fields() {
+        let fields = icon_warning_fields("dock_icon", "boom".into());
+        let line = logging::format_record(
+            logging::Level::Warn,
+            "app.icon",
+            "app icon unavailable",
+            &fields,
+            logging::Level::Warn,
+        )
+        .expect("warn is enabled");
+        assert!(line.contains("target=\"app.icon\""), "{line}");
+        for key in [
+            "feature=\"F-079\"",
+            "error_kind=\"dock_icon\"",
+            "detail=\"boom\"",
+            "hint=",
+        ] {
+            assert!(line.contains(key), "missing {key} in {line}");
+        }
+    }
+
     fn encode(color: png::ColorType, palette: Option<Vec<u8>>, data: &[u8]) -> Vec<u8> {
+        encode_with(color, png::BitDepth::Eight, palette, None, data)
+    }
+
+    fn encode_with(
+        color: png::ColorType,
+        depth: png::BitDepth,
+        palette: Option<Vec<u8>>,
+        trns: Option<Vec<u8>>,
+        data: &[u8],
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         let mut enc = png::Encoder::new(&mut out, 1, 1);
         enc.set_color(color);
-        enc.set_depth(png::BitDepth::Eight);
+        enc.set_depth(depth);
         if let Some(p) = palette {
             enc.set_palette(p);
+        }
+        if let Some(t) = trns {
+            enc.set_trns(t);
         }
         let mut writer = enc.write_header().unwrap();
         writer.write_image_data(data).unwrap();

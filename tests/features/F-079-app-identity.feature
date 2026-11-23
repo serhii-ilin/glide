@@ -19,6 +19,27 @@ Feature: F-079 App name and icon
     When they are decoded to RGBA
     Then decoding returns an error instead of panicking
 
+  # Basis: PNG specification (colour types, tRNS, 16-bit samples)
+  Scenario Outline: Any PNG colour type decodes to RGBA8
+    Given a 1x1 <kind> PNG
+    When it is decoded to RGBA
+    Then the pixel is <rgba>
+
+    Examples:
+      | kind                      | rgba          |
+      | RGB                       | 10,20,30,255  |
+      | palette                   | 1,2,3,255     |
+      | grayscale                 | 7,7,7,255     |
+      | grayscale with alpha      | 7,7,7,128     |
+      | palette with transparency | 1,2,3,64      |
+      | 16-bit RGBA               | 18,86,154,222 |
+
+  # Basis: AGENTS.md logging schema
+  Scenario: A failed icon logs one schema-conformant warning
+    Given the Dock icon cannot be created
+    When Glide starts
+    Then one warning with target "app.icon" carries feature "F-079", error_kind, detail and hint
+
   Scenario: The Info.plist template names the app
     Given the Info.plist template shared by the build script and the bundle script
     Then CFBundleName is "Glide" and CFBundleIconFile is "AppIcon"

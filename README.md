@@ -102,7 +102,7 @@ The binary embeds an `Info.plist` (so the app menu reads "Glide") and sets the g
 icon at startup. To build a double-clickable `Glide.app` (icon from `assets/icon/`):
 
 ```sh
-scripts/bundle-macos.sh   # prints <target>/release/Glide.app
+scripts/bundle-macos.sh   # prints <target>/release/Glide.app (unsigned, ad-hoc)
 ```
 
 ### Agent control (MCP)

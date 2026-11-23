@@ -1,4 +1,5 @@
-//! Build script: on macOS, embeds an Info.plist (app name "Glide") into the `glide` binary.
+//! Build script: on macOS, embeds an Info.plist (app name "Glide") into the `glide` binary only
+//! (not the `compat` tool).
 
 use std::env;
 use std::fs;
@@ -18,7 +19,7 @@ fn main() {
     let plist = out_dir.join("Info.plist");
     fs::write(&plist, template.replace("@VERSION@", &version)).expect("OUT_DIR is writable");
     println!(
-        "cargo:rustc-link-arg-bins=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+        "cargo:rustc-link-arg-bin=glide=-Wl,-sectcreate,__TEXT,__info_plist,{}",
         plist.display()
     );
 }

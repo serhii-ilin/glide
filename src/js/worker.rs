@@ -1197,6 +1197,7 @@ fn dom_fetch_sync(url: &str) -> Result<String, String> {
                     method: "GET".into(),
                     headers: Vec::new(),
                     body: String::new(),
+                    credentials: "same-origin".into(),
                     reply,
                     initiator: crate::devtools::network::NetworkInitiator::Subresource,
                 }),

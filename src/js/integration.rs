@@ -1781,3 +1781,369 @@ fn document_cookie_get_set_visible_to_scripts() {
     let result = super::harness::run_inline_page(html, Duration::from_millis(80));
     assert_eq!(result.final_text, "a=1");
 }
+
+#[test]
+fn custom_element_upgrade_runs_lifecycle_callbacks() {
+    let html = r#"<!DOCTYPE html><html><head><style>
+      x-pick:not(:defined){visibility:hidden}</style></head><body>
+      <x-pick id="ce">before</x-pick>
+      <p id="t">pending</p>
+      <script>
+        function XPick() {}
+        XPick.prototype = Object.create(HTMLElement.prototype);
+        XPick.prototype.constructor = XPick;
+        XPick.prototype.connectedCallback = function () {
+          this.textContent = 'upgraded';
+        };
+        XPick.observedAttributes = ['data-v'];
+        XPick.prototype.attributeChangedCallback = function (n, o, v) {
+          this.setAttribute('data-seen', v);
+        };
+        customElements.define('x-pick', XPick);
+        document.getElementById('ce').setAttribute('data-v', '42');
+        document.getElementById('t').textContent = document.getElementById('ce').textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert_eq!(result.final_text, "upgraded");
+}
+
+#[test]
+fn custom_element_is_customized_builtin_is_rejected() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var ok = false;
+        try {
+          customElements.define('x-iso', function(){}, { extends: 'button' });
+        } catch (e) {
+          ok = e.name === 'NotSupportedError';
+        }
+        document.getElementById('t').textContent = ok ? 'rejected' : 'bad';
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(120));
+    assert_eq!(result.final_text, "rejected");
+}
+
+#[test]
+fn custom_element_module_define_upgrades_widget() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/custom-element-module.html");
+    let url = format!("file://{}", path.display());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("rt");
+    let _guard = rt.enter();
+    let text = crate::headless::dump_text(&url, true).expect("load");
+    assert!(text.contains("module-widget"), "{text}");
+}
+
+#[test]
+fn custom_element_mutation_observer_attribute_ordering() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-ob></x-ob><p id="t"></p>
+      <script>
+        var order = [];
+        function XO() {}
+        XO.prototype = Object.create(HTMLElement.prototype);
+        XO.observedAttributes = ['msg'];
+        XO.prototype.attributeChangedCallback = function(n, o, v) {
+          order.push('ce:' + o + '>' + v);
+        };
+        customElements.define('x-ob', XO);
+        var ob = new MutationObserver(function(recs) {
+          for (var i = 0; i < recs.length; i++) {
+            var r = recs[i];
+            if (r.type === 'attributes') order.push('mo:' + r.attributeName);
+          }
+        });
+        ob.observe(document.querySelector('x-ob'), { attributes: true, attributeOldValue: true });
+        document.querySelector('x-ob').setAttribute('msg', '2');
+        document.getElementById('t').textContent = order.join(',');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert!(
+        result.final_text.contains("ce:null>2"),
+        "attributeChanged old value: {}",
+        result.final_text
+    );
+}
+
+#[test]
+fn custom_element_es6_class_connected_callback() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-el id="a">start</x-el><p id="t"></p>
+      <script>
+        class XEl extends HTMLElement {
+          connectedCallback() { this.textContent = 'ok'; }
+        }
+        customElements.define('x-el', XEl);
+        document.getElementById('t').textContent = document.getElementById('a').textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn custom_element_class_explicit_super_upgrades() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-el id="a"></x-el>
+      <p id="t"></p>
+      <script>
+        class XEl extends HTMLElement {
+          constructor() { super(); }
+          connectedCallback() { this.textContent = 'ok'; }
+        }
+        customElements.define('x-el', XEl);
+        document.getElementById('t').textContent =
+          document.getElementById('a').textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn custom_element_class_super_sets_dataset_on_upgrade() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-el id="a"></x-el>
+      <p id="t"></p>
+      <script>
+        class XEl extends HTMLElement {
+          constructor() {
+            super();
+            this.dataset.ok = '1';
+          }
+          connectedCallback() {}
+        }
+        customElements.define('x-el', XEl);
+        document.getElementById('t').textContent =
+          document.getElementById('a').dataset.ok || '';
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "1");
+}
+
+#[test]
+fn custom_element_constructor_returning_other_node_fails_upgrade() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-bad id="a"></x-bad><x-good id="b"></x-good><p id="t"></p>
+      <script>
+        function Bad(){ return document.createElement('div'); }
+        function Good(){ this.textContent = 'ok'; }
+        Good.prototype = Object.create(HTMLElement.prototype);
+        Good.prototype.constructor = Good;
+        customElements.define('x-bad', Bad);
+        customElements.define('x-good', Good);
+        document.getElementById('t').textContent =
+          document.getElementById('a').localName + '|' + document.getElementById('b').textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "x-bad|ok");
+}
+
+#[test]
+fn custom_element_create_element_runs_ctor_before_connect() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t"></p>
+      <script>
+        var log = [];
+        function XA() { log.push('ctor'); this.textContent = 'ctor-text'; }
+        XA.prototype = Object.create(HTMLElement.prototype);
+        XA.prototype.constructor = XA;
+        XA.prototype.connectedCallback = function () { log.push('conn'); };
+        customElements.define('x-a', XA);
+        var el = document.createElement('x-a');
+        document.getElementById('t').textContent = log.join(',');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(150));
+    assert_eq!(result.final_text, "ctor");
+}
+
+#[test]
+fn custom_element_connection_callbacks_follow_insert_remove_insert() {
+    let html = r#"<!DOCTYPE html><html><body><div id="host"></div><p id="t"></p>
+      <script>
+        var log = [];
+        function XW() {}
+        XW.prototype = Object.create(HTMLElement.prototype);
+        XW.prototype.connectedCallback = function(){ log.push('c'); };
+        XW.prototype.disconnectedCallback = function(){ log.push('d'); };
+        customElements.define('x-w', XW);
+        var el = document.createElement('x-w');
+        document.getElementById('host').appendChild(el);
+        document.getElementById('host').removeChild(el);
+        document.body.appendChild(el);
+        document.getElementById('t').textContent = log.join('');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "cdc");
+}
+
+#[test]
+fn custom_element_remove_parent_fires_disconnected_on_child() {
+    let html = r#"<!DOCTYPE html><html><body><div id="box"><x-c></x-c></div><p id="t"></p>
+      <script>
+        var n = 0;
+        function XC() {}
+        XC.prototype = Object.create(HTMLElement.prototype);
+        XC.prototype.disconnectedCallback = function(){ n += 1; };
+        customElements.define('x-c', XC);
+        document.body.removeChild(document.getElementById('box'));
+        document.getElementById('t').textContent = String(n);
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(150));
+    assert_eq!(result.final_text, "1");
+}
+
+#[test]
+fn custom_element_move_between_parents_fires_disconnect_then_connect() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-m id="m"></x-m><div id="b"></div><p id="t"></p>
+      <script>
+        var log = [];
+        function XM() {}
+        XM.prototype = Object.create(HTMLElement.prototype);
+        XM.prototype.disconnectedCallback = function(){ log.push('d'); };
+        XM.prototype.connectedCallback = function(){ log.push('c'); };
+        customElements.define('x-m', XM);
+        log.length = 0;
+        document.getElementById('b').appendChild(document.getElementById('m'));
+        document.getElementById('t').textContent = log.join('');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "dc");
+}
+
+#[test]
+fn custom_element_define_upgrade_reaction_order() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-a msg="1"></x-a><x-b msg="2"></x-b><p id="t"></p>
+      <script>
+        var log = [];
+        function mk(tag) {
+          function T() { log.push(tag + '-ctor'); }
+          T.prototype = Object.create(HTMLElement.prototype);
+          T.observedAttributes = ['msg'];
+          T.prototype.attributeChangedCallback = function(n,o,v) {
+            log.push(tag + '-attr:' + n + ':' + o + ':' + v);
+          };
+          T.prototype.connectedCallback = function(){ log.push(tag + '-conn'); };
+          return T;
+        }
+        customElements.define('x-a', mk('a'));
+        customElements.define('x-b', mk('b'));
+        document.getElementById('t').textContent = log.join(', ');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert_eq!(
+        result.final_text,
+        "a-ctor, a-attr:msg:null:1, a-conn, b-ctor, b-attr:msg:null:2, b-conn"
+    );
+}
+
+#[test]
+fn custom_element_attribute_changed_uses_old_value() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-a msg="1"></x-a><p id="t"></p>
+      <script>
+        var log = [];
+        function XA() {}
+        XA.prototype = Object.create(HTMLElement.prototype);
+        XA.observedAttributes = ['msg'];
+        XA.prototype.attributeChangedCallback = function(n,o,v) {
+          log.push('a-attr:' + n + ':' + o + ':' + v);
+        };
+        customElements.define('x-a', XA);
+        document.querySelector('x-a').setAttribute('msg', '9');
+        document.getElementById('t').textContent = log.join(', ');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "a-attr:msg:null:1, a-attr:msg:1:9");
+}
+
+#[test]
+fn custom_element_unobserved_attribute_skips_callback() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-a></x-a><p id="t"></p>
+      <script>
+        var n = 0;
+        function XA() {}
+        XA.prototype = Object.create(HTMLElement.prototype);
+        XA.observedAttributes = ['msg'];
+        XA.prototype.attributeChangedCallback = function(){ n++; };
+        customElements.define('x-a', XA);
+        document.querySelector('x-a').setAttribute('other', '1');
+        document.getElementById('t').textContent = String(n);
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(150));
+    assert_eq!(result.final_text, "0");
+}
+
+#[test]
+fn custom_element_reused_constructor_throws_not_supported() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t"></p>
+      <script>
+        function C() {}
+        C.prototype = Object.create(HTMLElement.prototype);
+        customElements.define('x-a', C);
+        var err = '';
+        try {
+          customElements.define('x-b', C);
+        } catch (e) {
+          err = e.name;
+        }
+        document.getElementById('t').textContent =
+          err + '|' + (customElements.get('x-a') === C ? 'yes' : 'no');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(120));
+    assert_eq!(result.final_text, "NotSupportedError|yes");
+}
+
+#[test]
+fn custom_element_when_defined_invalid_name_syntax_error() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var done = false;
+        Promise.all([
+          customElements.whenDefined('div'),
+          customElements.whenDefined('X-A'),
+        ]).then(function(){ document.getElementById('t').textContent = 'resolved'; })
+          .catch(function(){ document.getElementById('t').textContent = 'rejected'; });
+        queueMicrotask(function(){ done = true; });
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert_eq!(result.final_text, "rejected");
+}
+
+#[test]
+fn custom_element_throwing_connected_still_upgrades_sibling() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-bad></x-bad><x-ok></x-ok><p id="t"></p>
+      <script>
+        function Bad() {}
+        Bad.prototype = Object.create(HTMLElement.prototype);
+        Bad.prototype.connectedCallback = function(){ throw new Error('boom'); };
+        function Ok() { this.textContent = 'fine'; }
+        Ok.prototype = Object.create(HTMLElement.prototype);
+        customElements.define('x-bad', Bad);
+        customElements.define('x-ok', Ok);
+        document.getElementById('t').textContent = document.querySelector('x-ok').textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "fine");
+}
+
+#[test]
+fn custom_element_unicode_and_invalid_names() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t"></p>
+      <script>
+        var reserved = false, unicode = false;
+        try { customElements.define('annotation-xml', function(){}); } catch (e) { reserved = true; }
+        try {
+          customElements.define('x-é', function(){});
+          unicode = true;
+        } catch (e) {}
+        try { customElements.define('a-', function(){}); } catch (e) {}
+        document.getElementById('t').textContent = (reserved ? 'r' : '') + '|' + (unicode ? 'u' : '');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(120));
+    assert_eq!(result.final_text, "r|u");
+}

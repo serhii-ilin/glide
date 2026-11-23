@@ -1780,3 +1780,44 @@ fn document_cookie_get_set_visible_to_scripts() {
     let result = super::harness::run_inline_page(html, Duration::from_millis(80));
     assert_eq!(result.final_text, "a=1");
 }
+
+#[test]
+fn custom_element_upgrade_runs_lifecycle_callbacks() {
+    let html = r#"<!DOCTYPE html><html><head><style>
+      x-pick:not(:defined){visibility:hidden}</style></head><body>
+      <x-pick id="ce">before</x-pick>
+      <p id="t">pending</p>
+      <script>
+        function XPick() {}
+        XPick.prototype = Object.create(HTMLElement.prototype);
+        XPick.prototype.constructor = XPick;
+        XPick.prototype.connectedCallback = function () {
+          this.textContent = 'upgraded';
+        };
+        XPick.observedAttributes = ['data-v'];
+        XPick.prototype.attributeChangedCallback = function (n, o, v) {
+          this.setAttribute('data-seen', v);
+        };
+        customElements.define('x-pick', XPick);
+        document.getElementById('ce').setAttribute('data-v', '42');
+        document.getElementById('t').textContent = document.getElementById('ce').textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert_eq!(result.final_text, "upgraded");
+}
+
+#[test]
+fn custom_element_is_customized_builtin_is_rejected() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var ok = false;
+        try {
+          customElements.define('x-iso', function(){}, { extends: 'button' });
+        } catch (e) {
+          ok = e.name === 'NotSupportedError';
+        }
+        document.getElementById('t').textContent = ok ? 'rejected' : 'bad';
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(120));
+    assert_eq!(result.final_text, "rejected");
+}

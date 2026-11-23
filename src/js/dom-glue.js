@@ -31,6 +31,201 @@
   const ranScripts = new WeakSet();
   const handlerCache = new Map();
   const layoutCache = new Map();
+  const CE_RESERVED = new Set([
+    'annotation-xml', 'color-profile', 'font-face', 'font-face-src', 'font-face-uri',
+    'font-face-format', 'font-face-name', 'missing-glyph',
+  ]);
+  const ceRegistry = new Map();
+  const cePending = new Map();
+  const ceUpgraded = new WeakSet();
+  const ceReactionQueue = [];
+  let ceDraining = false;
+
+  function validCustomElementName(name) {
+    const n = String(name);
+    if (!n.includes('-')) return false;
+    if (/[A-Z]/.test(n)) return false;
+    if (CE_RESERVED.has(n.toLowerCase())) return false;
+    return /^[a-z][a-z0-9._-]*-[a-z0-9._-]+$/.test(n);
+  }
+
+  function resetCustomElementState() {
+    ceRegistry.clear();
+    cePending.clear();
+    ceReactionQueue.length = 0;
+    ceDraining = false;
+  }
+
+  function setElementDefinedState(el, defined) {
+    const ref = refOf(el);
+    if (ref == null) return;
+    pendingBatch.push({ t: 'state', id: ref, defined: !!defined });
+  }
+
+  function observedAttributesOf(ctor) {
+    if (typeof ctor.observedAttributes === 'function') {
+      try {
+        const v = ctor.observedAttributes();
+        if (Array.isArray(v)) return v.map(String);
+      } catch (err) {
+        consoleError(err);
+      }
+    }
+    if (Array.isArray(ctor.observedAttributes)) {
+      return ctor.observedAttributes.map(String);
+    }
+    return [];
+  }
+
+  function enqueueCeReaction(el, callbackName, args) {
+    if (!el) return;
+    ceReactionQueue.push({ el, callbackName, args });
+  }
+
+  function invokeCeCallback(el, ctor, callbackName, args) {
+    const fn = ctor && ctor.prototype && ctor.prototype[callbackName];
+    if (typeof fn !== 'function') return;
+    try {
+      if (args && args.length) fn.apply(el, args);
+      else fn.call(el);
+    } catch (err) {
+      consoleError(err);
+    }
+  }
+
+  function drainCeReactions() {
+    if (ceDraining) return;
+    ceDraining = true;
+    try {
+      while (ceReactionQueue.length) {
+        const { el, callbackName, args } = ceReactionQueue.shift();
+        if (!el || el.nodeType !== 1 || !ceUpgraded.has(el)) continue;
+        const name = String(el.localName || el.nodeName).toLowerCase();
+        const ctor = ceRegistry.get(name);
+        if (!ctor) continue;
+        invokeCeCallback(el, ctor, callbackName, args);
+      }
+    } finally {
+      ceDraining = false;
+    }
+  }
+
+  function runCustomElementConstructor(el, ctor) {
+    const prev = Object.getPrototypeOf(el);
+    Object.setPrototypeOf(el, ctor.prototype);
+    try {
+      ctor.call(el);
+    } catch (err) {
+      consoleError(err);
+      Object.setPrototypeOf(el, prev);
+      return false;
+    }
+    return true;
+  }
+
+  function upgradeCustomElement(el) {
+    if (!el || el.nodeType !== 1 || ceUpgraded.has(el)) return;
+    const name = String(el.localName || el.nodeName).toLowerCase();
+    if (!validCustomElementName(name)) return;
+    const ctor = ceRegistry.get(name);
+    if (!ctor) return;
+    if (!runCustomElementConstructor(el, ctor)) return;
+    ceUpgraded.add(el);
+    setElementDefinedState(el, true);
+    const doc = el.ownerDocument || pageDocument;
+    if (doc && el.parentNode) {
+      enqueueCeReaction(el, 'connectedCallback', null);
+    }
+    const observed = observedAttributesOf(ctor);
+    for (let i = 0; i < observed.length; i += 1) {
+      const attr = observed[i];
+      if (el.hasAttribute(attr)) {
+        enqueueCeReaction(el, 'attributeChangedCallback', [attr, null, el.getAttribute(attr)]);
+      }
+    }
+  }
+
+  function walkElementTree(root, visitor) {
+    if (!root) return;
+    if (root.nodeType === 1) visitor(root);
+    for (let c = root.firstChild; c; c = c.nextSibling) walkElementTree(c, visitor);
+  }
+
+  function upgradeInSubtree(root) {
+    if (!root) return;
+    walkElementTree(root, (el) => {
+      const name = String(el.localName || el.nodeName).toLowerCase();
+      if (validCustomElementName(name) && !ceUpgraded.has(el)) upgradeCustomElement(el);
+    });
+  }
+
+  function resolveWhenDefined(name) {
+    const pending = cePending.get(name);
+    if (pending) {
+      cePending.delete(name);
+      pending.resolve(ceRegistry.get(name));
+    }
+  }
+
+  function installCustomElementsRegistry() {
+    const registry = {
+      define(name, ctor, options) {
+        const n = String(name);
+        if (!validCustomElementName(n)) {
+          throw new SyntaxError('Invalid custom element name');
+        }
+        if (ceRegistry.has(n)) {
+          const err = typeof DOMException !== 'undefined' && DOMException.NOT_SUPPORTED_ERR != null
+            ? new DOMException(DOMException.NOT_SUPPORTED_ERR)
+            : new Error('Custom element already defined');
+          err.name = 'NotSupportedError';
+          throw err;
+        }
+        if (typeof ctor !== 'function') throw new TypeError('Constructor must be a function');
+        if (options && options.extends) {
+          diagUnsupported('custom-elements', 'is= customized built-ins');
+          const err = new Error('customized built-ins are not supported');
+          err.name = 'NotSupportedError';
+          throw err;
+        }
+        ceRegistry.set(n, ctor);
+        resolveWhenDefined(n);
+        if (pageDocument) upgradeInSubtree(pageDocument);
+        drainCeReactions();
+        flushMutations();
+      },
+      get(name) {
+        return ceRegistry.get(String(name)) || undefined;
+      },
+      whenDefined(name) {
+        const n = String(name);
+        if (ceRegistry.has(n)) return Promise.resolve(ceRegistry.get(n));
+        if (!cePending.has(n)) {
+          let resolve;
+          const p = new Promise((r) => { resolve = r; });
+          cePending.set(n, { promise: p, resolve });
+          return p;
+        }
+        return cePending.get(n).promise;
+      },
+      upgrade(root) {
+        const node = root || pageDocument;
+        if (node) upgradeInSubtree(node);
+        drainCeReactions();
+        flushMutations();
+      },
+    };
+    try {
+      Object.defineProperty(global, 'customElements', {
+        value: registry,
+        writable: true,
+        configurable: true,
+      });
+    } catch (_) {
+      global.customElements = registry;
+    }
+  }
+
   let currentPageUrl = 'about:blank';
   let pageLocation = null;
   let formSubmissionInstalled = false;
@@ -552,6 +747,8 @@
   function endTask() {
     layoutCache.clear();
     flushMutations();
+    drainCeReactions();
+    flushMutations();
     runDynamicScripts();
     openedThisTask = false;
     writeCursor = null;
@@ -648,11 +845,19 @@
         queueInsertedScripts(rec.node);
         assignFormOwners(rec.node, false);
         subtreeOps(rec.target, followingRef(rec.node), rec.node, pendingBatch);
+        if (rec.node) {
+          upgradeInSubtree(rec.node);
+          drainCeReactions();
+        }
         break;
       }
       case MUTATE.REMOVE: {
         const node = rec.node;
         if (!node) return;
+        if (node.nodeType === 1 && ceUpgraded.has(node)) {
+          enqueueCeReaction(node, 'disconnectedCallback', null);
+          drainCeReactions();
+        }
         assignFormOwners(node, true);
         const ref = refOf(node);
         forgetSubtree(node);
@@ -686,6 +891,21 @@
           ns: a.namespaceURI || null,
         });
         if (aname.startsWith('on')) applyOnAttribute(rec.target, aname, a.value);
+        if (rec.target && rec.target.nodeType === 1 && ceUpgraded.has(rec.target)) {
+          const ctor = ceRegistry.get(String(rec.target.localName || '').toLowerCase());
+          if (ctor) {
+            const observed = observedAttributesOf(ctor);
+            const lname = String(name || '').toLowerCase();
+            if (observed.some((n) => String(n).toLowerCase() === lname)) {
+              enqueueCeReaction(rec.target, 'attributeChangedCallback', [
+                name,
+                null,
+                a.value,
+              ]);
+              drainCeReactions();
+            }
+          }
+        }
         break;
       }
       case MUTATE.REMOVE_ATTR: {
@@ -702,6 +922,17 @@
             win._setEventHandler(type, null);
           } else if (rec.target._setEventHandler) {
             rec.target._setEventHandler(type, null);
+          }
+        }
+        if (rec.target && rec.target.nodeType === 1 && ceUpgraded.has(rec.target)) {
+          const ctor = ceRegistry.get(String(rec.target.localName || '').toLowerCase());
+          if (ctor) {
+            const observed = observedAttributesOf(ctor);
+            const lname = String(name || '').toLowerCase();
+            if (observed.some((n) => String(n).toLowerCase() === lname)) {
+              enqueueCeReaction(rec.target, 'attributeChangedCallback', [name, null, null]);
+              drainCeReactions();
+            }
           }
         }
         break;
@@ -1280,6 +1511,8 @@
       global.getComputedStyle = gcsImpl;
     }
     patchDomParser();
+    resetCustomElementState();
+    installCustomElementsRegistry();
     pageLocation = locationFrom(currentPageUrl);
     global.location = pageLocation;
     try {
@@ -1484,6 +1717,7 @@
     reportedUnsupported.clear();
     skippedInserts.clear();
     layoutCache.clear();
+    resetCustomElementState();
     const tree = typeof snapshotJson === 'string' ? JSON.parse(snapshotJson) : snapshotJson;
     const domWin = domino.createWindow('');
     pageDocument = domWin.document;
@@ -1681,5 +1915,6 @@
       }
     };
   }
+  installCustomElementsRegistry();
   installUrlGlobal();
 })(globalThis);

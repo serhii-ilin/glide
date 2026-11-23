@@ -1,15 +1,12 @@
 //! Fallbacks for pages whose UI is built from custom elements.
 //!
-//! Glide does not upgrade custom elements and does not execute module scripts,
-//! so a page's own element definitions never run. Two server-rendered
+//! When scripts do not upgrade custom elements, two server-rendered
 //! conventions depend on that upgrade and are applied here while parsing:
 //!
 //! - `show_unupgraded`: pages hide their custom-element shell with
-//!   `:not(:defined)` until it upgrades. Blitz reports every element as *not*
-//!   defined, so the whole shell can stay `visibility: hidden`. Elements that
-//!   are not upgraded render as plain elements here, so keep their server
-//!   markup visible with a per-document UA rule scoped to the page's own custom
-//!   element names.
+//!   `:not(:defined)` until it upgrades. Built-in elements are marked `:defined`
+//!   at parse (F-076); unupgraded autonomous custom elements are not. A per-document
+//!   UA rule keeps server-rendered subtrees visible when definitions never run.
 //! - `apply_streamed_suspense`: Reddit (faceplate) streams its feed after the
 //!   shell. `<suspense-placeholder id="…">` marks a slot and a later
 //!   `<template for="…">` carries the markup; the page's `suspense-replace`
@@ -18,8 +15,33 @@
 use std::collections::{BTreeSet, HashMap};
 
 use blitz_dom::{BaseDocument, NodeId, UserAgentStylesheet, local_name};
+use stylo_dom::ElementState;
 
-const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+pub const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+
+/// Whether `local` in the HTML namespace is a custom element tag name (hyphenated).
+pub fn is_custom_element_local_name(local: &str, namespace: &str) -> bool {
+    namespace == HTML_NAMESPACE
+        && local.contains('-')
+        && local.starts_with(|c: char| c.is_ascii_lowercase())
+}
+
+/// Built-in HTML elements match `:defined`; autonomous custom elements do not until upgraded.
+pub fn mark_built_in_elements_defined(doc: &mut BaseDocument) {
+    let mut defined_ids = Vec::new();
+    visit(doc, &mut |id, element| {
+        let namespace: &str = element.name.ns.as_ref();
+        let local: &str = element.name.local.as_ref();
+        if namespace == HTML_NAMESPACE && !is_custom_element_local_name(local, namespace) {
+            defined_ids.push(id);
+        }
+    });
+    for id in defined_ids {
+        doc.snapshot_node_and(id, ElementState::DEFINED, |node| {
+            node.element_state_mut().insert(ElementState::DEFINED);
+        });
+    }
+}
 
 /// Keep unupgraded custom elements visible instead of letting a page's
 /// `:not(:defined)` rule hide its server-rendered shell.
@@ -42,7 +64,6 @@ pub fn show_unupgraded(doc: &mut BaseDocument) {
     let selectors = names
         .iter()
         .map(|name| format!("{name}:not(:defined),{name}:not(:defined) *"))
-        .chain(["html", "body"].map(str::to_string))
         .collect::<Vec<_>>()
         .join(",");
     let css = format!("{selectors}{{visibility:visible!important}}");
@@ -91,10 +112,7 @@ fn custom_element_names(doc: &BaseDocument) -> BTreeSet<String> {
     visit(doc, &mut |_, element| {
         let namespace: &str = element.name.ns.as_ref();
         let local: &str = element.name.local.as_ref();
-        if namespace == HTML_NAMESPACE
-            && local.contains('-')
-            && local.starts_with(|c: char| c.is_ascii_lowercase())
-        {
+        if is_custom_element_local_name(local, namespace) {
             names.insert(local.to_string());
         }
     });
@@ -194,6 +212,27 @@ mod tests {
         let names = custom_element_names(&doc);
         assert!(names.contains("my-widget"));
         assert!(!names.contains("div"));
+    }
+
+    #[test]
+    fn built_in_elements_match_defined_before_upgrade_hammer() {
+        let doc = parse_page(
+            "<!DOCTYPE html><html><body><my-widget><span>shiny</span></my-widget></body></html>",
+        );
+        let html_id = doc.query_selector("html").expect("selector").expect("node");
+        let span = doc.query_selector("span").expect("selector").expect("node");
+        assert!(
+            doc.get_node(html_id)
+                .expect("node")
+                .element_state()
+                .contains(ElementState::DEFINED)
+        );
+        assert!(
+            doc.get_node(span)
+                .expect("node")
+                .element_state()
+                .contains(ElementState::DEFINED)
+        );
     }
 
     #[test]

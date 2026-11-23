@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    x-greet:not(:defined) { visibility: hidden; }
+    x-greet:defined { display: block; }
+  </style>
+</head>
+<body>
+  <p id="t">pending</p>
+  <x-greet id="g">server</x-greet>
+  <script>
+    var log = [];
+    function XGreet() {}
+    XGreet.prototype = Object.create(HTMLElement.prototype);
+    XGreet.prototype.constructor = XGreet;
+    XGreet.prototype.connectedCallback = function () {
+      log.push('connected');
+      this.textContent = 'hello';
+    };
+    XGreet.prototype.disconnectedCallback = function () {
+      log.push('disconnected');
+    };
+    XGreet.observedAttributes = ['msg'];
+    XGreet.prototype.attributeChangedCallback = function (name, oldV, newV) {
+      log.push('attr:' + name + ':' + newV);
+    };
+    customElements.define('x-greet', XGreet);
+    var g = document.getElementById('g');
+    g.setAttribute('msg', '1');
+    var w = getComputedStyle(g).visibility;
+    var el = document.createElement('x-greet');
+    el.id = 'dyn';
+    document.body.appendChild(el);
+    document.body.removeChild(el);
+    document.getElementById('t').textContent = [log.join('|'), w].join(';');
+  </script>
+</body>
+</html>

@@ -111,7 +111,11 @@ fn run_inline_page_full(
         scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         js_tap: tap.clone(),
     };
+    let history = std::sync::Arc::new(std::sync::Mutex::new(crate::history::History::new(
+        page_base.into(),
+    )));
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.bind_session_history(std::sync::Arc::clone(&history));
     js_host.set_console_route(0, 1);
     js_host.set_network_route(0, 1);
     let recorder = record_navigation.then(|| Arc::new(RecordedNavigation::default()));
@@ -186,7 +190,11 @@ pub fn run_inline_page_with_repl_post(
         scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         js_tap: tap.clone(),
     };
+    let history = std::sync::Arc::new(std::sync::Mutex::new(crate::history::History::new(
+        "https://example.test/".into(),
+    )));
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.bind_session_history(std::sync::Arc::clone(&history));
     js_host.set_console_route(0, 1);
     js_host.set_network_route(0, 1);
     let config = DocumentConfig {
@@ -273,7 +281,11 @@ impl EvalHarness {
             scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(js_enabled)),
             js_tap: tap.clone(),
         };
+        let history = std::sync::Arc::new(std::sync::Mutex::new(crate::history::History::new(
+            "https://example.test/".into(),
+        )));
         let mut js_host = JsHost::new(js_enabled, tap, Some(net.clone()));
+        js_host.bind_session_history(std::sync::Arc::clone(&history));
         js_host.set_console_route(0, 1);
         js_host.set_network_route(0, 1);
         let config = DocumentConfig {
@@ -400,7 +412,11 @@ pub fn run_inline_page_with_repl_sequence(
         scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         js_tap: tap.clone(),
     };
+    let history = std::sync::Arc::new(std::sync::Mutex::new(crate::history::History::new(
+        "https://example.test/".into(),
+    )));
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.bind_session_history(std::sync::Arc::clone(&history));
     js_host.set_console_route(0, 1);
     js_host.set_network_route(0, 1);
     let config = DocumentConfig {

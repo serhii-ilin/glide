@@ -882,6 +882,39 @@ fn history_and_performance_buffers_are_bounded() {
 }
 
 #[test]
+fn history_unified_stack_length_matches_rust() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      history.pushState({ n: 1 }, '', '/spa');
+      var ok = history.length === 2 && history.state && history.state.n === 1;
+      history.pushState({ n: 2 }, '', '/spa2');
+      ok = ok && history.length === 3;
+      history.back();
+      ok = ok && history.length === 3 && history.state && history.state.n === 1;
+      document.getElementById('t').textContent = ok ? 'ok' : 'bad';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn history_hashchange_fires_on_fragment_only_push() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var hits = 0;
+      window.addEventListener('hashchange', function () { hits += 1; });
+      var base = location.pathname;
+      history.pushState({ h: 1 }, '', base + '#one');
+      history.pushState({ h: 2 }, '', base + '#two');
+      history.back();
+      var ok = hits >= 1 && location.hash === '#one';
+      document.getElementById('t').textContent = ok ? 'ok' : ('bad:' + hits + ':' + location.hash);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(250));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
 fn crypto_rejects_non_integer_views() {
     let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
     <script>

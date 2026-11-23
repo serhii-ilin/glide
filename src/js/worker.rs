@@ -93,6 +93,9 @@ pub enum WorkerCommand {
     WebSocketEvent {
         json: String,
     },
+    ApplyHistoryStep {
+        json: String,
+    },
     Shutdown,
 }
 
@@ -185,6 +188,10 @@ impl JsWorker {
 
     pub fn fire_page_load(&self) {
         let _ = self.tx.send(WorkerCommand::FirePageLoad);
+    }
+
+    pub fn apply_history_step(&self, json: String) {
+        let _ = self.tx.send(WorkerCommand::ApplyHistoryStep { json });
     }
 
     pub fn page_settled(&self) {
@@ -491,6 +498,16 @@ fn worker_main(state: WorkerThreadState) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 let payload = v8::String::new(scope, &json).unwrap();
                 call_global_fn(scope, "__glide_ws_deliver", &[payload.into()]);
+                settle_task(scope);
+                request_host_wake();
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
+            }
+            WorkerCommand::ApplyHistoryStep { json } => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
+                let payload = v8::String::new(scope, &json).unwrap();
+                call_global_fn(scope, "__glide_apply_history_step", &[payload.into()]);
                 settle_task(scope);
                 request_host_wake();
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
@@ -964,8 +981,45 @@ fn map_dom_op(
             height: arg_u32(scope, args, 3)?,
             reply,
         },
+        "historySnapshot" => DomRequest::HistorySnapshot { reply },
+        "historyPush" => DomRequest::HistoryPush {
+            json: arg_string(scope, args, 2)?,
+            reply,
+        },
+        "historyReplace" => DomRequest::HistoryReplace {
+            json: arg_string(scope, args, 2)?,
+            reply,
+        },
+        "historyGo" => DomRequest::HistoryGo {
+            delta: arg_i32(scope, args, 2)?,
+            reply,
+        },
+        "historyGoTo" => DomRequest::HistoryGoTo {
+            target: arg_usize(scope, args, 2)?,
+            reply,
+        },
         other => return Err(format!("unknown dom op {other}")),
     })
+}
+
+fn arg_i32(
+    scope: &v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    idx: i32,
+) -> Result<i32, String> {
+    let text = arg_string(scope, args, idx)?;
+    text.parse::<i32>()
+        .map_err(|_| format!("arg {idx} not an integer"))
+}
+
+fn arg_usize(
+    scope: &v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    idx: i32,
+) -> Result<usize, String> {
+    let text = arg_string(scope, args, idx)?;
+    text.parse::<usize>()
+        .map_err(|_| format!("arg {idx} not an integer"))
 }
 
 fn arg_u64(

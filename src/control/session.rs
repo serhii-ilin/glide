@@ -2,8 +2,8 @@
 
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ use super::protocol::{
 };
 use crate::devtools::console::{ConsoleEntry, ConsoleJournal};
 use crate::headless::{self, SettleOptions, VIEWPORT_HEIGHT, VIEWPORT_WIDTH};
-use crate::history::History;
+use crate::history::{History, HistoryEntry, HistoryRpcSnapshot, HistoryStep};
 use crate::html::{GlideHtmlProvider, HtmlPageDocument};
 use crate::js::console_feed;
 use crate::js::{JsHost, JsTap};
@@ -204,7 +204,7 @@ pub struct HeadlessSession {
     opts: SessionOptions,
     document: Option<HtmlPageDocument>,
     js_host: Option<JsHost>,
-    history: Option<History>,
+    history: Option<Arc<Mutex<History>>>,
     console: ConsoleJournal,
     tab_id: TabId,
     epoch: u64,
@@ -310,33 +310,76 @@ impl HeadlessSession {
     }
 
     pub fn back(&mut self, timeout: Duration) -> Result<PageInfo, String> {
-        let history = self.history.as_mut().ok_or_else(no_page_loaded)?;
-        if history.index() == 0 {
+        let history = self.history.as_ref().ok_or_else(no_page_loaded)?;
+        let mut guard = history.lock().map_err(|_| "history lock poisoned")?;
+        if guard.index() == 0 {
             return Err("no previous page".to_string());
         }
-        let target = history.entries()[history.index() - 1].clone();
-        self.load_url(target.clone(), timeout, LoadHistory::Traverse)?;
-        let history = self.history.as_mut().ok_or_else(no_page_loaded)?;
-        let _ = history.back();
-        if self.current_url != target {
-            history.replace_current(self.current_url.clone());
-        }
-        self.page_info()
+        let step = guard.back().ok_or_else(|| "no previous page".to_string())?;
+        drop(guard);
+        self.finish_history_step(step, timeout)
     }
 
     pub fn forward(&mut self, timeout: Duration) -> Result<PageInfo, String> {
-        let history = self.history.as_mut().ok_or_else(no_page_loaded)?;
-        if history.index() + 1 >= history.entries().len() {
+        let history = self.history.as_ref().ok_or_else(no_page_loaded)?;
+        let mut guard = history.lock().map_err(|_| "history lock poisoned")?;
+        if guard.index() + 1 >= guard.entries().len() {
             return Err("no next page".to_string());
         }
-        let target = history.entries()[history.index() + 1].clone();
-        self.load_url(target.clone(), timeout, LoadHistory::Traverse)?;
-        let history = self.history.as_mut().ok_or_else(no_page_loaded)?;
-        let _ = history.forward();
-        if self.current_url != target {
-            history.replace_current(self.current_url.clone());
+        let step = guard.forward().ok_or_else(|| "no next page".to_string())?;
+        drop(guard);
+        self.finish_history_step(step, timeout)
+    }
+
+    fn finish_history_step(
+        &mut self,
+        step: HistoryStep,
+        timeout: Duration,
+    ) -> Result<PageInfo, String> {
+        match step {
+            HistoryStep::Document { url } => match self.load_url(url, timeout, LoadHistory::Traverse)
+            {
+                Ok(()) => self.page_info(),
+                Err(e) => {
+                    if let Some(h) = self.history.as_ref() {
+                        if let Ok(mut guard) = h.lock() {
+                            let _ = guard.forward();
+                        }
+                    }
+                    Err(e)
+                }
+            },
+            HistoryStep::SameDocument {
+                url,
+                state,
+                hash_changed,
+            } => {
+                self.current_url = url.clone();
+                let snap = HistoryRpcSnapshot {
+                    index: self
+                        .history
+                        .as_ref()
+                        .and_then(|h| h.lock().ok())
+                        .map(|g| g.index())
+                        .unwrap_or(0),
+                    length: self
+                        .history
+                        .as_ref()
+                        .and_then(|h| h.lock().ok())
+                        .map(|g| g.len())
+                        .unwrap_or(1),
+                    state,
+                    url,
+                    navigate: None,
+                    hash_changed,
+                };
+                if let (Some(js_host), Some(doc)) = (self.js_host.as_mut(), self.document.as_mut())
+                {
+                    js_host.apply_history_step(&mut doc.0, &snap);
+                }
+                self.page_info()
+            }
         }
-        self.page_info()
     }
 
     pub fn reload(&mut self, timeout: Duration) -> Result<PageInfo, String> {
@@ -399,7 +442,16 @@ impl HeadlessSession {
             js_tap: tap.clone(),
         };
         let net_provider: Arc<dyn NetProvider> = net.clone();
+        if self.history.is_none() {
+            self.history = Some(Arc::new(Mutex::new(History::from_parts(
+                vec![HistoryEntry::document_load(final_url.clone(), true)],
+                0,
+            ))));
+        }
         let mut js_host = JsHost::new(self.opts.js_enabled, tap, Some(net.clone()));
+        if let Some(stack) = &self.history {
+            js_host.bind_session_history(Arc::clone(stack));
+        }
         let navigation = Arc::new(headless::JsNavigation::default());
 
         let config = DocumentConfig {
@@ -497,15 +549,20 @@ impl HeadlessSession {
         }
 
         match history {
-            LoadHistory::Push => match &mut self.history {
-                Some(h) => h.push(final_url),
-                None => self.history = Some(History::new(final_url)),
-            },
+            LoadHistory::Push => {
+                if let Some(h) = self.history.as_ref() {
+                    let mut guard = h.lock().map_err(|_| "history lock poisoned".to_string())?;
+                    if guard.current_url() != final_url {
+                        guard.push_document(final_url);
+                    }
+                }
+            }
             LoadHistory::ReloadCurrent => {
-                if let Some(h) = self.history.as_mut()
-                    && h.current() != final_url
+                if let Some(h) = self.history.as_ref()
+                    && let Ok(mut guard) = h.lock()
+                    && guard.current_url() != final_url
                 {
-                    h.replace_current(final_url);
+                    guard.replace_current_url(final_url);
                 }
             }
             LoadHistory::Traverse => {}
@@ -518,6 +575,7 @@ impl HeadlessSession {
         let (can_go_back, can_go_forward) = self
             .history
             .as_ref()
+            .and_then(|h| h.lock().ok())
             .map(|h| (h.index() > 0, h.index() + 1 < h.entries().len()))
             .unwrap_or((false, false));
         PageInfo {

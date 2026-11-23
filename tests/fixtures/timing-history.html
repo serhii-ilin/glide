@@ -37,14 +37,16 @@
         return performance.getEntriesByName('gap', 'measure').length === 1;
       });
       check('history-push', function () {
-        history.pushState({ n: 1 }, '', '/a');
-        history.pushState({ n: 2 }, '', '/b');
-        return location.pathname === '/b' && history.state.n === 2 && history.length >= 2;
+        var base = location.href.split('#')[0];
+        history.pushState({ n: 1 }, '', base + '#a');
+        history.pushState({ n: 2 }, '', base + '#b');
+        return location.hash === '#b' && history.state.n === 2 && history.length >= 2;
       });
       check('history-replace', function () {
+        var base = location.href.split('#')[0];
         var len = history.length;
-        history.replaceState({ n: 3 }, '', '/c');
-        return location.pathname === '/c' && history.state.n === 3 && history.length === len;
+        history.replaceState({ n: 3 }, '', base + '#c');
+        return location.hash === '#c' && history.state.n === 3 && history.length === len;
       });
       check('crypto-bytes', function () {
         var a = new Uint8Array(8);
@@ -66,7 +68,7 @@
         history.pushState({}, '', 'https://evil.example/other');
         crossOk = false;
       } catch (e) {
-        crossOk = e.name === 'SecurityError' && location.pathname === '/c';
+        crossOk = e.name === 'SecurityError' && location.hash === '#c';
       }
       check('history-security', function () { return crossOk; });
 

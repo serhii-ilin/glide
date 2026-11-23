@@ -62,8 +62,7 @@ impl Tab {
     }
 
     pub fn url(&self) -> &str {
-        let history = self.nav.history();
-        &history.entries()[history.index()]
+        self.nav.shown()
     }
 }
 
@@ -281,7 +280,7 @@ impl Tab {
         };
         let mut tab = Self::new(0, saved.url.clone());
         tab.nav =
-            NavTracker::from_history(History::from_parts(entries, saved.index), saved.url.clone());
+            NavTracker::from_history(History::from_urls(entries, saved.index), saved.url.clone());
         tab.title = saved.title.clone();
         tab.zoom.set_percent(saved.zoom_percent);
         tab.find.set_query(&saved.find_query);
@@ -406,8 +405,11 @@ impl Session {
 
 impl TabSession {
     fn from_tab(tab: &Tab, failed_urls: &HashSet<String>) -> Self {
-        let entries = tab.nav.history().entries();
-        let index = tab.nav.history().index();
+        let history_arc = tab.nav.history_arc();
+        let guard = history_arc.lock().expect("history lock");
+        let entries = guard.entry_urls();
+        let index = guard.index();
+        drop(guard);
         let keep =
             |url: &String| crate::profile::should_persist_url(url) && !failed_urls.contains(url);
         let kept: Vec<String> = entries.iter().filter(|url| keep(url)).cloned().collect();
@@ -636,8 +638,16 @@ mod tests {
         let mut tabs = manager(&["https://a/"]);
         {
             let tab = tabs.active_mut().expect("active tab");
-            tab.nav.history_mut().push("glide://bookmarks".to_string());
-            tab.nav.history_mut().push("https://failed/".to_string());
+            tab.nav
+                .history_arc()
+                .lock()
+                .expect("history lock")
+                .push_document("glide://bookmarks".to_string());
+            tab.nav
+                .history_arc()
+                .lock()
+                .expect("history lock")
+                .push_document("https://failed/".to_string());
         }
         let mut failed = std::collections::HashSet::new();
         failed.insert("https://failed/".to_string());

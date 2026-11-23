@@ -30,11 +30,12 @@ use crate::chrome::{
     command_from_url, render_menu_bar, render_tab_strip, set_address, set_loading_ui,
     sync_committed_address,
 };
+use crate::history::{HistoryRpcSnapshot, HistoryStep};
 use crate::html::{GlideHtmlProvider, HtmlPageDocument, set_js_runtime_mode};
 use crate::js::{JsHost, JsTap};
 use crate::keyboard;
 use crate::location::resolve_location;
-use crate::nav::{NavKind, ObserveEffect};
+use crate::nav::{NavKind, ObserveEffect, TraverseOutcome};
 use crate::nav_request::PageNavigationRequest;
 use crate::net::{GlideNet, LoadState};
 use crate::parse;
@@ -534,10 +535,11 @@ fn chrome_view_state(
     let url = active.map(Tab::url).unwrap_or("about:blank").to_string();
     let (can_go_back, can_go_forward, page_loading) = active
         .map(|tab| {
-            let history = tab.nav.history();
+            let history_arc = tab.nav.history_arc();
+            let guard = history_arc.lock().expect("history lock");
             (
-                history.index() > 0,
-                history.index() + 1 < history.entries().len(),
+                guard.index() > 0,
+                guard.index() + 1 < guard.entries().len(),
                 tab.loading,
             )
         })
@@ -806,6 +808,7 @@ impl Glide {
         }
     }
 
+    #[allow(dead_code)] // macOS native menu uses `menu::apply_command` directly today.
     fn apply_menu_command(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -980,15 +983,57 @@ impl Glide {
                             tab.nav.navigate(kind, None)
                         };
                         if let Some(url) = target {
-                            if let Some(tab) = self.tabs.active_mut() {
-                                reset_tab_console_for_navigation(tab, &mut self.js);
-                            }
-                            self.devtools.exit_inspect_mode(&mut doc);
-                            self.js.on_navigation(&doc, &url);
-                            load_iframe(&mut doc, &url);
-                            set_address(&mut doc, &url);
-                            if let Some(tab) = self.tabs.active_mut() {
-                                tab.address_written = tab.nav.shown().to_string();
+                            let same_document =
+                                self.tabs.active().map(|tab| tab.nav.traverse_outcome())
+                                    == Some(TraverseOutcome::SameDocument);
+                            if same_document {
+                                let step = self
+                                    .tabs
+                                    .active_mut()
+                                    .and_then(|tab| tab.nav.take_last_traverse());
+                                if let Some(HistoryStep::SameDocument {
+                                    url: step_url,
+                                    state,
+                                    hash_changed,
+                                }) = step
+                                {
+                                    let snap = HistoryRpcSnapshot {
+                                        index: self
+                                            .tabs
+                                            .active()
+                                            .and_then(|t| {
+                                                t.nav.history_arc().lock().ok().map(|h| h.index())
+                                            })
+                                            .unwrap_or(0),
+                                        length: self
+                                            .tabs
+                                            .active()
+                                            .and_then(|t| {
+                                                t.nav.history_arc().lock().ok().map(|h| h.len())
+                                            })
+                                            .unwrap_or(1),
+                                        state,
+                                        url: step_url.clone(),
+                                        navigate: None,
+                                        hash_changed,
+                                    };
+                                    self.js.apply_history_step(&mut doc, &snap);
+                                    set_address(&mut doc, &step_url);
+                                    if let Some(tab) = self.tabs.active_mut() {
+                                        tab.address_written = step_url;
+                                    }
+                                }
+                            } else {
+                                if let Some(tab) = self.tabs.active_mut() {
+                                    reset_tab_console_for_navigation(tab, &mut self.js);
+                                }
+                                self.devtools.exit_inspect_mode(&mut doc);
+                                self.js.on_navigation(&doc, &url);
+                                load_iframe(&mut doc, &url);
+                                set_address(&mut doc, &url);
+                                if let Some(tab) = self.tabs.active_mut() {
+                                    tab.address_written = tab.nav.shown().to_string();
+                                }
                             }
                         }
                     }
@@ -1446,6 +1491,7 @@ impl Glide {
         if let Some(tab) = self.tabs.active() {
             self.js.set_console_route(tab.id, tab.console_epoch);
             self.js.set_network_route(tab.id, tab.network_epoch);
+            self.js.bind_session_history(tab.nav.history_arc());
             self.network_route.set(tab.id, tab.network_epoch);
         }
         if let Some(url) = &page_url_now {

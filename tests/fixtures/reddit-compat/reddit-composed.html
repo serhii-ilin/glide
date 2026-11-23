@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <faceplate-partial></faceplate-partial>
+  <p id="status">pending</p>
+  <script>
+    class FaceplatePartial extends HTMLElement {
+      connectedCallback() {
+        if (typeof this.getRootNode !== 'function') throw new TypeError('getRootNode missing');
+        if (!this.isConnected) throw new Error('not connected');
+        if (!document.contains(this)) throw new Error('contains failed');
+        if (!this.closest('body')) throw new Error('closest failed');
+      }
+    }
+    customElements.define('faceplate-partial', FaceplatePartial);
+    var host = document.querySelector('faceplate-partial');
+    host.append(document.createElement('span'));
+    host.replaceChildren(document.createTextNode('inner'));
+    host.toggleAttribute('data-ok', true);
+    if (!host.getAttributeNames().includes('data-ok')) throw new Error('getAttributeNames');
+    var marker = document.createElement('i');
+    marker.before('x');
+    marker.after('y');
+    document.getElementById('status').textContent = 'REDDIT-COMPOSED-OK';
+  </script>
+</body>
+</html>

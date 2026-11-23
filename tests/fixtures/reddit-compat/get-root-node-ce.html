@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <faceplate-auto-height id="shell"></faceplate-auto-height>
+  <p id="t">pending</p>
+  <script>
+    class FaceplateAutoHeight extends HTMLElement {
+      connectedCallback() {
+        var root = this.getRootNode();
+        document.getElementById('t').textContent =
+          (root === document ? 'doc' : 'other') + ':' + (this.isConnected ? 'connected' : 'detached');
+      }
+    }
+    customElements.define('faceplate-auto-height', FaceplateAutoHeight);
+  </script>
+</body>
+</html>

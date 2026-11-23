@@ -193,3 +193,18 @@ fn unmapped_bare_specifier_with_import_map_logs_hint() {
         "expected unmapped bare log: {stderr}"
     );
 }
+
+#[test]
+fn reddit_compat_composed_fixture_clean_diagnostics() {
+    let (stdout, stderr) = run_fixture("reddit-compat/reddit-composed.html", "debug");
+
+    assert!(
+        !stderr.contains("target=\"js.uncaught\""),
+        "unexpected uncaught on reddit composed fixture: {stderr}"
+    );
+    assert!(
+        stderr.contains("msg=\"page scripts settled\"") && stderr.contains("status=\"clean\""),
+        "expected clean page summary: {stderr}"
+    );
+    assert!(stdout.contains("REDDIT-COMPOSED-OK"), "dump: {stdout}");
+}

@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script type="module">
+    import { value } from './missing-module.js';
+    document.getElementById('t').textContent = 'imported ' + value;
+  </script>
+</body>
+</html>

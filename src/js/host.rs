@@ -22,6 +22,20 @@ use super::tap::JsTap;
 use super::worker::{EvalReply, JsWorker, WAKE_NONE};
 use crate::logging;
 use crate::tabs::TabId;
+use url::Url;
+
+fn script_resource_name(spec: &ScriptSpec, base_url: &str, index: usize) -> String {
+    if spec.module {
+        if let Some(src) = spec.src.as_deref() {
+            return Url::parse(src)
+                .or_else(|_| Url::parse(base_url).and_then(|b| b.join(src)))
+                .map(|u| u.to_string())
+                .unwrap_or_else(|_| base_url.to_string());
+        }
+        return format!("{base_url}#inline-module-{index}");
+    }
+    format!("script-{index}")
+}
 
 pub type JsWaker = Arc<dyn Fn() + Send + Sync>;
 
@@ -335,15 +349,17 @@ impl JsHost {
             None => return,
         };
         let specs = self.script_specs.clone();
-        let pick = |idxs: &[usize]| -> Vec<(String, Option<u64>, bool)> {
+        let base = self.base_url.clone();
+        let pick = |idxs: &[usize]| -> Vec<(String, Option<u64>, bool, String)> {
             idxs.iter()
                 .filter_map(|&i| {
-                    let spec = specs.get(i);
+                    let spec = specs.get(i)?;
                     source_body(&sources[i]).map(|body| {
                         (
                             body,
-                            spec.and_then(|s| s.element),
-                            spec.is_some_and(|s| s.module),
+                            spec.element,
+                            spec.module,
+                            script_resource_name(spec, &base, i),
                         )
                     })
                 })
@@ -363,7 +379,11 @@ impl JsHost {
                 let spec = specs.get(idx);
                 let script_id = spec.and_then(|s| s.element);
                 let module = spec.is_some_and(|s| s.module);
-                worker.run_scripts(vec![(body, script_id, module)], "async");
+                let resource = specs
+                    .get(idx)
+                    .map(|spec| script_resource_name(spec, &self.base_url, idx))
+                    .unwrap_or_else(|| format!("script-{idx}"));
+                worker.run_scripts(vec![(body, script_id, module, resource)], "async");
             }
         }
         worker.page_settled();

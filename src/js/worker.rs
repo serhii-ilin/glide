@@ -1,5 +1,7 @@
 //! V8 isolate on a dedicated thread.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::pin::pin;
 use std::sync::Arc;
@@ -13,6 +15,7 @@ use once_cell::sync::OnceCell;
 use super::bridge::{DomRequest, DomValue, FetchRequest};
 use super::diagnostics;
 use super::host::{DomRpc, HostWake};
+use super::modules::{self, ResolveError};
 use crate::logging::{self, Level};
 use url::Url;
 
@@ -22,6 +25,9 @@ static V8_INIT: OnceCell<()> = OnceCell::new();
 pub const WAKE_NONE: u64 = u64::MAX;
 
 thread_local! {
+    static MODULE_CACHE: RefCell<HashMap<String, v8::Global<v8::Module>>> = RefCell::new(HashMap::new());
+    static MODULE_RESOURCE_NAMES: RefCell<HashMap<i32, String>> = RefCell::new(HashMap::new());
+    static DOM_FETCH_REPLY: std::cell::Cell<u64> = const { std::cell::Cell::new(16_384) };
     static DOM_TX: std::cell::RefCell<Option<Sender<DomRpc>>> = const { std::cell::RefCell::new(None) };
     static DOM_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static WORKER_RETIRED: std::cell::RefCell<Option<Arc<AtomicBool>>> =
@@ -73,7 +79,7 @@ enum WorkerMessage {
     },
     RunScripts {
         /// Source, element handle, and whether this is an ES module.
-        sources: Vec<(String, Option<u64>, bool)>,
+        sources: Vec<(String, Option<u64>, bool, String)>,
         /// `classic`, `defer`, or `async`. Empty means not a parser script.
         kind: String,
     },
@@ -152,7 +158,7 @@ impl JsWorker {
         });
     }
 
-    pub fn run_scripts(&self, sources: Vec<(String, Option<u64>, bool)>, kind: &str) {
+    pub fn run_scripts(&self, sources: Vec<(String, Option<u64>, bool, String)>, kind: &str) {
         let _ = self.tx.send(WorkerMessage::RunScripts {
             sources,
             kind: kind.to_string(),
@@ -283,6 +289,8 @@ fn worker_main(state: WorkerThreadState) {
     isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 16);
     isolate.add_message_listener(v8_message_listener);
     isolate.set_promise_reject_callback(promise_reject_callback);
+    isolate.set_host_initialize_import_meta_object_callback(init_import_meta_object);
+    isolate.set_host_import_module_dynamically_callback(host_import_module_dynamically);
     let global_context = {
         v8::scope!(let hs, isolate);
         let context = v8::Context::new(hs, Default::default());
@@ -316,6 +324,7 @@ fn worker_main(state: WorkerThreadState) {
                 diagnostics::set_page_url(page_url.clone());
                 super::console_feed::set_worker_route(tab_id, page_epoch);
                 super::promise_console::clear_promise_rows();
+                clear_module_graph();
                 scripts_run = 0;
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
@@ -331,11 +340,11 @@ fn worker_main(state: WorkerThreadState) {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
-                for (i, (src, script_id, module)) in sources.into_iter().enumerate() {
+                for (src, script_id, module, resource_name) in sources.into_iter() {
                     let script_kind = if module { "module" } else { kind.as_str() };
                     let kind_s = v8::String::new(scope, script_kind).unwrap();
                     call_global_fn(scope, "__glide_set_script_kind", &[kind_s.into()]);
-                    let script_name = format!("script-{i}");
+                    let script_name = resource_name;
                     diagnostics::set_script(Some(&script_name), script_id, Some(script_kind));
                     if let Some(id) = script_id {
                         let sid = v8::String::new(scope, &id.to_string()).unwrap();
@@ -1100,8 +1109,7 @@ fn run_script_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
     }
 }
 
-/// Compile and evaluate one ES module. Modules whose graph has imports are
-/// reported as unsupported: the loader has no module resolver yet.
+/// Compile, instantiate, and evaluate one ES module (including its dependency graph).
 fn run_module_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name: &str) {
     let started = std::time::Instant::now();
     let done = Arc::new(AtomicBool::new(false));
@@ -1118,25 +1126,18 @@ fn run_module_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
             handle.terminate_execution();
         }
     });
-    let Some(code) = v8::String::new(scope, source) else {
-        logging::error(
-            "js.script",
-            "module source allocation failed",
-            &script_fields(name),
-        );
-        done.store(true, Ordering::SeqCst);
-        return;
-    };
-    let origin = script_origin_with_module(scope, name, true);
     let bytes = source.len();
-    let mut compiled = v8::script_compiler::Source::new(code, origin.as_ref());
-    let Some(module) = v8::script_compiler::compile_module(scope, &mut compiled) else {
+    let Some(module) = compile_module_source(scope, source, name) else {
         logging::error("js.script", "module compile failed", &script_fields(name));
         done.store(true, Ordering::SeqCst);
         return;
     };
+    MODULE_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert(name.to_string(), v8::Global::new(scope, module));
+    });
     if !matches!(module.instantiate_module(scope, resolve_module), Some(true)) {
-        diagnostics::record_unsupported("module-import", "<import>");
         done.store(true, Ordering::SeqCst);
         return;
     }
@@ -1155,14 +1156,231 @@ fn run_module_with_timeout(scope: &mut v8::PinScope<'_, '_>, source: &str, name:
     logging::debug("js.script", "script executed", &fields);
 }
 
-/// Module resolver. The loader does not fetch module dependencies yet, so a
-/// graph with any import fails instantiation and is reported once.
-fn resolve_module<'s>(
-    _context: v8::Local<'s, v8::Context>,
-    _specifier: v8::Local<'s, v8::String>,
-    _import_attributes: v8::Local<'s, v8::FixedArray>,
-    _referrer: v8::Local<'s, v8::Module>,
+fn clear_module_graph() {
+    MODULE_CACHE.with(|cache| cache.borrow_mut().clear());
+    MODULE_RESOURCE_NAMES.with(|names| names.borrow_mut().clear());
+}
+
+fn dom_fetch_sync(url: &str) -> Result<String, String> {
+    if worker_retired() {
+        return Err("page detached".into());
+    }
+    let (resp_tx, resp_rx) = bounded(1);
+    let reply = DOM_FETCH_REPLY.get();
+    DOM_FETCH_REPLY.set(reply.saturating_add(1));
+    let generation = DOM_GENERATION.with(|g| g.get());
+    let sent = DOM_TX.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|tx| {
+            tx.send(DomRpc {
+                generation,
+                request: DomRequest::Fetch(FetchRequest {
+                    url: url.to_string(),
+                    method: "GET".into(),
+                    headers: Vec::new(),
+                    body: String::new(),
+                    reply,
+                    initiator: crate::devtools::network::NetworkInitiator::Subresource,
+                }),
+                reply: resp_tx,
+            })
+            .is_ok()
+        })
+    });
+    if !sent {
+        return Err("dom channel closed".into());
+    }
+    request_host_wake();
+    let Ok(resp) = resp_rx.recv_timeout(Duration::from_secs(25)) else {
+        return Err("fetch timed out".into());
+    };
+    match resp.value {
+        DomValue::Json(value) => {
+            let status = value.get("status").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            if !(200..300).contains(&status) {
+                return Err(format!("HTTP {status}"));
+            }
+            value
+                .get("body")
+                .and_then(|b| b.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| "empty response body".to_string())
+        }
+        DomValue::Error(msg) => Err(msg),
+        other => Err(format!("unexpected fetch reply: {other:?}")),
+    }
+}
+
+fn register_module_resource(module: v8::Local<v8::Module>, resource_name: &str) {
+    if let Some(id) = module.script_id() {
+        MODULE_RESOURCE_NAMES.with(|names| {
+            names.borrow_mut().insert(id, resource_name.to_string());
+        });
+    }
+}
+
+fn compile_module_source<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    source: &str,
+    resource_name: &str,
 ) -> Option<v8::Local<'s, v8::Module>> {
+    let code = v8::String::new(scope, source)?;
+    let origin = script_origin_with_module(scope, resource_name, true)?;
+    let mut compiled = v8::script_compiler::Source::new(code, Some(&origin));
+    let module = v8::script_compiler::compile_module(scope, &mut compiled)?;
+    register_module_resource(module, resource_name);
+    Some(module)
+}
+
+fn module_referrer_url(referrer: v8::Local<v8::Module>) -> String {
+    referrer
+        .script_id()
+        .and_then(|id| MODULE_RESOURCE_NAMES.with(|names| names.borrow().get(&id).cloned()))
+        .or_else(|| diagnostics::current().page_url.clone())
+        .unwrap_or_default()
+}
+
+fn resolve_specifier_to_url(referrer: &str, spec: &str) -> Option<Url> {
+    match modules::resolve_specifier_from_str(referrer, spec) {
+        Ok(url) => Some(url),
+        Err(ResolveError::Bare(name)) => {
+            diagnostics::record_unsupported(
+                "module-import",
+                &format!("bare specifier {name} (import maps not supported)"),
+            );
+            None
+        }
+        Err(ResolveError::Invalid(detail)) => {
+            modules::log_module_fetch_failure(
+                diagnostics::current().page_url.as_deref(),
+                spec,
+                detail,
+            );
+            None
+        }
+    }
+}
+
+fn load_fetched_module<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    cache_key: &str,
+) -> Option<v8::Local<'s, v8::Module>> {
+    if let Some(hit) = MODULE_CACHE.with(|cache| cache.borrow().get(cache_key).cloned()) {
+        return Some(v8::Local::new(scope, hit));
+    }
+    let source = dom_fetch_sync(cache_key)
+        .map_err(|err| {
+            modules::log_module_fetch_failure(
+                diagnostics::current().page_url.as_deref(),
+                cache_key,
+                err,
+            );
+        })
+        .ok()?;
+    let module = compile_module_source(scope, &source, cache_key)?;
+    MODULE_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert(cache_key.to_string(), v8::Global::new(scope, module));
+    });
+    if !matches!(module.instantiate_module(scope, resolve_module), Some(true)) {
+        MODULE_CACHE.with(|cache| cache.borrow_mut().remove(cache_key));
+        modules::log_module_fetch_failure(
+            diagnostics::current().page_url.as_deref(),
+            cache_key,
+            "module instantiate failed".into(),
+        );
+        return None;
+    }
+    Some(module)
+}
+
+fn evaluate_module_namespace<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    module: v8::Local<'s, v8::Module>,
+) -> Option<v8::Local<'s, v8::Value>> {
+    if module.get_status() == v8::ModuleStatus::Evaluated {
+        return Some(module.get_module_namespace());
+    }
+    module.evaluate(scope)?;
+    Some(module.get_module_namespace())
+}
+
+/// Resolve and compile module dependencies for V8's module loader.
+fn resolve_module<'s>(
+    context: v8::Local<'s, v8::Context>,
+    specifier: v8::Local<'s, v8::String>,
+    _import_attributes: v8::Local<'s, v8::FixedArray>,
+    referrer: v8::Local<'s, v8::Module>,
+) -> Option<v8::Local<'s, v8::Module>> {
+    v8::callback_scope!(unsafe scope, context);
+    let spec = specifier.to_rust_string_lossy(scope);
+    let referrer_name = module_referrer_url(referrer);
+    let resolved = resolve_specifier_to_url(&referrer_name, &spec)?;
+    load_fetched_module(scope, resolved.as_ref())
+}
+
+extern "C" fn init_import_meta_object(
+    context: v8::Local<v8::Context>,
+    module: v8::Local<v8::Module>,
+    meta: v8::Local<v8::Object>,
+) {
+    v8::callback_scope!(unsafe scope, context);
+    let url = module_referrer_url(module);
+    let Some(key) = v8::String::new(scope, "url") else {
+        return;
+    };
+    let Some(val) = v8::String::new(scope, &url) else {
+        return;
+    };
+    let _ = meta.create_data_property(scope, key.into(), val.into());
+}
+
+fn host_import_module_dynamically<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _host_defined_options: v8::Local<'s, v8::Data>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
+    _import_attributes: v8::Local<'s, v8::FixedArray>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let resolver = v8::PromiseResolver::new(scope)?;
+    let spec = specifier.to_rust_string_lossy(scope);
+    let referrer = v8_value_to_string(scope, resource_name)
+        .unwrap_or_else(|| diagnostics::current().page_url.clone().unwrap_or_default());
+    let Some(resolved) = resolve_specifier_to_url(&referrer, &spec) else {
+        let msg = v8::String::new(scope, "module resolution failed").unwrap();
+        resolver.reject(scope, msg.into());
+        return Some(resolver.get_promise(scope));
+    };
+    let cache_key = resolved.to_string();
+    let Some(module) = load_fetched_module(scope, &cache_key) else {
+        let msg = v8::String::new(scope, "module load failed").unwrap();
+        resolver.reject(scope, msg.into());
+        return Some(resolver.get_promise(scope));
+    };
+    match evaluate_module_namespace(scope, module) {
+        Some(ns) => {
+            resolver.resolve(scope, ns);
+            Some(resolver.get_promise(scope))
+        }
+        None => {
+            let msg = v8::String::new(scope, "module evaluation failed").unwrap();
+            resolver.reject(scope, msg.into());
+            Some(resolver.get_promise(scope))
+        }
+    }
+}
+
+fn v8_value_to_string(
+    scope: &mut v8::PinScope<'_, '_>,
+    value: v8::Local<v8::Value>,
+) -> Option<String> {
+    if value.is_string() {
+        return Some(
+            v8::Local::<v8::String>::try_from(value)
+                .ok()?
+                .to_rust_string_lossy(scope),
+        );
+    }
     None
 }
 

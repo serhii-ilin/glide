@@ -331,12 +331,103 @@ fn external_module_script_runs() {
 }
 
 #[test]
-fn module_import_is_left_to_the_loader() {
+fn module_import_resolves_relative_dependency() {
     let rt = tokio_runtime();
     let _guard = rt.enter();
-    let text = dump_text(&fixture_url("module-import.html"), true).expect("load");
+    let text = dump_text(&fixture_url("module-import-ok.html"), true).expect("load");
+    assert!(text.contains("imported 7"), "{text}");
+}
+
+#[test]
+fn module_import_missing_dependency_leaves_page_intact() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-import-missing.html"), true).expect("load");
     assert!(text.contains("before"), "{text}");
     assert!(!text.contains("imported"), "{text}");
+}
+
+#[test]
+fn module_graph_handles_import_cycle() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-cycle.html"), true).expect("load");
+    assert!(text.contains("cycle ok"), "{text}");
+}
+
+#[test]
+fn dynamic_import_resolves_module() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-dynamic.html"), true).expect("load");
+    assert!(text.contains("dynamic ok"), "{text}");
+}
+
+#[test]
+fn import_meta_url_matches_module_resource() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let dep = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module-meta-dep.js");
+    let expected = format!("file://{}", dep.display());
+    let text = dump_text(&fixture_url("module-meta.html"), true).expect("load");
+    assert!(text.contains(&expected), "{text}");
+}
+
+#[test]
+fn bare_module_specifier_is_rejected() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("module-bare.html"), true).expect("load");
+    assert!(text.contains("before"), "{text}");
+    assert!(!text.contains("bare ran"), "{text}");
+}
+
+#[test]
+fn http_module_import_resolves() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    const MODULE: &str = "export const msg = 'http module';";
+    const PAGE: &str = r#"<!DOCTYPE html><html><body><p id="t">x</p>
+<script type="module">
+import { msg } from "./entry.js";
+document.getElementById("t").textContent = msg;
+</script></body></html>"#;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    thread::spawn(move || {
+        for _ in 0..8 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = [0u8; 4096];
+            let Ok(n) = stream.read(&mut buf) else {
+                continue;
+            };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("");
+            let (ctype, body) = if path.ends_with("entry.js") {
+                ("application/javascript", MODULE)
+            } else {
+                ("text/html", PAGE)
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/index.html");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("http module"), "{text}");
 }
 
 #[test]

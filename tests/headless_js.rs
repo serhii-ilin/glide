@@ -932,3 +932,57 @@ fn document_write_fetches_external_script_before_load() {
     assert!(text.contains("write-challenge-ok"), "{text}");
     assert!(text.contains("CHALLENGE-OK"), "{text}");
 }
+
+#[test]
+fn webpack_loadable_chunk_axios_url_init_succeeds() {
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::thread;
+    use std::time::Duration;
+
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meduza-webpack");
+    let index = fs::read_to_string(dir.join("index.html")).expect("index");
+    let app = fs::read_to_string(dir.join("app.js")).expect("app");
+    let manifest = fs::read_to_string(dir.join("manifest.js")).expect("manifest");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    thread::spawn(move || {
+        for _ in 0..16 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = [0u8; 8192];
+            let Ok(n) = stream.read(&mut buf) else {
+                continue;
+            };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("/");
+            let (ctype, body) = if path.ends_with("app.js") {
+                ("application/javascript", app.as_str())
+            } else if path.ends_with("manifest.js") {
+                ("application/javascript", manifest.as_str())
+            } else {
+                ("text/html", index.as_str())
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/");
+    let text = dump_text(&url, true).expect("load");
+    assert!(
+        text.contains("ok:http://127.0.0.1"),
+        "expected axios URL init, got: {text}"
+    );
+    assert!(!text.contains("err:"), "{text}");
+}

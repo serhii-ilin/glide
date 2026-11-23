@@ -728,8 +728,7 @@ pub fn apply_edit_action_to_doc(chrome: &mut BaseDocument, action: EditAction) -
     let text_focused = chrome
         .get_focussed_node_id()
         .is_some_and(|id| node_is_text_input(chrome, id));
-    let clipboard =
-        text_focused && apply_clipboard_shortcut(chrome, code, modifiers);
+    let clipboard = text_focused && apply_clipboard_shortcut(chrome, code, modifiers);
     #[cfg(target_os = "macos")]
     {
         return clipboard || apply_macos_chrome_keybinding(chrome, code, modifiers);

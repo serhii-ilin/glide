@@ -1009,10 +1009,31 @@ fn mutation_observer_accepts_text_and_comment_targets() {
         threw = e instanceof TypeError;
       }
       parts.push(threw ? 'type-ok' : 'type-bad');
+      var detachedText = document.createTextNode('d');
+      var detachedComment = document.createComment('c');
+      var detachedTextMo = new MutationObserver(function () {});
+      var detachedCommentMo = new MutationObserver(function () {});
+      detachedTextMo.observe(detachedText, { characterData: true });
+      detachedCommentMo.observe(detachedComment, { characterData: true });
+      detachedText.data = 'e';
+      detachedComment.nodeValue = 'f';
+      var detachedTextRec = detachedTextMo.takeRecords().filter(function (r) {
+        return r.type === 'characterData';
+      })[0];
+      var detachedCommentRec = detachedCommentMo.takeRecords().filter(function (r) {
+        return r.type === 'characterData';
+      })[0];
+      parts.push(detachedTextRec && detachedTextRec.target === detachedText
+        ? 'detached-text-ok' : 'detached-text-bad');
+      parts.push(detachedCommentRec && detachedCommentRec.target === detachedComment
+        ? 'detached-comment-ok' : 'detached-comment-bad');
       document.getElementById('t').textContent = parts.join('|');
     </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(200));
-    assert_eq!(result.final_text, "text-ok|comment-ok|type-ok");
+    assert_eq!(
+        result.final_text,
+        "text-ok|comment-ok|type-ok|detached-text-ok|detached-comment-ok"
+    );
 }
 
 #[test]

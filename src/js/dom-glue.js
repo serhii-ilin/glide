@@ -426,7 +426,12 @@
       if (!target || typeof target.nodeType !== 'number') {
         throw new TypeError('MutationObserver.observe: target must be a Node');
       }
-      this._targets.set(target, normalizeMoOptions(options));
+      const moOpts = normalizeMoOptions(options);
+      if (moOpts.characterData) {
+        const nt = target.nodeType;
+        if (nt === 3 || nt === 8 || nt === 7) installCharacterDataInstanceHook(target);
+      }
+      this._targets.set(target, moOpts);
     }
     disconnect() {
       this._targets.clear();
@@ -757,6 +762,56 @@
         return cachedRpc('computedStyle', id, prop);
       },
     });
+  }
+
+  // Domino only emits value mutations for rooted nodes. Page scripts may observe
+  // detached Text/Comment nodes (the classic microtask-queue polyfill does), so
+  // wrap the node's `_data` slot and emit for unrooted changes ourselves.
+  function installCharacterDataInstanceHook(node) {
+    if (!node || node.__glideCharDataDelivery) return;
+    const nt = node.nodeType;
+    if (nt !== 3 && nt !== 8 && nt !== 7) return;
+    if (!Object.prototype.hasOwnProperty.call(node, '_data')) return;
+    const prior = Object.getOwnPropertyDescriptor(node, '_data');
+    if (prior && prior.get) return;
+    let data = node._data;
+    Object.defineProperty(node, '_data', {
+      configurable: true,
+      enumerable: true,
+      get() { return data; },
+      set(v) {
+        if (v === null || v === undefined) v = '';
+        else v = String(v);
+        if (v === data) return;
+        data = v;
+        if (!node.rooted) {
+          const doc = pageDocument || node.ownerDocument;
+          if (doc) doc.mutateValue(node);
+        }
+      },
+    });
+    node.__glideCharDataDelivery = true;
+  }
+
+  function patchPageDocumentCharacterDataCreates(doc) {
+    if (!doc || doc.__glideCharDataCreates) return;
+    doc.__glideCharDataCreates = true;
+    for (const name of ['createTextNode', 'createComment', 'createProcessingInstruction']) {
+      const orig = doc[name];
+      if (typeof orig !== 'function') continue;
+      const wrapped = function (...args) {
+        const node = orig.apply(this, args);
+        installCharacterDataInstanceHook(node);
+        return node;
+      };
+      try {
+        Object.defineProperty(doc, name, {
+          configurable: true,
+          writable: true,
+          value: wrapped,
+        });
+      } catch (_) { /* observe-time hooks still cover detached observers */ }
+    }
   }
 
   function patchDataset(htmlProto) {
@@ -1512,6 +1567,7 @@
     assignFormOwners(pageDocument, false);
     mergeDominoWindowOntoGlobal(domWin);
     pageDocument._setMutationHandler(onMutation);
+    patchPageDocumentCharacterDataCreates(pageDocument);
     Object.defineProperty(pageDocument, 'defaultView', {
       configurable: true,
       get: () => global,

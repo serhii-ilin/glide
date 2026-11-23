@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script nomodule>
+    document.getElementById('t').textContent = 'nomodule';
+  </script>
+  <script type="module">
+    document.getElementById('t').textContent = 'module';
+  </script>
+</body>
+</html>

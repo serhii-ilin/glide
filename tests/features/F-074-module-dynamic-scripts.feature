@@ -87,3 +87,23 @@ Feature: F-074 Module and dynamic script execution
     Given a script element containing script markup set through innerHTML
     When the host element is appended
     Then the parsed script is not executed
+
+  Scenario: Classic scripts with nomodule are skipped
+    Given a nomodule classic script and a module script on the same page
+    When the page loads
+    Then only the module script runs
+
+  Scenario: Dynamic import from a classic script resolves modules
+    Given a classic script that calls import() for a relative dependency
+    When the page loads and pumps
+    Then the imported binding is available
+
+  Scenario: Two module tags with the same src evaluate once
+    Given two script elements with the same module src
+    When the page loads
+    Then the module initializer runs one time
+
+  Scenario: Dynamic import is fulfilled after timer pumps
+    Given a module that schedules a timer then calls import()
+    When the page pumps timers
+    Then statements after import() run before the dependency side effect

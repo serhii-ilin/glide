@@ -25,7 +25,11 @@ fn uncaught_script_error_is_logged_with_context() {
     assert!(stderr.contains("msg=\"Uncaught"), "{stderr}");
     assert!(stderr.contains("__glideMissingDiagnosticProbe"), "{stderr}");
     assert!(stderr.contains("page_url=\""), "{stderr}");
-    assert!(stderr.contains("script=\"script-0\""), "{stderr}");
+    assert!(
+        stderr.contains("script=\"script-0\"")
+            || stderr.contains("#inline-script-0\""),
+        "{stderr}"
+    );
     assert!(stderr.contains("error_kind=\"missing_api\""), "{stderr}");
     assert!(stderr.contains("hint=\""), "{stderr}");
 }

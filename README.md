@@ -177,7 +177,7 @@ Uncaught V8 exceptions are captured through a message listener with a stack trac
 
 Set `GLIDE_LOG=off|error|warn|info|debug` to control verbosity (default `info`). For example, `GLIDE_LOG=error cargo run --release` prints only failures.
 
-Pages can also fail quietly — a JS app that probes an API Glide does not provide takes a fallback path without ever throwing. Those cases leave their own records: `js.unsupported` names a skipped or unexecutable script (`feature="module-script"`, `dynamic-script`), `js.caps` lists the capability probes that failed on the page, and `js.page` logs script discovery plus one summary per load (`status="clean|degraded"`, error counts) and a warning when a page renders no visible text. Per-script timing is `debug`; the schema and level rules are in `AGENTS.md`.
+Pages can also fail quietly — a JS app that probes an API Glide does not provide takes a fallback path without ever throwing. Those cases leave their own records: `js.unsupported` names a skipped or unexecutable script (`feature="dynamic-script"`, `module-import`), `js.caps` lists the capability probes that failed on the page, and `js.page` logs script discovery plus one summary per load (`status="clean|degraded"`, error counts) and a warning when a page renders no visible text. Per-script timing is `debug`; the schema and level rules are in `AGENTS.md`.
 
 Before hit testing a click, Glide resolves the page layout and prunes paint entries that name a node already removed by script. If pruning is needed it logs a `dom.hit` warning; the click continues instead of panicking inside Blitz.
 

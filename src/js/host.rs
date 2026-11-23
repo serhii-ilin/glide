@@ -25,16 +25,16 @@ use crate::tabs::TabId;
 use url::Url;
 
 fn script_resource_name(spec: &ScriptSpec, base_url: &str, index: usize) -> String {
+    if let Some(src) = spec.src.as_deref() {
+        return Url::parse(src)
+            .or_else(|_| Url::parse(base_url).and_then(|b| b.join(src)))
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| base_url.to_string());
+    }
     if spec.module {
-        if let Some(src) = spec.src.as_deref() {
-            return Url::parse(src)
-                .or_else(|_| Url::parse(base_url).and_then(|b| b.join(src)))
-                .map(|u| u.to_string())
-                .unwrap_or_else(|_| base_url.to_string());
-        }
         return format!("{base_url}#inline-module-{index}");
     }
-    format!("script-{index}")
+    format!("{base_url}#inline-script-{index}")
 }
 
 pub type JsWaker = Arc<dyn Fn() + Send + Sync>;
@@ -365,6 +365,19 @@ impl JsHost {
                 })
                 .collect()
         };
+        let failed_elements = || {
+            specs
+                .iter()
+                .zip(sources.iter())
+                .filter_map(|(spec, src)| {
+                    if matches!(src, super::scripts::ScriptSource::Failed) {
+                        spec.element.map(|id| (id, false))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
         let classic_bodies = pick(&classic);
         if !classic_bodies.is_empty() {
             worker.run_scripts(classic_bodies, "classic");
@@ -385,6 +398,10 @@ impl JsHost {
                     .unwrap_or_else(|| format!("script-{idx}"));
                 worker.run_scripts(vec![(body, script_id, module, resource)], "async");
             }
+        }
+        let failed = failed_elements();
+        if !failed.is_empty() {
+            worker.notify_script_elements(failed);
         }
         worker.page_settled();
     }

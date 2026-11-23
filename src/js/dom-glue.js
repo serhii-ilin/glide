@@ -131,16 +131,19 @@
     const id = blitzId(node);
     const setCurrent = global.__glide_set_current_script;
     if (id != null && typeof setCurrent === 'function') setCurrent(String(id));
+    let ok = true;
     try {
       if (typeof global.__glide_execute_script === 'function') {
-        global.__glide_execute_script(fetched.source, kind, fetched.name);
+        const result = global.__glide_execute_script(fetched.source, kind, fetched.name);
+        ok = result !== false;
       }
     } catch (_) {
+      ok = false;
       // Compilation and runtime errors are reported by the worker.
     }
     if (id != null && typeof setCurrent === 'function') setCurrent('');
     flushMutations();
-    notifyScriptElement(node, true);
+    notifyScriptElement(node, ok);
   }
 
   function runDynamicScripts() {
@@ -1555,6 +1558,11 @@
 
   global.__glide_set_script_kind = function (kind) {
     scriptKind = kind ? String(kind) : '';
+  };
+
+  global.__glide_notify_script_element = function (id, ok) {
+    const node = blitzToNode.get(String(id));
+    if (node) notifyScriptElement(node, !!ok);
   };
 
   global.__glide_begin_task = beginTask;

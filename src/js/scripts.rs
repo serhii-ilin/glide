@@ -20,6 +20,8 @@ pub struct ScriptSpec {
     pub defer: bool,
     pub r#async: bool,
     pub module: bool,
+    /// `crossorigin` attribute value when present (module / classic external).
+    pub crossorigin: Option<String>,
     pub element: Option<u64>,
 }
 
@@ -68,15 +70,19 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
             let module = el
                 .attr(local_name!("type"))
                 .is_some_and(|kind| kind.eq_ignore_ascii_case("module"));
+            if !module && el.attr(local_name!("nomodule")).is_some() {
+                continue;
+            }
             let defer_attr = el.attr(local_name!("defer")).is_some();
             let async_attr = el.attr(local_name!("async")).is_some();
             let src = el
                 .attr(local_name!("src"))
                 .map(str::to_string)
                 .filter(|s| !s.is_empty());
+            let crossorigin = el.attr(local_name!("crossorigin")).map(str::to_string);
             // Module scripts are deferred by default (HTML Living Standard,
-            // "script"); the `async` attribute makes inline and external
-            // modules execute as they load.
+            // "prepare a script"); `async` makes them run as they load.
+            // Async module scripts may still run after `DOMContentLoaded` when fetch finishes late.
             let defer = if module {
                 true
             } else {
@@ -102,6 +108,7 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
                 defer,
                 r#async: async_attr,
                 module,
+                crossorigin,
                 element: Some(super::bridge::node_to_handle(child)),
             });
         }
@@ -165,7 +172,14 @@ pub fn resolve_sources(
                     }
                 };
             if parsed.scheme() == "http" || parsed.scheme() == "https" {
-                return match rt.block_on(crate::http::fetch_followed(Request::get(parsed))) {
+                let credentials = script_fetch_credentials(s.crossorigin.as_deref());
+                let document = Url::parse(base_url).ok();
+                return match rt.block_on(crate::http::fetch_followed_with_cookie_context(
+                    Request::get(parsed),
+                    document,
+                    crate::cookies::CookieRequestKind::Subresource,
+                    credentials,
+                )) {
                     Ok(resp) if (200..300).contains(&resp.status) => {
                         ScriptSource::External(String::from_utf8_lossy(&resp.body).into_owned())
                     }
@@ -195,6 +209,14 @@ pub fn resolve_sources(
             }
         })
         .collect()
+}
+
+fn script_fetch_credentials(crossorigin: Option<&str>) -> crate::cookies::FetchCredentials {
+    if crossorigin.is_some_and(|v| v.eq_ignore_ascii_case("use-credentials")) {
+        crate::cookies::FetchCredentials::Include
+    } else {
+        crate::cookies::FetchCredentials::SameOrigin
+    }
 }
 
 fn log_fetch_failure(base_url: &str, src: &str, detail: String, status: Option<u16>) {
@@ -264,6 +286,37 @@ mod tests {
         assert_eq!(classic, vec![3]);
         assert_eq!(defer, vec![0, 2]);
         assert_eq!(async_scripts, vec![1]);
+    }
+
+    #[test]
+    fn nomodule_classic_scripts_are_omitted() {
+        let html = r#"<!DOCTYPE html><html><body>
+            <script nomodule>window.n=1</script>
+            <script type="module">window.m=1</script>
+            <script>window.c=1</script>
+        </body></html>"#;
+        let doc = crate::parse::document_from_html(html, DocumentConfig::default(), true);
+        let scripts = collect_scripts(&doc);
+        assert_eq!(scripts.len(), 2);
+        assert!(scripts.iter().any(|s| s.module));
+        assert!(scripts.iter().any(|s| !s.module));
+        assert!(
+            !scripts
+                .iter()
+                .any(|s| s.inline.as_deref() == Some("window.n=1"))
+        );
+    }
+
+    #[test]
+    fn script_fetch_credentials_defaults_to_same_origin() {
+        assert!(matches!(
+            script_fetch_credentials(None),
+            crate::cookies::FetchCredentials::SameOrigin
+        ));
+        assert!(matches!(
+            script_fetch_credentials(Some("use-credentials")),
+            crate::cookies::FetchCredentials::Include
+        ));
     }
 
     #[test]

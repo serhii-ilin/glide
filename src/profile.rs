@@ -120,6 +120,10 @@ impl ProfileStore {
         self.inner.is_some()
     }
 
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.profile().map(Profile::dir)
+    }
+
     fn profile(&self) -> Option<&Profile> {
         self.inner.as_ref()
     }

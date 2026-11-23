@@ -221,6 +221,14 @@ fn timer_tasks_reset_document_write_state() {
 }
 
 #[test]
+fn late_settimeout_mutation_visible_in_dump() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("dom-repro/late-timer-mutation.html"), true).expect("load");
+    assert!(text.contains("LATE-300"), "{text}");
+}
+
+#[test]
 fn body_onload_fixture_runs() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

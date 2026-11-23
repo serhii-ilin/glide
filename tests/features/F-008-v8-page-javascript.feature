@@ -5,7 +5,7 @@ Feature: F-008 V8 page JavaScript lifecycle
 
   # Source / basis: HTML Living Standard (timers, script execution); DOM Standard
   # Registry: docs/features.md -> F-008
-  # Tests: js::host::tests::{stale_dom_rpc_is_rejected,current_dom_rpc_is_applied,maybe_start_without_navigation_bumps_generation,page_with_timer_reports_next_wake,page_without_timers_reports_no_wake,settimeout_zero_reports_immediate_wake,settimeout_negative_delay_reports_immediate_wake,settimeout_non_numeric_and_infinite_delays_stay_numeric,worker_wake_on_dom_rpc_without_host_pump,earlier_timer_shortens_next_wake_and_wakes_the_host}, js::integration::timers_fixture_reports_wake_and_advances_with_pump, app::tests::pump_wait_*, manual M-049, M-050
+  # Tests: js::host::tests::{stale_dom_rpc_is_rejected,current_dom_rpc_is_applied,maybe_start_without_navigation_bumps_generation,page_with_timer_reports_next_wake,page_without_timers_reports_no_wake,settimeout_zero_reports_immediate_wake,settimeout_negative_delay_reports_immediate_wake,settimeout_non_numeric_and_infinite_delays_stay_numeric,worker_wake_on_dom_rpc_without_host_pump,earlier_timer_shortens_next_wake_and_wakes_the_host}, js::integration::timers_fixture_reports_wake_and_advances_with_pump, app::tests::pump_wait_*, manual M-051, M-052
   # MCP: planned F-067 (glide_eval)
 
   Background:
@@ -13,14 +13,14 @@ Feature: F-008 V8 page JavaScript lifecycle
     And a local fixture under tests/fixtures/
 
   Scenario: timers fire while the window is idle
-  # Covered by manual M-049 and js::host::tests::page_with_timer_reports_next_wake
+  # Covered by manual M-051 and js::host::tests::page_with_timer_reports_next_wake
     Given the page tests/fixtures/timers.html is loaded in a window
     When the user does not interact with the window for at least two seconds
     Then the tick counter in the page advances without keyboard or pointer input
     And the delayed timeout line shows that the timeout fired
 
   Scenario: navigating away stops the previous page's scripts
-  # Covered by manual M-050, js::host::tests::stale_dom_rpc_is_rejected, and js::host::tests::maybe_start_without_navigation_bumps_generation
+  # Covered by manual M-052, js::host::tests::stale_dom_rpc_is_rejected, and js::host::tests::maybe_start_without_navigation_bumps_generation
     Given a page with active interval and timeout timers is loaded
     When the browser navigates to another URL (address bar, link click, or page-initiated location.assign)
     Then the previous page's worker is retired

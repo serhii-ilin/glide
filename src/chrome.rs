@@ -23,8 +23,11 @@ pub enum NavCommand {
     DevToolsDockRight,
     DevToolsTab(crate::devtools::DevToolsTab),
     DevToolsConsoleClear,
+    DevToolsNetworkClear,
+    DevToolsNetworkSelect(u64),
     DevToolsElementsSelect(u64),
     DevToolsElementsToggle(u64),
+    DevToolsInspectToggle,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -141,12 +144,17 @@ pub fn command_from_url(url: &Url) -> Option<NavCommand> {
                 .and_then(crate::devtools::DevToolsTab::parse)
                 .map(NavCommand::DevToolsTab),
             Some("devtools-console-clear") => Some(NavCommand::DevToolsConsoleClear),
+            Some("devtools-network-clear") => Some(NavCommand::DevToolsNetworkClear),
+            Some("devtools-network-select") => query_value(url, "id")
+                .and_then(|n| n.parse().ok())
+                .map(NavCommand::DevToolsNetworkSelect),
             Some("devtools-elements-select") => query_value(url, "node")
                 .and_then(|n| n.parse().ok())
                 .map(NavCommand::DevToolsElementsSelect),
             Some("devtools-elements-toggle") => query_value(url, "node")
                 .and_then(|n| n.parse().ok())
                 .map(NavCommand::DevToolsElementsToggle),
+            Some("devtools-inspect-toggle") => Some(NavCommand::DevToolsInspectToggle),
             Some("zoom-in") => Some(NavCommand::ZoomIn),
             Some("zoom-out") => Some(NavCommand::ZoomOut),
             Some("zoom-reset") => Some(NavCommand::ZoomReset),
@@ -234,6 +242,7 @@ const CLOSE_ICON: &str = "<svg class=\"icon\" width=\"10\" height=\"10\" viewBox
 const SEARCH_ICON: &str = "<svg class=\"icon\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10.5\" cy=\"10.5\" r=\"6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\"/><path d=\"M15.5 15.5 20.5 20.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\"/></svg>";
 const CHEVRON_UP_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5.5 15.5 12 9l6.5 6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
 const CHEVRON_DOWN_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5.5 8.5 12 15l6.5-6.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
+const INSPECT_ICON: &str = "<svg class=\"icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M14 14h2v2h-2zm4 0h2v2h-2zm-4 4h2v2h-2zm4 0h2v2h-2z\" fill=\"currentColor\"/></svg>";
 
 /// Render the chrome from the window's current view of tabs, menus and page.
 pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
@@ -812,6 +821,75 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
   #devtools-console-input:focus {{
     outline: none;
   }}
+  div.devtools-network-toolbar {{
+    display: flex;
+    align-items: center;
+    gap: calc(8px * var(--ui));
+    height: calc(28px * var(--ui));
+    padding: 0 calc(6px * var(--ui));
+    border-bottom: calc(1px * var(--ui)) solid var(--hairline);
+    flex: none;
+  }}
+  #devtools-network-filter {{
+    flex: 1;
+    min-width: 0;
+    height: calc(22px * var(--ui));
+    padding: 0 calc(6px * var(--ui));
+    border: calc(1px * var(--ui)) solid var(--hairline);
+    border-radius: calc(4px * var(--ui));
+    font-size: calc(11px * var(--ui));
+  }}
+  a#devtools-network-clear {{
+    height: calc(20px * var(--ui));
+    padding: 0 calc(8px * var(--ui));
+    flex: none;
+  }}
+  #devtools-network-body {{
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }}
+  #devtools-network-table-wrap {{
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    font-size: calc(11px * var(--ui));
+  }}
+  table.devtools-network-table {{
+    width: 100%;
+    border-collapse: collapse;
+  }}
+  table.devtools-network-table th,
+  table.devtools-network-table td {{
+    padding: calc(2px * var(--ui)) calc(6px * var(--ui));
+    text-align: left;
+    border-bottom: calc(1px * var(--ui)) solid var(--hairline);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: calc(160px * var(--ui));
+  }}
+  tr.devtools-network-row.selected {{
+    background: rgba(0, 122, 255, 0.12);
+  }}
+  a.devtools-network-row-link {{
+    color: inherit;
+    text-decoration: none;
+    display: block;
+  }}
+  a.devtools-network-row-link:hover {{
+    text-decoration: underline;
+  }}
+  #devtools-network-detail {{
+    flex: none;
+    max-height: 40%;
+    overflow: auto;
+    border-top: calc(1px * var(--ui)) solid var(--hairline);
+    padding: calc(4px * var(--ui));
+    font-size: calc(11px * var(--ui));
+  }}
   #devtools-pane-console {{
     display: none;
     flex-direction: column;
@@ -960,6 +1038,26 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     background: rgba(0, 122, 255, 0.12);
     z-index: 2147483646;
   }}
+  #inspect-label {{
+    position: fixed;
+    display: none;
+    pointer-events: none;
+    z-index: 2147483647;
+    padding: calc(2px * var(--ui)) calc(6px * var(--ui));
+    font-family: ui-monospace, monospace;
+    font-size: calc(11px * var(--ui));
+    color: #fff;
+    background: rgba(0, 122, 255, 0.92);
+    border-radius: calc(3px * var(--ui));
+    white-space: nowrap;
+    max-width: calc(420px * var(--ui));
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  a.devtools-inspect-toggle.active {{
+    background: var(--btn-pressed);
+    box-shadow: inset 0 0 0 calc(1px * var(--ui)) rgba(0, 122, 255, 0.45);
+  }}
   iframe#page {{
     flex: 1;
     width: 100%;
@@ -1015,6 +1113,7 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
     <div id="devtools-split"></div>
     <aside id="devtools" tabindex="-1">
       <div class="devtools-tabs">
+        <a id="devtools-inspect-toggle" class="icon-btn devtools-inspect-toggle" href="glide://devtools-inspect-toggle" title="Select an element" aria-label="Select an element">{INSPECT_ICON}</a>
         <a id="devtools-tab-console" class="devtools-tab active" href="glide://devtools-tab?tab=console">Console</a>
         <a id="devtools-tab-elements" class="devtools-tab" href="glide://devtools-tab?tab=elements">Elements</a>
         <a id="devtools-tab-network" class="devtools-tab" href="glide://devtools-tab?tab=network">Network</a>
@@ -1031,10 +1130,20 @@ pub fn chrome_document_from_state(view: &ChromeViewState) -> String {
         <div id="devtools-elements-detail"></div>
         <div id="devtools-elements-computed"></div>
       </div>
-      <div id="devtools-pane-network" class="devtools-pane"><p class="devtools-placeholder">Network log will appear here.</p></div>
+      <div id="devtools-pane-network" class="devtools-pane">
+        <div class="devtools-network-toolbar">
+          <input id="devtools-network-filter" type="text" spellcheck="false" autocomplete="off" placeholder="Filter">
+          <a id="devtools-network-clear" class="text-btn" href="glide://devtools-network-clear">Clear</a>
+        </div>
+        <div id="devtools-network-body">
+          <div id="devtools-network-table-wrap"></div>
+          <div id="devtools-network-detail"><p class="devtools-network-detail-empty">Select a request to see details</p></div>
+        </div>
+      </div>
     </aside>
   </div>
   <div id="inspect-hl"></div>
+  <div id="inspect-label"></div>
 </body>
 </html>
 "#
@@ -1610,6 +1719,24 @@ pub fn set_ui_scale(doc: &mut BaseDocument, ui: f32) {
         .set_attribute(root, qual_name!("style"), &style);
 }
 
+/// Chrome `--ui` scale factor from the root element style (defaults to `1.0`).
+pub fn chrome_ui_scale(chrome: &BaseDocument) -> f32 {
+    let root = chrome.root_element().id;
+    chrome
+        .get_node(root)
+        .and_then(|n| n.attr(local_name!("style")))
+        .and_then(|style| {
+            style.split(';').find_map(|part| {
+                let part = part.trim();
+                part.strip_prefix("--ui:")
+                    .or_else(|| part.strip_prefix("--ui :"))
+                    .and_then(|v| v.trim().parse::<f32>().ok())
+            })
+        })
+        .filter(|ui| *ui > 0.0)
+        .unwrap_or(1.0)
+}
+
 use crate::devtools::{DevToolsDock, DevToolsState, DevToolsTab};
 
 pub fn devtools_open(doc: &BaseDocument) -> bool {
@@ -1767,6 +1894,18 @@ pub fn focus_devtools_panel(doc: &mut BaseDocument) {
     if let Some(id) = doc.get_element_by_id("devtools") {
         doc.set_focus_to(id);
     }
+}
+
+pub fn set_inspect_toggle_active(doc: &mut BaseDocument, active: bool) {
+    let Some(id) = doc.get_element_by_id("devtools-inspect-toggle") else {
+        return;
+    };
+    let class = if active {
+        "icon-btn devtools-inspect-toggle active"
+    } else {
+        "icon-btn devtools-inspect-toggle"
+    };
+    doc.mutate().set_attribute(id, qual_name!("class"), class);
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2616,6 +2755,15 @@ mod tests {
     }
 
     #[test]
+    fn classifies_devtools_network_clear() {
+        let url = Url::parse("glide://devtools-network-clear").expect("url");
+        assert_eq!(
+            command_from_url(&url),
+            Some(NavCommand::DevToolsNetworkClear)
+        );
+    }
+
+    #[test]
     fn classifies_devtools_commands() {
         use crate::devtools::DevToolsTab;
 
@@ -2638,6 +2786,14 @@ mod tests {
             Some(NavCommand::DevToolsConsoleClear)
         );
         assert_eq!(
+            parse("glide://devtools-network-clear"),
+            Some(NavCommand::DevToolsNetworkClear)
+        );
+        assert_eq!(
+            parse("glide://devtools-network-select?id=3"),
+            Some(NavCommand::DevToolsNetworkSelect(3))
+        );
+        assert_eq!(
             parse("glide://devtools-elements-select?node=42"),
             Some(NavCommand::DevToolsElementsSelect(42))
         );
@@ -2646,6 +2802,10 @@ mod tests {
             Some(NavCommand::DevToolsElementsToggle(7))
         );
         assert_eq!(parse("glide://devtools-elements-toggle?node=bad"), None);
+        assert_eq!(
+            parse("glide://devtools-inspect-toggle"),
+            Some(NavCommand::DevToolsInspectToggle)
+        );
     }
 
     #[test]

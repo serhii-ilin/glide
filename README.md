@@ -36,11 +36,13 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Cmd/Ctrl+Q | Quit |
 | Cmd/Ctrl+F | Find in page |
 | F12 or Meta+Alt+I / Ctrl+Shift+I | Toggle developer tools |
+| Cmd/Ctrl+Shift+C | Open DevTools on Elements (if closed) and toggle element inspect mode |
 | Esc (focus in the DevTools panel) | Close developer tools |
 | Up / Down (Elements tree focused) | Select previous / next DOM row |
 | Left / Right (Elements tree focused) | Collapse or parent / expand node |
 | Enter (Console input focused) | Evaluate JavaScript in the active page |
 | Up / Down (Console input focused) | Previous / next entry in per-tab Console history |
+| Click a row (Network tab) | Show request URL, method, status and response headers in the detail pane (does not navigate) |
 | Enter / Cmd/Ctrl+G (find bar open) | Next match |
 | Shift+Enter / Cmd/Ctrl+Shift+G (find bar open) | Previous match |
 | Esc (in the find field) | Close find and clear selection |
@@ -49,6 +51,8 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Cmd/Ctrl+0 | Reset zoom to 100% (non-100% zoom shows a **%** label in the toolbar) |
 | Cmd/Ctrl+D | Bookmark or unbookmark the current page (toolbar star outline / filled) |
 | Space / Shift+Space / PgUp / PgDn / Home / End / arrows | Scroll the page when no text field is focused |
+
+The in-window **DevTools** panel (F12) has Console, Elements, and Network tabs. The Network tab lists completed document loads, subresources, and page `fetch` / `XHR` for the active tab (filter box, **Clear**, and per-row detail); the per-tab log clears on navigation.
 
 Text fields (address bar and in-page inputs) use normal editing shortcuts: Backspace and
 Delete, arrows, Home/End, Shift+selection, Cmd/Ctrl+C/X/V, and Cmd/Ctrl+A (select all).

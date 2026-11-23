@@ -92,6 +92,10 @@ enum WorkerMessage {
         tab_id: u64,
         page_epoch: u64,
     },
+    SetNetworkRoute {
+        tab_id: u64,
+        network_epoch: u64,
+    },
     Eval {
         source: String,
         tab_id: u64,
@@ -175,6 +179,13 @@ impl JsWorker {
         let _ = self.tx.send(WorkerMessage::DispatchBubble {
             path,
             event_type: event_type.into(),
+        });
+    }
+
+    pub fn set_network_route(&self, tab_id: u64, network_epoch: u64) {
+        let _ = self.tx.send(WorkerMessage::SetNetworkRoute {
+            tab_id,
+            network_epoch,
         });
     }
 
@@ -378,6 +389,12 @@ fn worker_main(state: WorkerThreadState) {
             }
             WorkerMessage::SetConsoleRoute { tab_id, page_epoch } => {
                 super::console_feed::set_worker_route(tab_id, page_epoch);
+            }
+            WorkerMessage::SetNetworkRoute {
+                tab_id,
+                network_epoch,
+            } => {
+                crate::network_feed::set_worker_route(tab_id, network_epoch);
             }
             WorkerMessage::Eval {
                 source,
@@ -758,6 +775,23 @@ fn map_dom_op(
                 headers,
                 body,
                 reply,
+                initiator: crate::devtools::network::NetworkInitiator::Fetch,
+            })
+        }
+        "xhr" => {
+            let url = arg_string(scope, args, 2)?;
+            let ParsedFetchOptions {
+                method,
+                headers,
+                body,
+            } = fetch_options(scope, args, 3)?;
+            DomRequest::Fetch(FetchRequest {
+                url,
+                method,
+                headers,
+                body,
+                reply,
+                initiator: crate::devtools::network::NetworkInitiator::Xhr,
             })
         }
         "listen" => {

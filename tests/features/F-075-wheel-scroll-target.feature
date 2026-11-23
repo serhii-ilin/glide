@@ -10,7 +10,7 @@ Feature: F-075 Wheel scroll targets the inner pane under the pointer
   # wheel_should_not_refresh_page_hover_when_subdoc_hover_set,
   # wheel_should_not_refresh_page_hover_while_button_held,
   # wheel_should_not_refresh_page_hover_for_non_wheel_events},
-  # manual M-051
+  # manual M-053
   # MCP: n/a (window input; headless MCP tools cannot dispatch a wheel)
 
   Background:

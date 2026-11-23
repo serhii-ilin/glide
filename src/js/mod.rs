@@ -7,6 +7,7 @@ pub mod console_feed;
 pub mod diagnostics;
 mod form_controls;
 mod host;
+pub mod import_map;
 mod modules;
 mod paint_prune;
 mod promise_console;

@@ -20,6 +20,7 @@ pub struct ScriptSpec {
     pub defer: bool,
     pub r#async: bool,
     pub module: bool,
+    pub import_map: bool,
     /// `crossorigin` attribute value when present (module / classic external).
     pub crossorigin: Option<String>,
     pub element: Option<u64>,
@@ -55,21 +56,25 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
         if let Some(el) = doc.get_node(child).and_then(|n| n.element_data())
             && el.name.local == local_name!("script")
         {
-            if let Some(kind) = el.attr(local_name!("type")).map(str::to_lowercase) {
+            let type_attr = el.attr(local_name!("type")).map(str::to_lowercase);
+            if let Some(ref kind) = type_attr {
                 if kind == "application/ld+json" || kind == "text/json" {
                     continue;
                 }
                 if kind != "text/javascript"
                     && kind != "application/javascript"
                     && kind != "module"
+                    && kind != "importmap"
                     && !kind.is_empty()
                 {
                     continue;
                 }
             }
-            let module = el
-                .attr(local_name!("type"))
-                .is_some_and(|kind| kind.eq_ignore_ascii_case("module"));
+            let import_map = type_attr.as_deref().is_some_and(|kind| kind == "importmap");
+            let module = !import_map
+                && el
+                    .attr(local_name!("type"))
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("module"));
             if !module && el.attr(local_name!("nomodule")).is_some() {
                 continue;
             }
@@ -108,6 +113,7 @@ fn walk(doc: &BaseDocument, node: NodeId, out: &mut Vec<ScriptSpec>) {
                 defer,
                 r#async: async_attr,
                 module,
+                import_map,
                 crossorigin,
                 element: Some(super::bridge::node_to_handle(child)),
             });
@@ -319,6 +325,23 @@ mod tests {
             script_fetch_credentials(Some("use-credentials")),
             crate::cookies::FetchCredentials::Include
         ));
+    }
+
+    #[test]
+    fn collects_import_map_scripts_in_document_order() {
+        let html = r#"<!DOCTYPE html><html><body>
+            <script type="importmap">{"imports":{}}</script>
+            <script type="module">import 'x'</script>
+        </body></html>"#;
+        let doc = crate::parse::document_from_html(html, DocumentConfig::default(), true);
+        let scripts = collect_scripts(&doc);
+        assert_eq!(scripts.len(), 2);
+        assert!(scripts[0].import_map);
+        assert!(!scripts[0].module);
+        assert!(scripts[1].module);
+        let (classic, defer, _async) = execution_plan(&scripts);
+        assert_eq!(classic, vec![0]);
+        assert_eq!(defer, vec![1]);
     }
 
     #[test]

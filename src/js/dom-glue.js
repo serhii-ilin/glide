@@ -1803,7 +1803,13 @@
   }
 
   function installScriptElementExtras(Script) {
-    if (!Script || !Script.prototype) return;
+    if (!Script) return;
+    if (typeof Script.supports !== 'function') {
+      Script.supports = function supports(type) {
+        return String(type).toLowerCase() === 'importmap';
+      };
+    }
+    if (!Script.prototype) return;
     if (!Object.prototype.hasOwnProperty.call(Script.prototype, 'noModule')) {
       Object.defineProperty(Script.prototype, 'noModule', {
         configurable: true,

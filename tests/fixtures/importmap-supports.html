@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">x</p>
+  <script>
+    const ok = HTMLScriptElement.supports('importmap') &&
+      !HTMLScriptElement.supports('classic');
+    document.getElementById('t').textContent = ok ? 'supports-ok' : 'supports-bad';
+  </script>
+</body>
+</html>

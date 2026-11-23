@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script type="importmap">
+  {"imports":{"app-dep":"./importmap-dep.js"}}
+  </script>
+  <script type="module">
+    import { value } from 'app-dep';
+    document.getElementById('t').textContent = 'mapped ' + value;
+  </script>
+</body>
+</html>

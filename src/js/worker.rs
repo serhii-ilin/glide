@@ -15,6 +15,7 @@ use once_cell::sync::OnceCell;
 use super::bridge::{DomRequest, DomValue, FetchRequest};
 use super::diagnostics;
 use super::host::{DomRpc, HostWake};
+use super::import_map::{self, ImportMapRegistry};
 use super::modules::{self, ResolveError};
 use crate::logging::{self, Level};
 use url::Url;
@@ -46,6 +47,8 @@ thread_local! {
     static LAST_NOW_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static WAKE_PUBLISH: std::cell::RefCell<Option<(Arc<AtomicU64>, Arc<AtomicU64>)>> =
         const { std::cell::RefCell::new(None) };
+    static PAGE_IMPORT_MAP: RefCell<ImportMapRegistry> =
+        const { RefCell::new(ImportMapRegistry::empty()) };
 }
 
 /// Reply channel for one eval request; the worker sends the preview or the error text.
@@ -68,6 +71,13 @@ pub enum WorkerCommand {
     FirePageLoad,
     PageSettled,
     NotifyScriptElements(Vec<(u64, bool)>),
+    RegisterImportMap {
+        json: String,
+        base_url: String,
+        page_url: String,
+        script_name: String,
+        element: Option<u64>,
+    },
     Pump {
         now_ms: u64,
     },
@@ -169,6 +179,23 @@ impl JsWorker {
             page_url,
             tab_id,
             page_epoch,
+        });
+    }
+
+    pub fn register_import_map(
+        &self,
+        json: String,
+        base_url: String,
+        page_url: String,
+        script_name: String,
+        element: Option<u64>,
+    ) {
+        let _ = self.tx.send(WorkerCommand::RegisterImportMap {
+            json,
+            base_url,
+            page_url,
+            script_name,
+            element,
         });
     }
 
@@ -353,6 +380,7 @@ fn worker_main(state: WorkerThreadState) {
                 super::console_feed::set_worker_route(tab_id, page_epoch);
                 super::promise_console::clear_promise_rows();
                 clear_module_graph();
+                PAGE_IMPORT_MAP.with(|map| *map.borrow_mut() = ImportMapRegistry::empty());
                 PENDING_DYNAMIC_IMPORTS.with(|p| p.borrow_mut().clear());
                 scripts_run = 0;
                 v8::scope!(let hs, isolate);
@@ -426,6 +454,22 @@ fn worker_main(state: WorkerThreadState) {
                     notify_parser_script(scope, id, ok);
                 }
                 settle_task(scope);
+            }
+            WorkerCommand::RegisterImportMap {
+                json,
+                base_url,
+                page_url,
+                script_name,
+                element,
+            } => {
+                let ok = register_import_map_command(&page_url, &script_name, &json, &base_url);
+                if let Some(id) = element {
+                    v8::scope!(let hs, isolate);
+                    let ctx = v8::Local::new(hs, &global_context);
+                    let scope = &mut v8::ContextScope::new(hs, ctx);
+                    notify_parser_script(scope, id, ok);
+                    settle_task(scope);
+                }
             }
             WorkerCommand::Pump { now_ms } => {
                 LAST_NOW_MS.with(|c| c.set(now_ms));
@@ -1366,6 +1410,40 @@ fn clear_module_graph() {
     MODULE_RESOURCE_NAMES.with(|names| names.borrow_mut().clear());
 }
 
+fn import_map_active() -> bool {
+    !PAGE_IMPORT_MAP.with(|map| map.borrow().is_empty())
+}
+
+fn register_import_map_command(
+    page_url: &str,
+    script_name: &str,
+    json: &str,
+    base_url: &str,
+) -> bool {
+    match import_map::parse_import_map_json(json, base_url) {
+        Ok(parsed) => {
+            PAGE_IMPORT_MAP.with(|registry| registry.borrow_mut().merge(parsed));
+            logging::debug(
+                "js.loader",
+                "import map registered",
+                &[
+                    ("page_url", page_url.to_string()),
+                    ("script", script_name.to_string()),
+                    (
+                        "hint",
+                        "Later module loads resolve bare specifiers through this map.".into(),
+                    ),
+                ],
+            );
+            true
+        }
+        Err(err) => {
+            import_map::log_import_map_failure(page_url, format!("{}: {}", err.kind, err.detail));
+            false
+        }
+    }
+}
+
 fn dom_fetch_sync(url: &str) -> Result<String, String> {
     if worker_retired() {
         return Err("page detached".into());
@@ -1453,13 +1531,19 @@ fn resolve_specifier_to_url(referrer: &str, spec: &str) -> Option<Url> {
     if referrer_base.is_empty() {
         return None;
     }
-    match modules::resolve_specifier_from_str(&referrer_base, spec) {
+    match PAGE_IMPORT_MAP.with(|m| {
+        let map = m.borrow();
+        let map_ref = if map.is_empty() { None } else { Some(&*map) };
+        modules::resolve_specifier_from_str(&referrer_base, spec, map_ref)
+    }) {
         Ok(url) => Some(url),
         Err(ResolveError::Bare(name)) => {
-            diagnostics::record_unsupported(
-                "module-import",
-                &format!("bare specifier {name} (import maps not supported)"),
-            );
+            let detail = if import_map_active() {
+                format!("no import map entry for bare specifier {name}")
+            } else {
+                format!("bare specifier {name} (import maps not supported)")
+            };
+            diagnostics::record_unsupported("module-import", &detail);
             None
         }
         Err(ResolveError::Invalid(detail)) => {
@@ -1558,7 +1642,7 @@ extern "C" fn init_import_meta_object(
 
 fn dynamic_import_reject_message(spec: &str) -> String {
     if modules::is_bare_specifier(spec) {
-        format!("bare specifier {spec} (import maps not supported)")
+        modules::bare_specifier_rejection_message(spec, import_map_active())
     } else {
         format!("module resolution failed for {spec}")
     }

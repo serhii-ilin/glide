@@ -932,3 +932,44 @@ fn document_write_fetches_external_script_before_load() {
     assert!(text.contains("write-challenge-ok"), "{text}");
     assert!(text.contains("CHALLENGE-OK"), "{text}");
 }
+
+#[test]
+fn import_map_resolves_bare_module_specifier() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("importmap-basic.html"), true).expect("load");
+    assert!(text.contains("mapped 88"), "{text}");
+}
+
+#[test]
+fn import_map_dynamic_import_resolves_bare_specifier() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("importmap-dynamic.html"), true).expect("load");
+    assert!(text.contains("dynamic 88"), "{text}");
+}
+
+#[test]
+fn invalid_import_map_is_ignored_and_later_map_applies() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("importmap-invalid.html"), true).expect("load");
+    assert!(text.contains("after 88"), "{text}");
+}
+
+#[test]
+fn bare_specifier_without_import_map_entry_is_rejected() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("importmap-bare-unmapped.html"), true).expect("load");
+    assert!(text.contains("before"), "{text}");
+    assert!(!text.contains("ran"), "{text}");
+}
+
+#[test]
+fn html_script_element_supports_importmap() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("importmap-supports.html"), true).expect("load");
+    assert!(text.contains("supports-ok"), "{text}");
+}

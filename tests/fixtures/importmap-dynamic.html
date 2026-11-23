@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script type="importmap">
+  {"imports":{"dyn":"./importmap-dep.js"}}
+  </script>
+  <script type="module">
+    const mod = await import('dyn');
+    document.getElementById('t').textContent = 'dynamic ' + mod.value;
+  </script>
+</body>
+</html>

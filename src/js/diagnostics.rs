@@ -412,7 +412,7 @@ fn unsupported_hint(feature: &str) -> &'static str {
         }
         "module-script" => "The module script could not be executed; check its syntax.",
         "module-import" => {
-            "A module import failed (missing URL, bare specifier, or import maps are unsupported)."
+            "A module import failed (missing URL or no matching import map entry for a bare specifier)."
         }
         "dynamic-import" => "Dynamic import() failed to load or evaluate the requested module.",
         _ => "A page feature reached the DOM bridge with no implementation; see F-032/F-036.",

@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -12,14 +12,24 @@ use once_cell::sync::OnceCell;
 
 use super::bridge::{DomRequest, DomValue, FetchRequest};
 use super::diagnostics;
-use super::host::DomRpc;
+use super::host::{DomRpc, HostWake};
 use crate::logging::{self, Level};
 use url::Url;
 
 static V8_INIT: OnceCell<()> = OnceCell::new();
 
+/// Sentinel: no pending timer or rAF work.
+pub const WAKE_NONE: u64 = u64::MAX;
+
 thread_local! {
     static DOM_TX: std::cell::RefCell<Option<Sender<DomRpc>>> = const { std::cell::RefCell::new(None) };
+    static DOM_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static WORKER_RETIRED: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+    static HOST_WAKE: std::cell::RefCell<Option<Arc<HostWake>>> = const { std::cell::RefCell::new(None) };
+    static LAST_NOW_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static WAKE_PUBLISH: std::cell::RefCell<Option<(Arc<AtomicU64>, Arc<AtomicU64>)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Reply channel for one eval request; the worker sends the preview or the error text.
@@ -27,7 +37,30 @@ pub type EvalReply = crossbeam_channel::Sender<Result<String, String>>;
 
 pub struct JsWorker {
     tx: Sender<WorkerMessage>,
+    retired: Arc<AtomicBool>,
+    worker_stopped: Arc<AtomicBool>,
+    wake_deadline_ms: Arc<AtomicU64>,
+    /// Report counter: lets tests tell "the worker has published a deadline"
+    /// apart from the initial `WAKE_NONE` state. Read only by tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    wake_epoch: Arc<AtomicU64>,
     _join: Option<thread::JoinHandle<()>>,
+}
+
+impl JsWorker {
+    pub fn wake_deadline_ms(&self) -> u64 {
+        self.wake_deadline_ms.load(Ordering::Acquire)
+    }
+
+    /// Report counter (see the field comment); tests only.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn wake_epoch(&self) -> u64 {
+        self.wake_epoch.load(Ordering::Acquire)
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.worker_stopped.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Debug)]
@@ -73,15 +106,39 @@ enum WorkerMessage {
 }
 
 impl JsWorker {
-    pub fn spawn(dom_tx: Sender<DomRpc>) -> Self {
+    pub fn spawn(dom_tx: Sender<DomRpc>, generation: u64, host_wake: Arc<HostWake>) -> Self {
         init_v8();
         let (tx, rx) = unbounded();
+        let retired = Arc::new(AtomicBool::new(false));
+        let worker_stopped = Arc::new(AtomicBool::new(false));
+        let wake_deadline_ms = Arc::new(AtomicU64::new(WAKE_NONE));
+        let wake_epoch = Arc::new(AtomicU64::new(0));
+        let retired_for_thread = Arc::clone(&retired);
+        let stopped_for_thread = Arc::clone(&worker_stopped);
+        let wake_deadline_for_thread = Arc::clone(&wake_deadline_ms);
+        let wake_epoch_for_thread = Arc::clone(&wake_epoch);
+        let host_wake_for_thread = Arc::clone(&host_wake);
         let join = thread::Builder::new()
             .name("glide-js".into())
-            .spawn(move || worker_main(dom_tx, rx))
+            .spawn(move || {
+                worker_main(WorkerThreadState {
+                    dom_tx,
+                    generation,
+                    cmd_rx: rx,
+                    retired: retired_for_thread,
+                    worker_stopped: stopped_for_thread,
+                    wake_deadline_ms: wake_deadline_for_thread,
+                    wake_epoch: wake_epoch_for_thread,
+                    host_wake: host_wake_for_thread,
+                })
+            })
             .expect("spawn js worker");
         Self {
             tx,
+            retired,
+            worker_stopped,
+            wake_deadline_ms,
+            wake_epoch,
             _join: Some(join),
         }
     }
@@ -156,6 +213,9 @@ impl JsWorker {
 
 impl Drop for JsWorker {
     fn drop(&mut self) {
+        self.retired.store(true, Ordering::SeqCst);
+        self.wake_deadline_ms.store(WAKE_NONE, Ordering::Release);
+        self.worker_stopped.store(true, Ordering::Release);
         let _ = self.tx.send(WorkerMessage::Shutdown);
         // Detach the worker; do not join from the UI thread.
         self._join = None;
@@ -170,8 +230,54 @@ fn init_v8() {
     });
 }
 
-fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
+/// Marks the worker stopped on every exit path, including a panic while running a
+/// page script, so the UI thread cannot keep re-arming a dead worker's deadline.
+struct WorkerExitGuard {
+    wake_deadline_ms: Arc<AtomicU64>,
+    worker_stopped: Arc<AtomicBool>,
+}
+
+impl Drop for WorkerExitGuard {
+    fn drop(&mut self) {
+        self.wake_deadline_ms.store(WAKE_NONE, Ordering::Release);
+        self.worker_stopped.store(true, Ordering::Release);
+    }
+}
+
+struct WorkerThreadState {
+    dom_tx: Sender<DomRpc>,
+    generation: u64,
+    cmd_rx: Receiver<WorkerMessage>,
+    retired: Arc<AtomicBool>,
+    worker_stopped: Arc<AtomicBool>,
+    wake_deadline_ms: Arc<AtomicU64>,
+    wake_epoch: Arc<AtomicU64>,
+    host_wake: Arc<HostWake>,
+}
+
+fn worker_main(state: WorkerThreadState) {
+    let WorkerThreadState {
+        dom_tx,
+        generation,
+        cmd_rx,
+        retired,
+        worker_stopped,
+        wake_deadline_ms,
+        wake_epoch,
+        host_wake,
+    } = state;
+    let _exit = WorkerExitGuard {
+        wake_deadline_ms: Arc::clone(&wake_deadline_ms),
+        worker_stopped: Arc::clone(&worker_stopped),
+    };
     DOM_TX.with(|slot| *slot.borrow_mut() = Some(dom_tx));
+    DOM_GENERATION.with(|g| g.set(generation));
+    WORKER_RETIRED.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&retired)));
+    HOST_WAKE.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&host_wake)));
+    WAKE_PUBLISH.with(|slot| {
+        *slot.borrow_mut() = Some((Arc::clone(&wake_deadline_ms), Arc::clone(&wake_epoch)));
+    });
+    LAST_NOW_MS.with(|c| c.set(0));
 
     let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
     isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 16);
@@ -195,6 +301,11 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
 
     let mut scripts_run = 0u64;
     while let Ok(msg) = cmd_rx.recv() {
+        // Messages queued before retirement still carry the old page's scripts
+        // and diagnostics; stop before running any of them.
+        if worker_retired() {
+            break;
+        }
         match msg {
             WorkerMessage::InitPage {
                 snapshot_json,
@@ -213,6 +324,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let url = v8::String::new(scope, &page_url).unwrap();
                 call_global_fn(scope, "__glide_init_page", &[snap.into(), url.into()]);
                 settle_task(scope);
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::RunScripts { sources, kind } => {
                 scripts_run = scripts_run.saturating_add(sources.len() as u64);
@@ -242,6 +354,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 }
                 let cleared = v8::String::new(scope, "").unwrap();
                 call_global_fn(scope, "__glide_set_script_kind", &[cleared.into()]);
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::FireDomContentLoaded => {
                 v8::scope!(let hs, isolate);
@@ -249,15 +362,22 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_fire_dom_content_loaded", &[]);
                 settle_task(scope);
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::PageSettled => diagnostics::log_page_summary(scripts_run),
+            WorkerMessage::PageSettled => {
+                if !worker_retired() {
+                    diagnostics::log_page_summary(scripts_run);
+                }
+            }
             WorkerMessage::Pump { now_ms } => {
+                LAST_NOW_MS.with(|c| c.set(now_ms));
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 let n = v8::Number::new(scope, now_ms as f64);
                 call_global_fn(scope, "__glide_pump_timers", &[n.into()]);
                 settle_task(scope);
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::FlushRaf => {
                 v8::scope!(let hs, isolate);
@@ -265,6 +385,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_flush_raf", &[]);
                 settle_task(scope);
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::SetConsoleRoute { tab_id, page_epoch } => {
                 super::console_feed::set_worker_route(tab_id, page_epoch);
@@ -289,6 +410,7 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 if let Some(reply) = reply {
                     let _ = reply.send(outcome);
                 }
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::DispatchBubble { path, event_type } => {
                 v8::scope!(let hs, isolate);
@@ -302,11 +424,65 @@ fn worker_main(dom_tx: Sender<DomRpc>, cmd_rx: Receiver<WorkerMessage>) {
                 let ty = v8::String::new(scope, &event_type).unwrap();
                 call_global_fn(scope, "__glide_dispatch_bubble", &[array.into(), ty.into()]);
                 settle_task(scope);
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
             WorkerMessage::Shutdown => break,
         }
     }
+    // The exit guard also covers a panic; this bump records a clean shutdown for tests.
+    wake_epoch.fetch_add(1, Ordering::Release);
     DOM_TX.with(|slot| *slot.borrow_mut() = None);
+    WORKER_RETIRED.with(|slot| *slot.borrow_mut() = None);
+    HOST_WAKE.with(|slot| *slot.borrow_mut() = None);
+    WAKE_PUBLISH.with(|slot| *slot.borrow_mut() = None);
+}
+
+fn worker_retired() -> bool {
+    WORKER_RETIRED.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    })
+}
+
+fn request_host_wake() {
+    if worker_retired() {
+        return;
+    }
+    HOST_WAKE.with(|slot| {
+        if let Some(wake) = slot.borrow().as_ref() {
+            wake.request();
+        }
+    });
+}
+
+fn publish_next_wake(
+    scope: &mut v8::PinScope<'_, '_>,
+    wake_deadline_ms: &AtomicU64,
+    wake_epoch: &AtomicU64,
+) {
+    let last_now_ms = LAST_NOW_MS.with(|c| c.get());
+    let n = v8::Number::new(scope, last_now_ms as f64);
+    let deadline = call_global_fn(scope, "__glide_next_wake", &[n.into()])
+        .and_then(|value| v8_wake_ms(scope, value))
+        .unwrap_or(WAKE_NONE);
+    let prev = wake_deadline_ms.load(Ordering::Acquire);
+    wake_deadline_ms.store(deadline, Ordering::Release);
+    wake_epoch.fetch_add(1, Ordering::Release);
+    if !worker_retired() && deadline != WAKE_NONE && (prev == WAKE_NONE || deadline < prev) {
+        request_host_wake();
+    }
+}
+
+fn v8_wake_ms(scope: &mut v8::PinScope<'_, '_>, value: v8::Local<v8::Value>) -> Option<u64> {
+    if !value.is_number() {
+        return Some(WAKE_NONE);
+    }
+    let n = value.number_value(scope)?;
+    if !n.is_finite() || n < 0.0 {
+        return Some(WAKE_NONE);
+    }
+    Some(n.ceil().max(0.0) as u64)
 }
 
 fn load_embedded_script_in_scope<'s>(
@@ -398,10 +574,17 @@ fn dom_sync_callback(
         }
     };
 
+    if worker_retired() {
+        throw_page_detached(scope);
+        return;
+    }
+
     let (resp_tx, resp_rx) = bounded(1);
+    let generation = DOM_GENERATION.with(|g| g.get());
     let sent = DOM_TX.with(|slot| {
         slot.borrow().as_ref().is_some_and(|tx| {
             tx.send(DomRpc {
+                generation,
                 request: dom_req,
                 reply: resp_tx,
             })
@@ -409,9 +592,14 @@ fn dom_sync_callback(
         })
     });
     if !sent {
-        rv.set(v8_error_object(scope, "dom channel closed"));
+        if worker_retired() {
+            throw_page_detached(scope);
+        } else {
+            rv.set(v8_error_object(scope, "dom channel closed"));
+        }
         return;
     }
+    request_host_wake();
     let Ok(resp) = resp_rx.recv_timeout(Duration::from_secs(30)) else {
         rv.set(v8_error_object(scope, "dom rpc timeout"));
         return;
@@ -424,9 +612,13 @@ fn diag_callback(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    if worker_retired() {
+        return;
+    }
     let feature = args.get(0).to_rust_string_lossy(scope);
     let detail = args.get(1).to_rust_string_lossy(scope);
     diagnostics::record_unsupported(&feature, &detail);
+    request_host_wake();
 }
 
 fn caps_callback(
@@ -434,8 +626,12 @@ fn caps_callback(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    if worker_retired() {
+        return;
+    }
     let missing = args.get(0).to_rust_string_lossy(scope);
     diagnostics::record_capabilities(&missing);
+    request_host_wake();
 }
 
 fn console_callback(
@@ -443,6 +639,9 @@ fn console_callback(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    if worker_retired() {
+        return;
+    }
     let level_str = args.get(0).to_rust_string_lossy(scope);
     let msg = args.get(1).to_rust_string_lossy(scope);
     let level = match level_str.as_str() {
@@ -454,6 +653,7 @@ fn console_callback(
     diagnostics::record_console(level, &msg);
     let caller_line = console_caller_line(scope);
     super::console_feed::publish_console_level(&level_str, &msg, caller_line);
+    request_host_wake();
 }
 
 fn console_caller_line(scope: &mut v8::PinScope<'_, '_>) -> Option<usize> {
@@ -474,6 +674,9 @@ fn console_caller_line(scope: &mut v8::PinScope<'_, '_>) -> Option<usize> {
 
 extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {
     use v8::PromiseRejectEvent;
+    if worker_retired() {
+        return;
+    }
     v8::callback_scope!(unsafe scope, &msg);
     let promise = msg.get_promise();
     match msg.get_event() {
@@ -498,6 +701,7 @@ extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {
                 &format!("Unhandled rejection: {message}"),
                 row_id,
             );
+            request_host_wake();
         }
         PromiseRejectEvent::PromiseHandlerAddedAfterReject => {
             v8::scope!(let scope, scope);
@@ -514,6 +718,9 @@ extern "C" fn v8_message_listener(
     message: v8::Local<v8::Message>,
     _exception: v8::Local<v8::Value>,
 ) {
+    if worker_retired() {
+        return;
+    }
     let scope = pin!(unsafe { v8::CallbackScope::new(message) });
     let scope = &mut scope.init();
     v8::scope!(let scope, scope);
@@ -530,6 +737,7 @@ extern "C" fn v8_message_listener(
 
     diagnostics::record_uncaught(&text, line, resource.as_deref(), &stack);
     super::console_feed::publish_uncaught(&text, line, resource.as_deref());
+    request_host_wake();
 }
 
 fn stack_trace_text(scope: &v8::PinScope<'_, '_>, trace: &v8::Local<v8::StackTrace>) -> String {
@@ -840,6 +1048,13 @@ fn url_parse_callback(
     rv.set(obj.into());
 }
 
+fn throw_page_detached(scope: &mut v8::PinScope<'_, '_>) {
+    let msg = v8::String::new(scope, "page detached")
+        .expect("V8 string allocation cannot fail for a static ASCII message");
+    let err = v8::Exception::error(scope, msg);
+    scope.throw_exception(err);
+}
+
 fn v8_error_object<'s>(scope: &mut v8::PinScope<'s, '_>, msg: &str) -> v8::Local<'s, v8::Value> {
     let obj = v8::Object::new(scope);
     let key = v8::String::new(scope, "__error").unwrap();
@@ -956,6 +1171,10 @@ fn execute_script_callback(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
+    if worker_retired() {
+        rv.set(v8::Boolean::new(scope, false).into());
+        return;
+    }
     let source = args.get(0).to_rust_string_lossy(scope);
     let kind = args.get(1).to_rust_string_lossy(scope);
     let name = args.get(2).to_rust_string_lossy(scope);
@@ -972,6 +1191,11 @@ fn execute_script_callback(
     diagnostics::clear_script();
     let cleared = v8::String::new(scope, "").unwrap();
     call_global_fn(scope, "__glide_set_script_kind", &[cleared.into()]);
+    WAKE_PUBLISH.with(|slot| {
+        if let Some((deadline, epoch)) = slot.borrow().as_ref() {
+            publish_next_wake(scope, deadline, epoch);
+        }
+    });
     rv.set(v8::Boolean::new(scope, true).into());
 }
 

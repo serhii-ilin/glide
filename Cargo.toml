@@ -69,6 +69,10 @@ base64 = "0.23.1"
 # Fills getRandomValues buffers with OS-backed entropy on the UI thread.
 getrandom = "0.4"
 
+[dev-dependencies]
+# Constructs Blitz pointer events in wheel/hover tests (same crate blitz-traits uses).
+atomic_refcell = "0.1.14"
+
 [profile.release]
 lto = false
 codegen-units = 8

@@ -36,7 +36,7 @@ pub fn apply_request(doc: &mut BaseDocument, base_url: &str, req: DomRequest) ->
     }
 }
 
-fn reply_id(req: &DomRequest) -> u64 {
+pub(crate) fn reply_id(req: &DomRequest) -> u64 {
     match req {
         DomRequest::Fetch(req) => req.reply,
         DomRequest::SnapshotTree { reply }

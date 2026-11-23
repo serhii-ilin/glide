@@ -19,11 +19,42 @@ use super::scripts::{
 };
 use super::snapshot;
 use super::tap::JsTap;
-use super::worker::{EvalReply, JsWorker};
+use super::worker::{EvalReply, JsWorker, WAKE_NONE};
 use crate::logging;
 use crate::tabs::TabId;
 
+pub type JsWaker = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Clone)]
+pub(crate) struct HostWake {
+    waker: Arc<std::sync::Mutex<Option<JsWaker>>>,
+    requested: Arc<AtomicBool>,
+}
+
+impl HostWake {
+    fn new() -> Self {
+        Self {
+            waker: Arc::new(std::sync::Mutex::new(None)),
+            requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn request(&self) {
+        // Coalesce: `sync` clears the flag, so only the first request per batch
+        // has to cross the thread boundary.
+        if self.requested.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Ok(guard) = self.waker.lock()
+            && let Some(waker) = guard.as_ref()
+        {
+            waker();
+        }
+    }
+}
+
 pub struct DomRpc {
+    pub generation: u64,
     pub request: DomRequest,
     pub reply: Sender<DomResponse>,
 }
@@ -31,7 +62,9 @@ pub struct DomRpc {
 pub struct JsHost {
     enabled: Arc<AtomicBool>,
     worker: Option<JsWorker>,
+    dom_tx: Sender<DomRpc>,
     dom_rx: Receiver<DomRpc>,
+    dom_generation: u64,
     tap: JsTap,
     base_url: String,
     net: Option<Arc<Provider>>,
@@ -43,14 +76,18 @@ pub struct JsHost {
     script_specs: Vec<ScriptSpec>,
     console_tab_id: TabId,
     console_page_epoch: u64,
+    host_wake: Arc<HostWake>,
 }
 
 impl JsHost {
     pub fn new(enabled: bool, tap: JsTap, net: Option<Arc<Provider>>) -> Self {
+        let (dom_tx, dom_rx) = unbounded();
         Self {
             enabled: Arc::new(AtomicBool::new(enabled)),
             worker: None,
-            dom_rx: unbounded().1,
+            dom_tx,
+            dom_rx,
+            dom_generation: 1,
             tap,
             base_url: String::new(),
             net,
@@ -62,7 +99,18 @@ impl JsHost {
             script_specs: Vec::new(),
             console_tab_id: 1,
             console_page_epoch: 1,
+            host_wake: Arc::new(HostWake::new()),
         }
+    }
+
+    pub fn set_waker(&self, waker: JsWaker) {
+        if let Ok(mut slot) = self.host_wake.waker.lock() {
+            *slot = Some(waker);
+        }
+    }
+
+    pub fn take_wake_request(&self) -> bool {
+        self.host_wake.requested.swap(false, Ordering::SeqCst)
     }
 
     pub fn set_console_route(&mut self, tab_id: TabId, page_epoch: u64) {
@@ -88,6 +136,27 @@ impl JsHost {
 
     pub fn page_js_active(&self) -> bool {
         self.is_enabled() && self.worker.is_some()
+    }
+
+    /// When the page has a pending timer or animation frame, time until the earliest deadline.
+    pub fn next_wake_in(&self) -> Option<Duration> {
+        if !self.page_js_active() {
+            return None;
+        }
+        let worker = self.worker.as_ref()?;
+        if worker.is_stopped() {
+            return None;
+        }
+        let deadline = worker.wake_deadline_ms();
+        if deadline == WAKE_NONE {
+            return None;
+        }
+        let now = self.now_ms();
+        // A page can schedule a very distant deadline; cap what we hand to winit
+        // (the loop re-arms on every event, so a later wake is harmless).
+        const MAX_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
+        let ms = deadline.saturating_sub(now).min(MAX_WAIT_MS);
+        Some(Duration::from_millis(ms).max(Duration::from_millis(1)))
     }
 
     pub fn submit_console_eval(&self, source: &str) -> Result<(), String> {
@@ -167,11 +236,18 @@ impl JsHost {
     }
 
     fn reset_page_js_state(&mut self) {
+        self.dom_generation = self.dom_generation.wrapping_add(1);
         self.worker = None;
         self.started_for = None;
         self.pending_sources = None;
         self.pending_indices = None;
         self.script_specs.clear();
+        // Answer anything the retired worker already queued so it is not left
+        // blocked in `recv_timeout`; the next drain would reject it anyway.
+        while let Ok(rpc) = self.dom_rx.try_recv() {
+            let reply = super::apply::reply_id(&rpc.request);
+            let _ = rpc.reply.send(DomResponse::err(reply, "page detached"));
+        }
     }
 
     fn mark_stale_page(&mut self, chrome: &BaseDocument) {
@@ -200,6 +276,9 @@ impl JsHost {
         ) {
             return;
         }
+        if self.worker.is_some() {
+            self.reset_page_js_state();
+        }
         let specs = with_page_subdoc(chrome, |doc| collect_scripts_for_page(doc, Some(page_url)))
             .unwrap_or_else(|| collect_scripts_for_page(chrome, Some(page_url)));
         log_discovered_scripts(page_url, &specs);
@@ -209,9 +288,11 @@ impl JsHost {
         self.stale_page_doc_id = None;
         self.clock = Instant::now();
 
-        let (dom_tx, dom_rx) = unbounded();
-        self.dom_rx = dom_rx;
-        let worker = JsWorker::spawn(dom_tx);
+        let worker = JsWorker::spawn(
+            self.dom_tx.clone(),
+            self.dom_generation,
+            Arc::clone(&self.host_wake),
+        );
         let snapshot_json = serde_json::to_string(
             &with_page_subdoc(chrome, snapshot::snapshot_tree)
                 .unwrap_or_else(|| snapshot::snapshot_tree(chrome)),
@@ -327,8 +408,7 @@ impl JsHost {
             self.try_finish_pending_sources();
             match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(rpc) => {
-                    self.handle_dom_rpc(chrome, rpc);
-                    redraw = true;
+                    redraw |= self.handle_dom_rpc(chrome, rpc);
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if let Some(worker) = &self.worker {
@@ -358,8 +438,7 @@ impl JsHost {
             self.try_finish_pending_sources();
             match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(rpc) => {
-                    self.handle_dom_rpc(chrome, rpc);
-                    redraw = true;
+                    redraw |= self.handle_dom_rpc(chrome, rpc);
                     last_rpc = Instant::now();
                 }
                 Err(RecvTimeoutError::Timeout) => {
@@ -379,8 +458,7 @@ impl JsHost {
     fn drain_dom_rpc(&mut self, chrome: &mut BaseDocument) -> bool {
         let mut redraw = false;
         while let Ok(rpc) = self.dom_rx.try_recv() {
-            self.handle_dom_rpc(chrome, rpc);
-            redraw = true;
+            redraw |= self.handle_dom_rpc(chrome, rpc);
         }
         redraw
     }
@@ -395,14 +473,21 @@ impl JsHost {
 
     /// Dispatch one DOM request. `Fetch` goes to tokio and replies later, so a
     /// slow page request never stops the UI thread (or the winit event loop).
-    fn handle_dom_rpc(&self, chrome: &mut BaseDocument, rpc: DomRpc) {
+    fn handle_dom_rpc(&self, chrome: &mut BaseDocument, rpc: DomRpc) -> bool {
+        if rpc.generation != self.dom_generation {
+            let reply_id = super::apply::reply_id(&rpc.request);
+            let _ = rpc.reply.send(DomResponse::err(reply_id, "page detached"));
+            return false;
+        }
         match rpc.request {
             DomRequest::Fetch(fetch) => {
                 super::apply::start_fetch(self.net.clone(), &self.base_url, fetch, rpc.reply);
+                false
             }
             request => {
                 let response = self.apply_dom_rpc(chrome, request);
                 let _ = rpc.reply.send(response);
+                true
             }
         }
     }
@@ -560,6 +645,11 @@ fn with_page_subdoc<R>(chrome: &BaseDocument, f: impl FnOnce(&BaseDocument) -> R
     }
 }
 
+/// True when the page iframe has a loaded subdocument but Blitz has no hover there yet.
+pub(crate) fn page_subdoc_hover_is_none(chrome: &BaseDocument) -> bool {
+    with_page_subdoc(chrome, |doc| doc.get_hover_node_id().is_none()).unwrap_or(false)
+}
+
 fn page_subdoc_mut(chrome: &mut BaseDocument) -> Option<&mut BaseDocument> {
     let page_id = chrome.get_element_by_id("page")?;
     let sub = chrome.get_node_mut(page_id)?.subdoc_mut()?;
@@ -573,7 +663,34 @@ fn page_subdoc_mut(chrome: &mut BaseDocument) -> Option<&mut BaseDocument> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
     use super::*;
+
+    fn worker_test_lock() -> (
+        std::sync::MutexGuard<'static, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        static WORKER: Mutex<()> = Mutex::new(());
+        (
+            WORKER
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            crate::js::console_feed::test_console_serial_lock(),
+        )
+    }
+
+    fn poll_until(polls: usize, sleep: Duration, mut done: impl FnMut() -> bool) -> bool {
+        for _ in 0..polls {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(sleep);
+        }
+        false
+    }
+    use crate::js::bridge::DomValue;
     use blitz_dom::DocumentConfig;
 
     use crate::parse;
@@ -678,6 +795,7 @@ mod tests {
 
     #[test]
     fn restart_requires_new_subdocument_after_reload() {
+        let (_worker, _console) = worker_test_lock();
         let doc_a = page_doc(true);
         let doc_b = page_doc(true);
         assert_ne!(doc_a.id(), doc_b.id());
@@ -701,7 +819,330 @@ mod tests {
     }
 
     #[test]
+    fn maybe_start_without_navigation_bumps_generation() {
+        let (_worker, _console) = worker_test_lock();
+        let doc_a = page_doc(true);
+        let mut doc_b = page_doc(true);
+        let url_a = "https://example.test/a";
+        let url_b = "https://example.test/b";
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc_a, url_a, handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || host.worker.is_some()),
+            "worker should start for document A"
+        );
+        let stale_generation = host.dom_generation;
+
+        host.maybe_start_page(&doc_b, url_b, handle);
+        assert!(
+            host.dom_generation > stale_generation,
+            "expected a new generation for document B"
+        );
+
+        let (reply_tx, reply_rx) = bounded(1);
+        let rpc = DomRpc {
+            generation: stale_generation,
+            request: DomRequest::Navigate {
+                url: "https://stale.example/".into(),
+                reply: 1,
+            },
+            reply: reply_tx,
+        };
+        assert!(host.dom_tx.send(rpc).is_ok());
+        assert!(!host.drain_dom_rpc(&mut doc_b));
+        let response = reply_rx.try_recv().expect("stale rpc reply");
+        assert!(matches!(response.value, DomValue::Error(_)));
+    }
+
+    #[test]
+    fn stale_dom_rpc_is_rejected() {
+        let (_worker, _console) = worker_test_lock();
+        let mut doc = page_doc(true);
+        let url = "https://example.test/page";
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, url, handle);
+        let stale_generation = host.dom_generation;
+        host.on_navigation(&doc, url);
+        assert!(host.worker.is_none());
+
+        let (reply_tx, reply_rx) = bounded(1);
+        let rpc = DomRpc {
+            generation: stale_generation,
+            request: DomRequest::Navigate {
+                url: "https://stale.example/".into(),
+                reply: 1,
+            },
+            reply: reply_tx,
+        };
+        assert!(host.dom_tx.send(rpc).is_ok());
+        assert!(!host.drain_dom_rpc(&mut doc));
+        let response = reply_rx.try_recv().expect("stale rpc reply");
+        assert!(matches!(response.value, DomValue::Error(_)));
+    }
+
+    #[test]
+    fn current_dom_rpc_is_applied() {
+        let (_worker, _console) = worker_test_lock();
+        let mut doc = page_doc(true);
+        let url = "https://example.test/page";
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, url, handle);
+        host.pump(&mut doc, Instant::now());
+
+        let (reply_tx, reply_rx) = bounded(1);
+        let rpc = DomRpc {
+            generation: host.dom_generation,
+            request: DomRequest::Navigate {
+                url: "https://current.example/".into(),
+                reply: 1,
+            },
+            reply: reply_tx,
+        };
+        assert!(host.dom_tx.send(rpc).is_ok());
+        host.drain_dom_rpc(&mut doc);
+        let response = reply_rx.try_recv().expect("current rpc reply");
+        assert!(!matches!(response.value, DomValue::Error(_)));
+    }
+
+    #[test]
+    fn page_without_timers_reports_no_wake() {
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<p id=\"t\">ok</p><script>document.getElementById('t').textContent='still';</script>",
+            "</body></html>"
+        );
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        let mut settled = false;
+        for _ in 0..100 {
+            host.pump(&mut doc, Instant::now());
+            if host
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.wake_epoch() > 0 && w.wake_deadline_ms() == WAKE_NONE)
+            {
+                settled = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(settled, "settled page should report no pending wake");
+        assert!(host.next_wake_in().is_none());
+    }
+
+    #[test]
+    fn page_with_timer_reports_next_wake() {
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<script>setTimeout(function(){}, 500);</script>",
+            "</body></html>"
+        );
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        let mut saw_timer = false;
+        for _ in 0..100 {
+            host.pump(&mut doc, Instant::now());
+            if host
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.wake_deadline_ms() != WAKE_NONE)
+                && host.next_wake_in().is_some()
+            {
+                saw_timer = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(saw_timer, "500ms timer should publish a pending wake");
+        let wake = host.next_wake_in().expect("pending timer");
+        assert!(wake >= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn settimeout_zero_reports_immediate_wake() {
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<script>setTimeout(function(){}, 0);</script>",
+            "</body></html>"
+        );
+        let doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || {
+                host.worker
+                    .as_ref()
+                    .is_some_and(|w| w.wake_deadline_ms() == 0)
+            }),
+            "setTimeout(0) should publish a zero-ms wake deadline"
+        );
+        assert!(host.next_wake_in().is_some());
+    }
+
+    #[test]
+    fn settimeout_negative_delay_reports_immediate_wake() {
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            // The later 5 s timer must not mask the overdue one.
+            "<script>setTimeout(function(){}, -5); setTimeout(function(){}, 5000);</script>",
+            "</body></html>"
+        );
+        let doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || {
+                host.worker
+                    .as_ref()
+                    .is_some_and(|w| w.wake_deadline_ms() == 0)
+            }),
+            "a negative setTimeout delay is due now, not idle"
+        );
+        assert!(host.next_wake_in().is_some());
+    }
+
+    #[test]
+    fn settimeout_non_numeric_and_infinite_delays_stay_numeric() {
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><body>",
+            "<script>",
+            "setTimeout(function(){}, '100');",
+            "setTimeout(function(){}, Infinity);",
+            "setTimeout(function(){}, 5000);",
+            "</script></body></html>"
+        );
+        let doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || {
+                host.worker.as_ref().is_some_and(|w| {
+                    let deadline = w.wake_deadline_ms();
+                    deadline > 0 && deadline <= 1000
+                })
+            }),
+            "the 100 ms timer should be the earliest wake"
+        );
+    }
+
+    #[test]
+    fn worker_wake_on_dom_rpc_without_host_pump() {
+        use std::sync::atomic::Ordering;
+
+        let (_worker, _console) = worker_test_lock();
+        let html = concat!(
+            "<!DOCTYPE html><html><head><title>t</title></head><body>",
+            "<p id=\"t\">idle</p></body></html>"
+        );
+        let doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        let wake_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let wake_probe = Arc::clone(&wake_count);
+        host.set_waker(Arc::new(move || {
+            wake_probe.fetch_add(1, Ordering::SeqCst);
+        }));
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || host.worker.is_some()),
+            "worker should start"
+        );
+        host.submit_eval("document.title = 'wake';", None)
+            .expect("eval");
+        assert!(
+            poll_until(100, Duration::from_millis(2), || {
+                wake_count.load(Ordering::SeqCst) > 0
+            }),
+            "expected the injected waker to fire for a queued DOM RPC"
+        );
+    }
+
+    #[test]
+    fn earlier_timer_shortens_next_wake_and_wakes_the_host() {
+        use std::sync::atomic::Ordering;
+
+        let (_worker, _console) = worker_test_lock();
+        let html = "<!DOCTYPE html><html><body><p id=\"t\">x</p></body></html>";
+        let mut doc = parse::document_from_html(html, DocumentConfig::default(), true);
+        let rt = rt();
+        let handle = rt.handle();
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, None);
+        host.maybe_start_page(&doc, "https://example.test/", handle);
+        assert!(
+            poll_until(100, Duration::from_millis(2), || host.worker.is_some()),
+            "worker should start"
+        );
+        host.pump(&mut doc, Instant::now());
+        host.submit_eval("setTimeout(function(){}, 5000);", None)
+            .expect("eval");
+        assert!(
+            poll_until(200, Duration::from_millis(2), || {
+                host.next_wake_in()
+                    .is_some_and(|w| w > Duration::from_secs(1))
+            }),
+            "expected the long timer to be pending"
+        );
+
+        // Clear the coalesced request from the long timer, then prove a shorter
+        // timer wakes the host through the injected waker.
+        let _ = host.take_wake_request();
+        let wake_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let wake_probe = Arc::clone(&wake_count);
+        host.set_waker(Arc::new(move || {
+            wake_probe.fetch_add(1, Ordering::SeqCst);
+        }));
+        host.submit_eval("setTimeout(function(){}, 80);", None)
+            .expect("eval");
+        assert!(
+            poll_until(200, Duration::from_millis(2), || {
+                wake_count.load(Ordering::SeqCst) > 0
+            }),
+            "an earlier timer must wake the host"
+        );
+        assert!(
+            host.next_wake_in()
+                .is_some_and(|w| w < Duration::from_secs(2)),
+            "expected the shorter timer to publish an earlier wake"
+        );
+    }
+
+    #[test]
     fn set_enabled_off_then_on_restarts_for_new_document() {
+        let (_worker, _console) = worker_test_lock();
         let doc_a = page_doc(true);
         let doc_b = page_doc(true);
         let url = "https://example.test/page";
@@ -725,5 +1166,155 @@ mod tests {
 
         host.maybe_start_page(&doc_b, url, handle);
         assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
+    }
+
+    use atomic_refcell::AtomicRefCell;
+    use blitz_dom::Document;
+    use blitz_traits::events::{
+        BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
+        MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
+    };
+    use blitz_traits::shell::{ColorScheme, Viewport};
+    use keyboard_types::Modifiers;
+
+    use crate::html::HtmlPageDocument;
+
+    const CHROME_SHELL: &str = r#"<!DOCTYPE html><html><body style="margin:0;padding:0"><iframe id="page" style="display:block;width:800px;height:600px;border:0"></iframe></body></html>"#;
+
+    fn viewport_doc_config() -> DocumentConfig {
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        }
+    }
+
+    fn chrome_with_scroll_pane() -> BaseDocument {
+        const PAGE: &str = include_str!("../../tests/fixtures/scroll-pane.html");
+        let mut chrome = parse::document_from_html(CHROME_SHELL, viewport_doc_config(), false);
+        let mut page = parse::document_from_html(PAGE, viewport_doc_config(), false);
+        page.resolve(0.0);
+        let page_id = chrome.get_element_by_id("page").expect("page iframe");
+        chrome.set_sub_document(page_id, Box::new(HtmlPageDocument(page)));
+        chrome.resolve(0.0);
+        chrome
+    }
+
+    fn pane_scroll_y(chrome: &BaseDocument) -> f64 {
+        with_page_subdoc(chrome, |page| {
+            let pane = page.get_element_by_id("pane").expect("pane");
+            page.get_node(pane).expect("pane node").scroll_offset().y
+        })
+        .unwrap_or(0.0)
+    }
+
+    fn pane_center(page: &BaseDocument) -> (f32, f32) {
+        let pane = page.get_element_by_id("pane").expect("pane");
+        let node = page.get_node(pane).expect("pane node");
+        let layout = node.final_layout();
+        let pos = node.absolute_position(0.0, 0.0);
+        (
+            pos.x + layout.size.width / 2.0,
+            pos.y + layout.size.height / 2.0,
+        )
+    }
+
+    fn wheel_lines(chrome: &mut BaseDocument, x: f32, y: f32, lines_y: f64) {
+        let coords = PointerCoords {
+            page_x: x,
+            page_y: y,
+            screen_x: x,
+            screen_y: y,
+            client_x: x,
+            client_y: y,
+        };
+        let event = BlitzWheelEvent {
+            delta: BlitzWheelDelta::Lines(0., lines_y),
+            coords,
+            buttons: MouseEventButtons::None,
+            mods: Modifiers::empty(),
+            element: Point { x: 0., y: 0. },
+        };
+        chrome.handle_ui_event(UiEvent::Wheel(event));
+        chrome.resolve(0.0);
+    }
+
+    #[test]
+    fn page_subdoc_hover_is_none_without_page_iframe() {
+        let mut doc = page_doc(true);
+        doc.resolve(0.0);
+        assert!(!page_subdoc_hover_is_none(&doc));
+    }
+
+    #[test]
+    fn page_subdoc_hover_is_none_when_subdoc_has_no_hover() {
+        let chrome = chrome_with_scroll_pane();
+        assert!(page_subdoc_hover_is_none(&chrome));
+    }
+
+    #[test]
+    fn page_subdoc_hover_is_none_false_after_set_hover() {
+        let mut chrome = chrome_with_scroll_pane();
+        let Some(page) = page_subdoc_mut(&mut chrome) else {
+            panic!("page subdoc");
+        };
+        page.set_hover_to(80.0, 80.0);
+        page.resolve(0.0);
+        assert!(!page_subdoc_hover_is_none(&chrome));
+    }
+
+    fn pointer_event(x: f32, y: f32) -> BlitzPointerEvent {
+        BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: PointerCoords {
+                page_x: x,
+                page_y: y,
+                screen_x: x,
+                screen_y: y,
+                client_x: x,
+                client_y: y,
+            },
+            button: MouseEventButton::Main,
+            buttons: MouseEventButtons::None,
+            mods: Modifiers::empty(),
+            details: PointerDetails::default(),
+            element: Point { x, y },
+            active_pointers: Arc::new(AtomicRefCell::new(Vec::new())),
+        }
+    }
+
+    #[test]
+    fn wheel_scrolls_inner_pane_after_hover_refresh() {
+        let mut chrome = chrome_with_scroll_pane();
+        let (pane_x, pane_y) = with_page_subdoc(&chrome, pane_center).expect("page subdoc");
+        assert!(page_subdoc_hover_is_none(&chrome));
+
+        // Without a subdocument hover the wheel falls back to the page, not the pane.
+        wheel_lines(&mut chrome, pane_x, pane_y, -3.0);
+        assert_eq!(
+            pane_scroll_y(&chrome),
+            0.0,
+            "the pane must not scroll while the subdocument has no hover"
+        );
+
+        // This is the UiEvent the window produces from the synthetic PointerMoved.
+        chrome.handle_ui_event(UiEvent::PointerMove(pointer_event(pane_x, pane_y)));
+        chrome.resolve(0.0);
+        assert!(
+            !page_subdoc_hover_is_none(&chrome),
+            "a forwarded pointer move must set the subdocument hover"
+        );
+
+        wheel_lines(&mut chrome, pane_x, pane_y, -3.0);
+        assert!(
+            pane_scroll_y(&chrome) > 0.0,
+            "wheel should scroll the inner pane after the hover refresh"
+        );
+        let page_scroll =
+            with_page_subdoc(&chrome, |page| page.viewport_scroll().y).unwrap_or(-1.0);
+        assert_eq!(
+            page_scroll, 0.0,
+            "the page viewport must not scroll while the pane absorbs the wheel"
+        );
     }
 }

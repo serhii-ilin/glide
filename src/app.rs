@@ -2,17 +2,18 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use blitz_dom::{BaseDocument, Document, DocumentConfig, qual_name};
 use blitz_net::Provider;
 use blitz_shell::{
     BlitzApplication, BlitzShellEvent, BlitzShellProxy, WindowConfig, create_default_event_loop,
 };
+use blitz_traits::events::MouseEventButtons;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use winit::application::ApplicationHandler;
-use winit::event::{ButtonSource, ElementState, MouseButton, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event::{ButtonSource, ElementState, MouseButton, PointerSource, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::devtools::console::apply_console_wire;
@@ -137,6 +138,8 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         js_tap: js_tap.clone(),
     };
     let js_host = JsHost::new(js_enabled, js_tap, Some(net_impl));
+    let js_wake_proxy = proxy.clone();
+    js_host.set_waker(Arc::new(move || js_wake_proxy.wake_up()));
 
     let chrome_config = DocumentConfig {
         base_url: Some(CHROME_BASE.to_string()),
@@ -470,6 +473,13 @@ struct Glide {
     history_log: HistoryLogState,
     network_route: Arc<NetworkRoute>,
     ime_composing: bool,
+    js_wake_armed_until: Option<std::time::Instant>,
+}
+
+/// How long the event loop may block before waking for a JS timer pump (`None` = wait indefinitely).
+pub(crate) fn pump_wait(wake: Option<Duration>) -> Option<Duration> {
+    let wake = wake?;
+    Some(wake.max(Duration::from_millis(1)))
 }
 
 fn chrome_view_state(
@@ -742,6 +752,26 @@ impl Glide {
             devtools_drag: None,
             network_route: init.network_route,
             ime_composing: false,
+            js_wake_armed_until: None,
+        }
+    }
+
+    fn arm_js_pump(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if !self.js.page_js_active() {
+            self.js_wake_armed_until = None;
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+        match pump_wait(self.js.next_wake_in()) {
+            None => {
+                self.js_wake_armed_until = None;
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            Some(delay) => {
+                let until = Instant::now() + delay;
+                self.js_wake_armed_until = Some(until);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(until));
+            }
         }
     }
 
@@ -814,6 +844,7 @@ impl Glide {
     }
 
     fn sync(&mut self) {
+        let _ = self.js.take_wake_request();
         let Some(window_id) = self.inner.windows.keys().next().copied() else {
             return;
         };
@@ -1635,6 +1666,54 @@ fn page_title(doc: &BaseDocument) -> Option<String> {
     Some(title.trim().to_string())
 }
 
+fn wheel_should_refresh_page_hover(
+    event: &WindowEvent,
+    chrome: &BaseDocument,
+    buttons: MouseEventButtons,
+) -> bool {
+    // Only when the wheel is over the page iframe (not the toolbar/DevTools) and
+    // the page subdocument lost/never got a hover (e.g. it was just replaced).
+    let over_page = crate::find::page_iframe_id(chrome)
+        .is_some_and(|page| chrome.get_hover_node_id() == Some(page));
+    matches!(event, WindowEvent::MouseWheel { .. })
+        && buttons == MouseEventButtons::None
+        && over_page
+        && crate::js::page_subdoc_hover_is_none(chrome)
+}
+
+impl Glide {
+    /// Blitz wheel scrolling uses the subdocument's stored hover. After navigation or
+    /// leaving the page area without a forwarded move that hover is missing, so forward a
+    /// synthetic pointer move at the last window position before the wheel.
+    fn refresh_page_hover_for_wheel(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: &WindowEvent,
+    ) {
+        if self.devtools_drag.is_some() {
+            return;
+        }
+        let Some(view) = self.inner.windows.get(&window_id) else {
+            return;
+        };
+        if !wheel_should_refresh_page_hover(event, &view.doc.inner(), view.buttons) {
+            return;
+        }
+        let position = view.pointer_pos;
+        self.inner.window_event(
+            event_loop,
+            window_id,
+            WindowEvent::PointerMoved {
+                device_id: None,
+                position,
+                primary: true,
+                source: PointerSource::Mouse,
+            },
+        );
+    }
+}
+
 impl ApplicationHandler for Glide {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.inner.can_create_surfaces(event_loop);
@@ -1805,13 +1884,28 @@ impl ApplicationHandler for Glide {
             return;
         }
 
+        self.refresh_page_hover_for_wheel(event_loop, window_id, &event);
         self.inner.window_event(event_loop, window_id, event);
         self.sync();
+        self.arm_js_pump(event_loop);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.inner.about_to_wait(event_loop);
+        let requested = self.js.take_wake_request();
+        let wake_due = self
+            .js_wake_armed_until
+            .is_some_and(|until| Instant::now() >= until);
+        if requested || wake_due {
+            self.sync();
+        }
+        self.arm_js_pump(event_loop);
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.inner.proxy_wake_up(event_loop);
         self.sync();
+        self.arm_js_pump(event_loop);
     }
 
     #[cfg(target_os = "macos")]
@@ -1955,5 +2049,119 @@ mod tests {
                     .map(|node| node.text_content())
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn pump_wait_no_work_returns_none() {
+        assert!(pump_wait(None).is_none());
+    }
+
+    #[test]
+    fn pump_wait_immediate_timer_returns_one_millisecond() {
+        assert_eq!(
+            pump_wait(Some(Duration::ZERO)),
+            Some(Duration::from_millis(1))
+        );
+    }
+
+    #[test]
+    fn pump_wait_does_not_cap_long_deadlines() {
+        let five_s = Duration::from_secs(5);
+        assert_eq!(pump_wait(Some(five_s)), Some(five_s));
+    }
+
+    use blitz_traits::events::MouseEventButtons;
+    use blitz_traits::shell::{ColorScheme, Viewport};
+    use winit::event::{MouseScrollDelta, TouchPhase};
+
+    use crate::html::HtmlPageDocument;
+
+    const CHROME_SHELL: &str = r#"<!DOCTYPE html><html><body style="margin:0;padding:0"><iframe id="page" style="display:block;width:800px;height:600px;border:0"></iframe></body></html>"#;
+
+    fn scroll_pane_chrome() -> BaseDocument {
+        const PAGE: &str = include_str!("../tests/fixtures/scroll-pane.html");
+        let viewport = Some(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        let chrome_config = DocumentConfig {
+            viewport,
+            ..Default::default()
+        };
+        let page_config = DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        };
+        let mut chrome = parse::document_from_html(CHROME_SHELL, chrome_config, false);
+        let mut page = parse::document_from_html(PAGE, page_config, false);
+        page.resolve(0.0);
+        let page_id = chrome.get_element_by_id("page").expect("page iframe");
+        chrome.set_sub_document(page_id, Box::new(HtmlPageDocument(page)));
+        chrome.resolve(0.0);
+        chrome
+    }
+
+    fn sample_wheel_event() -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: None,
+            delta: MouseScrollDelta::LineDelta(0., -1.),
+            phase: TouchPhase::Moved,
+        }
+    }
+
+    #[test]
+    fn wheel_should_refresh_page_hover_when_subdoc_hover_missing() {
+        let mut chrome = scroll_pane_chrome();
+        chrome.set_hover_to(100.0, 100.0);
+        chrome.resolve(0.0);
+        let page = crate::find::page_iframe_id(&chrome).expect("page iframe");
+        assert_eq!(chrome.get_hover_node_id(), Some(page));
+        assert!(wheel_should_refresh_page_hover(
+            &sample_wheel_event(),
+            &chrome,
+            MouseEventButtons::None,
+        ));
+    }
+
+    #[test]
+    fn wheel_should_not_refresh_page_hover_when_page_iframe_is_not_hovered() {
+        let chrome = scroll_pane_chrome();
+        assert!(!wheel_should_refresh_page_hover(
+            &sample_wheel_event(),
+            &chrome,
+            MouseEventButtons::None,
+        ));
+    }
+
+    #[test]
+    fn wheel_should_not_refresh_page_hover_when_subdoc_hover_set() {
+        let mut chrome = scroll_pane_chrome();
+        let page_id = chrome.get_element_by_id("page").expect("page iframe");
+        if let Some(sub) = chrome.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
+            sub.inner_mut().set_hover_to(80.0, 80.0);
+            sub.inner_mut().resolve(0.0);
+        }
+        assert!(!wheel_should_refresh_page_hover(
+            &sample_wheel_event(),
+            &chrome,
+            MouseEventButtons::None,
+        ));
+    }
+
+    #[test]
+    fn wheel_should_not_refresh_page_hover_while_button_held() {
+        let chrome = scroll_pane_chrome();
+        assert!(!wheel_should_refresh_page_hover(
+            &sample_wheel_event(),
+            &chrome,
+            MouseEventButtons::Primary,
+        ));
+    }
+
+    #[test]
+    fn wheel_should_not_refresh_page_hover_for_non_wheel_events() {
+        let chrome = scroll_pane_chrome();
+        assert!(!wheel_should_refresh_page_hover(
+            &WindowEvent::Focused(true),
+            &chrome,
+            MouseEventButtons::None,
+        ));
     }
 }

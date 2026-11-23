@@ -1,5 +1,6 @@
 //! V8 integration tests (real isolate + DOM RPC).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 #[test]
@@ -1703,6 +1704,50 @@ fn location_assign_requests_navigation() {
     let (_, urls) =
         super::harness::run_inline_page_with_navigation(html, Duration::from_millis(80));
     assert_eq!(urls, vec!["https://example.test/next?x=1"]);
+}
+
+#[test]
+fn timers_fixture_reports_wake_and_advances_with_pump() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/timers.html");
+    let html = std::fs::read_to_string(path).expect("timers fixture");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let net = Arc::new(blitz_net::Provider::new(None));
+    let tap = crate::js::JsTap::new_enabled();
+    let mut host = crate::js::JsHost::new(true, tap, Some(net));
+    let provider = crate::html::GlideHtmlProvider {
+        scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        js_tap: crate::js::JsTap::new_enabled(),
+    };
+    let config = blitz_dom::DocumentConfig {
+        base_url: Some("https://example.test/".into()),
+        html_parser_provider: Some(Arc::new(provider)),
+        ..Default::default()
+    };
+    let mut doc = crate::parse::document_from_html(&html, config, true);
+    host.maybe_start_page(&doc, "https://example.test/timers", rt.handle());
+    host.finish_script_resolution_sync(rt.handle(), &crate::js::scripts::collect_scripts(&doc));
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_millis(600) {
+        doc.resolve(0.0);
+        host.pump(&mut doc, std::time::Instant::now());
+        if host
+            .next_wake_in()
+            .is_some_and(|d| d <= Duration::from_millis(5))
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    host.pump(&mut doc, std::time::Instant::now());
+    assert!(host.next_wake_in().is_some());
+    let timeout_text = doc
+        .get_element_by_id("timeout")
+        .and_then(|id| doc.get_node(id))
+        .map(|n| n.text_content())
+        .unwrap_or_default();
+    assert_eq!(timeout_text.trim(), "fired");
 }
 
 #[test]

@@ -82,6 +82,19 @@ pub enum DomRequest {
         value: String,
         reply: u64,
     },
+    /// Web Storage RPC (`localStorage` / `sessionStorage`, F-081).
+    StorageCall {
+        method: String,
+        area: String,
+        key: Option<String>,
+        value: Option<String>,
+        index: Option<u32>,
+        page_url: String,
+        tab_id: u64,
+        opaque_document_id: u64,
+        source_generation: u64,
+        reply: u64,
+    },
     WebSocketConnect {
         socket_id: u64,
         url: String,

@@ -13,6 +13,7 @@ mod promise_console;
 mod repl_eval;
 pub mod scripts;
 mod snapshot;
+pub mod storage_events;
 mod tap;
 pub mod websocket;
 mod worker;

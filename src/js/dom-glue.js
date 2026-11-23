@@ -361,6 +361,179 @@
   let pageLocation = null;
   let formSubmissionInstalled = false;
   let formControlMirrorInstalled = false;
+  let localStorageData = new Map();
+  let sessionStorageData = new Map();
+
+  function throwQuotaExceeded() {
+    try {
+      const DomEx = global.DOMException;
+      if (typeof DomEx === 'function') {
+        throw new DomEx('The quota has been exceeded.', 'QuotaExceededError');
+      }
+    } catch (err) {
+      if (err && err.name === 'QuotaExceededError') throw err;
+    }
+    const err = new Error('The quota has been exceeded.');
+    err.name = 'QuotaExceededError';
+    throw err;
+  }
+
+  function storageRpc(method, area, key, value, index) {
+    const args = [
+      method,
+      area,
+      key == null ? null : String(key),
+      value == null ? null : String(value),
+      index == null ? null : String(index),
+      currentPageUrl,
+    ];
+    try {
+      return rpc('storageCall', ...args);
+    } catch (err) {
+      if (err && String(err.message) === 'QuotaExceededError') throwQuotaExceeded();
+      throw err;
+    }
+  }
+
+  function installStorageEventConstructor() {
+    if (typeof global.StorageEvent === 'function') return;
+    global.StorageEvent = class StorageEvent extends Event {
+      constructor(type, init) {
+        init = init == null ? {} : init;
+        super(String(type), init);
+        const k = init.key;
+        this.key = k == null ? null : String(k);
+        const oldV = init.oldValue;
+        this.oldValue = oldV == null ? null : String(oldV);
+        const newV = init.newValue;
+        this.newValue = newV == null ? null : String(newV);
+        this.url = init.url == null ? '' : String(init.url);
+        this.storageArea = init.storageArea || null;
+      }
+    };
+  }
+
+  function defineStorageMethod(obj, name, fn) {
+    Object.defineProperty(obj, name, { value: fn, writable: true, enumerable: false, configurable: true });
+  }
+
+  function buildStorage(area, data) {
+    const store = {};
+    Object.defineProperty(store, 'length', {
+      get() { return data.size; },
+      enumerable: false,
+      configurable: true,
+    });
+    defineStorageMethod(store, 'key', function key(index) {
+      const keys = Array.from(data.keys());
+      return index >= 0 && index < keys.length ? keys[index] : null;
+    });
+    defineStorageMethod(store, 'getItem', function getItem(name) {
+      const key = String(name);
+      return data.has(key) ? data.get(key) : null;
+    });
+    defineStorageMethod(store, 'setItem', function setItem(key, value) {
+      const name = String(key);
+      const val = String(value);
+      if (data.get(name) === val) return;
+      storageRpc('setItem', area, name, val);
+      data.set(name, val);
+    });
+    defineStorageMethod(store, 'removeItem', function removeItem(key) {
+      const name = String(key);
+      storageRpc('removeItem', area, name);
+      data.delete(name);
+    });
+    defineStorageMethod(store, 'clear', function clear() {
+      storageRpc('clear', area);
+      data.clear();
+    });
+    return new Proxy(store, {
+      get(target, prop) {
+        if (prop in target) return target[prop];
+        if (typeof prop === 'string' && data.has(prop)) return data.get(prop);
+        return undefined;
+      },
+      set(target, prop, value) {
+        if (typeof prop === 'string' && !(prop in target)) {
+          store.setItem(prop, value);
+          return true;
+        }
+        target[prop] = value;
+        return true;
+      },
+      deleteProperty(target, prop) {
+        if (typeof prop === 'string' && data.has(prop)) {
+          store.removeItem(prop);
+          return true;
+        }
+        return delete target[prop];
+      },
+      has(target, prop) {
+        return prop in target || (typeof prop === 'string' && data.has(prop));
+      },
+      ownKeys() {
+        return Array.from(data.keys());
+      },
+      getOwnPropertyDescriptor(target, prop) {
+        if (typeof prop === 'string' && data.has(prop)) {
+          return { value: data.get(prop), writable: true, enumerable: true, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, prop);
+      },
+    });
+  }
+
+  function installWebStorage(storageJson) {
+    localStorageData = new Map();
+    sessionStorageData = new Map();
+    let snap = storageJson;
+  if (typeof snap === 'string') {
+      try { snap = JSON.parse(snap); } catch (_) { snap = {}; }
+    }
+    const local = (snap && snap.local) || {};
+    const session = (snap && snap.session) || {};
+    Object.keys(local).forEach((k) => localStorageData.set(k, String(local[k])));
+    Object.keys(session).forEach((k) => sessionStorageData.set(k, String(session[k])));
+    installStorageEventConstructor();
+    global.localStorage = buildStorage('local', localStorageData);
+    global.sessionStorage = buildStorage('session', sessionStorageData);
+  }
+
+  global.__glide_on_storage_event = function (json) {
+    let payload;
+    try {
+      payload = typeof json === 'string' ? JSON.parse(json) : json;
+    } catch (_) {
+      return;
+    }
+    if (!payload || (payload.storageArea !== 'localStorage' && payload.storageArea !== 'sessionStorage')) {
+      return;
+    }
+    const data = payload.storageArea === 'sessionStorage' ? sessionStorageData : localStorageData;
+    const key = payload.key;
+    if (key == null) {
+      data.clear();
+    } else if (payload.newValue == null) {
+      data.delete(String(key));
+    } else {
+      data.set(String(key), String(payload.newValue));
+    }
+    try {
+      installStorageEventConstructor();
+      const storageAreaObj = payload.storageArea === 'sessionStorage'
+        ? global.sessionStorage
+        : global.localStorage;
+      const event = new global.StorageEvent('storage', {
+        key: key == null ? null : String(key),
+        oldValue: payload.oldValue == null ? null : String(payload.oldValue),
+        newValue: payload.newValue == null ? null : String(payload.newValue),
+        url: String(payload.url || ''),
+        storageArea: storageAreaObj,
+      });
+      global.dispatchEvent(event);
+    } catch (_) { /* storage notifications must not throw */ }
+  };
 
   function rpc(op, ...args) {
     const reply = nextReply++;
@@ -1726,7 +1899,7 @@
     syncLocationObject(parsedPageUrl(currentPageUrl), currentPageUrl);
   }
 
-  function installGlobals(pageUrl) {
+  function installGlobals(pageUrl, storageJson) {
     currentPageUrl = pageUrl || 'about:blank';
     syncDocumentAddress(currentPageUrl);
     global.document = pageDocument;
@@ -1784,6 +1957,7 @@
       });
     } catch (_) { /* domino defines these as readonly */ }
     installUrlGlobal();
+    installWebStorage(storageJson);
   }
 
   const EVENT_HANDLER_TYPES = [
@@ -2073,7 +2247,7 @@
   global.__glide_set_page_url = setPageUrl;
   global.__glide_get_page_url = function () { return currentPageUrl; };
 
-  global.__glide_init_page = function (snapshotJson, pageUrl) {
+  global.__glide_init_page = function (snapshotJson, pageUrl, storageJson) {
     // Must run before the snapshot creates elements, so they inherit the
     // prototype that carries `submit` / `requestSubmit`.
     installFormSubmission();
@@ -2126,7 +2300,7 @@
       configurable: true,
       get: () => global,
     });
-    installGlobals(pageUrl || 'about:blank');
+    installGlobals(pageUrl || 'about:blank', storageJson);
     ceHTMLElementPatched = false;
     installHTMLElementConstructorPatch();
     if (typeof global.__glide_reset_page_history === 'function') {

@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <p id="t">pending</p>
+    <script>
+      document.getElementById('t').textContent =
+        localStorage.getItem('profile-check') || 'missing';
+    </script>
+  </body>
+</html>

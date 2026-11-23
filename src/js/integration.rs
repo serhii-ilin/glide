@@ -2524,6 +2524,180 @@ fn websocket_protocol_negotiation() {
 }
 
 #[test]
+fn web_storage_get_set_remove_clear_and_property_access() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        localStorage.setItem('a', 'one');
+        localStorage.b = 'two';
+        var out = [];
+        out.push(localStorage.getItem('a'));
+        out.push(localStorage.b);
+        out.push(String(localStorage.length));
+        localStorage.removeItem('a');
+        localStorage.clear();
+        out.push(String(localStorage.length));
+        out.push(localStorage.getItem('b'));
+        sessionStorage.setItem('s', 'tab');
+        out.push(sessionStorage.getItem('s'));
+        document.getElementById('t').textContent = out.join('|');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        html,
+        Duration::from_millis(250),
+        super::harness::harness_tokio_runtime().handle(),
+        40,
+        "http://example.test/page",
+    );
+    assert_eq!(
+        result.final_text, "one|two|2|0||tab",
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn web_storage_survives_same_origin_reload_in_process() {
+    let _guard = crate::web_storage::WebStorage::lock_global_for_test();
+    crate::web_storage::WebStorage::reset_global();
+    crate::web_storage::WebStorage::replace_global(Arc::new(
+        crate::web_storage::WebStorage::empty(),
+    ));
+    let rt = super::harness::harness_tokio_runtime();
+    let set_html = r#"<!DOCTYPE html><html><body><p id="t">x</p>
+      <script>localStorage.setItem('persist', 'ok');</script></body></html>"#;
+    super::harness::run_inline_page_with_runtime_on_base(
+        set_html,
+        Duration::from_millis(200),
+        rt.handle(),
+        30,
+        "http://example.test/a",
+    );
+    let get_html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        document.getElementById('t').textContent = localStorage.getItem('persist') || 'missing';
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        get_html,
+        Duration::from_millis(200),
+        rt.handle(),
+        30,
+        "http://example.test/b",
+    );
+    crate::web_storage::WebStorage::reset_global();
+    assert_eq!(result.final_text, "ok", "{}", result.final_text);
+}
+
+#[test]
+fn web_storage_quota_exceeded_throws_named_error() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var name = 'none';
+        try {
+          localStorage.setItem('big', 'X'.repeat(6000000));
+        } catch (e) {
+          name = e.name || String(e);
+        }
+        document.getElementById('t').textContent = name;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        html,
+        Duration::from_millis(300),
+        super::harness::harness_tokio_runtime().handle(),
+        40,
+        "http://example.test/",
+    );
+    assert_eq!(
+        result.final_text, "QuotaExceededError",
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn web_storage_object_keys_lists_only_data_keys() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        localStorage.setItem('only', 'data');
+        var keys = Object.keys(localStorage).sort().join(',');
+        var inherited = 0;
+        for (var k in localStorage) {
+          if (k === 'setItem' || k === 'getItem' || k === 'length') inherited++;
+        }
+        document.getElementById('t').textContent = keys + '|' + inherited;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        html,
+        Duration::from_millis(250),
+        super::harness::harness_tokio_runtime().handle(),
+        40,
+        "http://example.test/",
+    );
+    assert_eq!(result.final_text, "only|0", "{}", result.final_text);
+}
+
+#[test]
+fn web_storage_storage_event_constructor_fields() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var evt = new StorageEvent('storage', {
+          key: 'k',
+          oldValue: null,
+          newValue: 'v',
+          url: 'http://example.test/',
+          storageArea: localStorage,
+        });
+        document.getElementById('t').textContent = [
+          evt instanceof StorageEvent,
+          evt instanceof Event,
+          evt.key,
+          evt.oldValue,
+          evt.newValue,
+          evt.url,
+          evt.storageArea === localStorage,
+        ].join('|');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        html,
+        Duration::from_millis(250),
+        super::harness::harness_tokio_runtime().handle(),
+        40,
+        "http://example.test/",
+    );
+    assert_eq!(
+        result.final_text, "true|true|k||v|http://example.test/|true",
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn web_storage_data_urls_isolated_between_documents() {
+    let rt = super::harness::harness_tokio_runtime();
+    let set_html = r#"<!DOCTYPE html><html><body><p id="t">ok</p>
+      <script>localStorage.setItem('x','1');</script></body></html>"#;
+    super::harness::run_inline_page_with_runtime_on_base(
+        set_html,
+        Duration::from_millis(200),
+        rt.handle(),
+        30,
+        "data:,set",
+    );
+    let get_html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        document.getElementById('t').textContent =
+          localStorage.getItem('x') == null ? 'missing' : localStorage.getItem('x');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_runtime_on_base(
+        get_html,
+        Duration::from_millis(200),
+        rt.handle(),
+        30,
+        "data:,get",
+    );
+    assert_eq!(result.final_text, "missing", "{}", result.final_text);
+}
+
+#[test]
 fn websocket_rejects_mixed_content_and_bad_url() {
     let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
       <script>

@@ -243,6 +243,7 @@ fn load_once(
     navigation_request: Option<Request>,
 ) -> Result<(HtmlPageDocument, Option<Request>), String> {
     crate::cookies::CookieJar::ensure_process_global(None);
+    crate::web_storage::WebStorage::ensure_process_global(None);
     let net_impl = Arc::new(Provider::new(None));
     let handle = tokio::runtime::Handle::current();
     let (final_url, bytes) = match navigation_request {

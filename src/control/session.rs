@@ -215,6 +215,7 @@ pub struct HeadlessSession {
 impl HeadlessSession {
     pub fn new(opts: SessionOptions) -> Self {
         crate::cookies::CookieJar::ensure_process_global(None);
+        crate::web_storage::WebStorage::ensure_process_global(None);
         Self {
             opts,
             document: None,

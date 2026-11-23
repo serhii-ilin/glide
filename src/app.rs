@@ -109,6 +109,8 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
     } = launch;
     let cookie_jar = crate::cookies::bootstrap_from_profile(profile.data_dir());
     crate::cookies::CookieJar::install_global(cookie_jar);
+    let storage = crate::web_storage::bootstrap_from_profile(profile.data_dir());
+    crate::web_storage::WebStorage::install_global(storage);
     let profile = Arc::new(profile);
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
@@ -883,6 +885,7 @@ impl Glide {
         let session = Session::from_tabs(&self.tabs, &failed);
         let _ = self.session.profile.save_session(&session);
         let _ = crate::cookies::CookieJar::global().save();
+        crate::web_storage::WebStorage::global().flush_persist();
     }
 
     fn on_committed_navigation(&mut self, effect: ObserveEffect, url: &str, title: &str) {

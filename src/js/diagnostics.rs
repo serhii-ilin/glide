@@ -167,7 +167,7 @@ pub fn hint(kind: ErrorKind, message: &str) -> &'static str {
         || lower.contains("getitem")
         || lower.contains("setitem")
     {
-        "Web Storage is an in-memory shim; values do not survive a reload or restart."
+        "Web Storage is origin-scoped; see F-081 for persistence, quota and storage events."
     } else if lower.contains("abortcontroller") || lower.contains("abortsignal") {
         "AbortController is a signal-only shim; it does not cancel fetch or other host work."
     } else if lower.contains("right-hand side of 'instanceof' is not an object")

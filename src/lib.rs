@@ -38,6 +38,7 @@ pub mod remote_socket;
 mod runtime;
 pub mod shot;
 pub mod tabs;
+pub mod web_storage;
 pub mod zoom;
 
 pub use app::{WindowLaunch, prepare_window_launch, run_window};

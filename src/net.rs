@@ -648,9 +648,7 @@ async fn page_fetch(
     if test_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
     }
-    if matches!(request.url.scheme(), "http" | "https")
-        && !matches!(request.body, blitz_traits::net::Body::Form(_))
-    {
+    if matches!(request.url.scheme(), "http" | "https") {
         if crate::http::is_navigable_http(&request) {
             return match crate::http::fetch_document(request, scripting_enabled).await {
                 crate::http::DocumentFetch::Page {
@@ -1416,5 +1414,70 @@ mod tests {
         assert!(record.lock().expect("record").is_none());
         assert!(!state.page_loading());
         assert_eq!(state.load_generation(), gen_before);
+    }
+
+    #[test]
+    fn document_post_records_method_post() {
+        use blitz_traits::net::http::Method;
+        use blitz_traits::net::{Body, Entry, EntryValue, FormData};
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let body = if req.starts_with("POST ") {
+                "<p>ok</p>"
+            } else {
+                ""
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(1);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
+
+        let record = Arc::new(StdMutex::new(None));
+        let handler = Box::new(RecordHandler {
+            done: record.clone(),
+        });
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/post")).unwrap();
+        let mut request = Request::get(url);
+        request.method = Method::POST;
+        request.body = Body::Form(FormData(vec![Entry {
+            name: "x".into(),
+            value: EntryValue::String("1".into()),
+        }]));
+        net.fetch(1, request, handler);
+
+        for _ in 0..300 {
+            if record.lock().expect("record").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let events = crate::network_feed::drain_pending();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.method == "POST" && e.initiator == NetworkInitiator::Document),
+            "{events:?}"
+        );
     }
 }

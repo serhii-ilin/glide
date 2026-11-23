@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use base64::Engine as _;
+use blitz_traits::net::http::Method;
 use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
@@ -218,6 +219,7 @@ async fn run_socket(io: SocketIo) {
         page_url.as_ref().or(Url::parse(&page_base).ok().as_ref()),
         CookieRequestKind::WebSocket,
         FetchCredentials::Include,
+        Method::GET,
         &mut cookie_headers,
     );
     if let Some(v) = cookie_headers.get(blitz_traits::net::http::header::COOKIE)

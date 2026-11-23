@@ -405,6 +405,7 @@ impl JsHost {
         if !failed.is_empty() {
             worker.notify_script_elements(failed);
         }
+        worker.fire_page_load();
         worker.page_settled();
     }
 
@@ -412,10 +413,33 @@ impl JsHost {
         let Some(rx) = &self.pending_sources else {
             return;
         };
-        if let Ok(sources) = rx.try_recv() {
-            self.pending_sources = None;
-            self.start_from_sources(&sources);
+        match rx.try_recv() {
+            Ok(sources) => {
+                self.pending_sources = None;
+                self.start_from_sources(&sources);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.pending_sources = None;
+                let sources: Vec<ScriptSource> = self
+                    .script_specs
+                    .iter()
+                    .map(|spec| {
+                        if let Some(body) = &spec.inline {
+                            ScriptSource::Inline(body.clone())
+                        } else {
+                            ScriptSource::Failed
+                        }
+                    })
+                    .collect();
+                self.start_from_sources(&sources);
+            }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_finish_pending_sources_for_test(&mut self) {
+        self.try_finish_pending_sources();
     }
 
     pub fn pump(&mut self, chrome: &mut BaseDocument, _frame: Instant) -> bool {
@@ -1397,5 +1421,42 @@ mod tests {
             page_scroll, 0.0,
             "the page viewport must not scroll while the pane absorbs the wheel"
         );
+    }
+
+    #[test]
+    fn disconnected_script_resolve_finishes_page() {
+        use crossbeam_channel::unbounded;
+
+        let (_worker, _console) = worker_test_lock();
+        let page_html = concat!(
+            "<!DOCTYPE html><html><body><p id=\"t\">pending</p>",
+            "<script>document.getElementById('t').textContent='inline';",
+            "window.addEventListener('load', function () {",
+            "document.getElementById('t').textContent='loaded';});</script>",
+            "<script async src=\"missing.js\"></script></body></html>"
+        );
+        let mut doc = parse::document_from_html(page_html, DocumentConfig::default(), true);
+        let rt = rt();
+        let net = Arc::new(blitz_net::Provider::new(None));
+        let tap = JsTap::new_enabled();
+        let mut host = JsHost::new(true, tap, Some(net));
+        host.maybe_start_page(&doc, "https://example.test/", rt.handle());
+        assert!(host.pending_sources.is_some());
+        let (tx, rx) = unbounded();
+        drop(tx);
+        host.pending_sources = Some(rx);
+        host.try_finish_pending_sources_for_test();
+        assert!(host.pending_sources.is_none());
+        assert!(host.pending_indices.is_none());
+        for _ in 0..300 {
+            host.pump(&mut doc, Instant::now());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let text = doc
+            .get_element_by_id("t")
+            .and_then(|id| doc.get_node(id))
+            .map(|node| node.text_content())
+            .unwrap_or_default();
+        assert_eq!(text.trim(), "loaded", "load must still fire");
     }
 }

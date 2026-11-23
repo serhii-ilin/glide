@@ -35,6 +35,7 @@ use crate::js::{JsHost, JsTap};
 use crate::keyboard;
 use crate::location::resolve_location;
 use crate::nav::{NavKind, ObserveEffect};
+use crate::nav_request::PageNavigationRequest;
 use crate::net::{GlideNet, LoadState};
 use crate::parse;
 use crate::profile::{
@@ -231,7 +232,17 @@ impl NavigationProvider for ChromeNav {
         if let Some(command) = command_from_url(&options.url) {
             self.bus.push(command);
             self.proxy.wake_up();
+            return;
         }
+        let command = if options.method == blitz_traits::net::http::Method::POST
+            || !matches!(options.document_resource, blitz_traits::net::Body::Empty)
+        {
+            NavCommand::Navigate(PageNavigationRequest::from_navigation_options(options))
+        } else {
+            NavCommand::Go(options.url.to_string())
+        };
+        self.bus.push(command);
+        self.proxy.wake_up();
     }
 }
 
@@ -967,6 +978,35 @@ impl Glide {
                             }
                         }
                     }
+                    NavCommand::Navigate(nav) => {
+                        self.session.defer_session_save = false;
+                        pending_history = Some(PendingHistoryCommand::Go);
+                        capture_active_tab(
+                            &mut self.tabs,
+                            &mut doc,
+                            &mut self.bookmarks,
+                            &self.load_state,
+                            &mut committed,
+                            &mut self.js,
+                            &mut self.devtools,
+                        );
+                        let url = nav.url.clone();
+                        if let Some(tab) = self.tabs.active_mut() {
+                            reset_tab_console_for_navigation(tab, &mut self.js);
+                        }
+                        self.devtools.exit_inspect_mode(&mut doc);
+                        self.js.on_navigation(&doc, &url);
+                        if let Ok(request) = nav.to_request() {
+                            load_page_iframe(&mut doc, request);
+                        } else {
+                            load_iframe(&mut doc, &url);
+                        }
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.nav.navigate(NavKind::Go, Some(url.clone()));
+                            set_address(&mut doc, &url);
+                            tab.address_written = tab.nav.shown().to_string();
+                        }
+                    }
                     NavCommand::Go(raw) => {
                         self.session.defer_session_save = false;
                         pending_history = Some(PendingHistoryCommand::Go);
@@ -1627,10 +1667,28 @@ impl Glide {
 }
 
 fn load_iframe(doc: &mut BaseDocument, url: &str) {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return;
+    };
+    load_page_iframe(doc, blitz_traits::net::Request::get(parsed));
+}
+
+fn load_page_iframe(doc: &mut BaseDocument, request: blitz_traits::net::Request) {
+    use blitz_traits::net::Body;
+    use blitz_traits::net::http::Method;
+
     let Some(id) = doc.get_element_by_id("page") else {
         return;
     };
-    doc.mutate().set_attribute(id, qual_name!("src"), url);
+    if request.method == Method::GET && matches!(request.body, Body::Empty) {
+        doc.mutate()
+            .set_attribute(id, qual_name!("src"), request.url.as_ref());
+        return;
+    }
+    let options = NavigationOptions::new(request.url, request.content_type, doc.id())
+        .set_method(request.method)
+        .set_document_resource(request.body);
+    doc.navigate_iframe(id, options);
 }
 
 fn set_js_indicator(doc: &mut BaseDocument, on: bool) {

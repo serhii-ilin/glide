@@ -4,6 +4,7 @@
 
 use url::Url;
 
+use crate::nav_request::PageNavigationRequest;
 use crate::tabs::TabId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,8 @@ pub enum NavCommand {
     MenuClose,
     /// Raw address-bar text, not yet classified as a URL or a search.
     Go(String),
+    /// Page-initiated navigation with method/body (form POST, etc.).
+    Navigate(PageNavigationRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

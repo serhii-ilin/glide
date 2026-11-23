@@ -5,7 +5,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use blitz_traits::net::http::{self, HeaderMap, HeaderValue};
+use blitz_traits::net::http::{self, HeaderMap, HeaderValue, Method};
 use cookie::Cookie as RawCookie;
 use cookie::SameSite;
 use cookie_store::CookieStore;
@@ -16,6 +16,9 @@ const PSL_BYTES: &[u8] = include_bytes!("../third_party/publicsuffix/public_suff
 
 static GLOBAL: RwLock<Option<Arc<CookieJar>>> = RwLock::new(None);
 static PSL: OnceLock<publicsuffix::List> = OnceLock::new();
+
+#[cfg(test)]
+static GLOBAL_JAR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn public_suffix_list() -> publicsuffix::List {
     PSL.get_or_init(|| {
@@ -166,6 +169,7 @@ impl CookieJar {
         document_url: Option<&Url>,
         kind: CookieRequestKind,
         credentials: FetchCredentials,
+        method: Method,
         headers: &mut HeaderMap,
     ) {
         if !matches!(request_url.scheme(), "http" | "https") {
@@ -182,7 +186,7 @@ impl CookieJar {
         let pairs: Vec<(String, String)> = store
             .matches(request_url)
             .into_iter()
-            .filter(|c| cookie_allowed_on_request(c, request_url, doc, kind))
+            .filter(|c| cookie_allowed_on_request(c, request_url, doc, kind, method.clone()))
             .map(|c| {
                 let (name, value) = c.name_value();
                 (name.to_string(), value.to_string())
@@ -256,16 +260,16 @@ impl CookieJar {
             .join("; ")
     }
 
-    pub fn set_document_cookie(&self, page_url: &Url, assignment: &str) -> Result<(), String> {
+    pub fn set_document_cookie(&self, page_url: &Url, assignment: &str) {
         let assignment = assignment.trim();
         if assignment.is_empty() {
-            return Ok(());
+            return;
         }
         if assignment_has_httponly_flag(assignment) {
-            return Ok(());
+            return;
         }
         let Some(name) = cookie_assignment_name(assignment) else {
-            return Ok(());
+            return;
         };
         {
             let store = self
@@ -277,20 +281,23 @@ impl CookieJar {
                 .into_iter()
                 .any(|c| c.name() == name && c.http_only().unwrap_or(false))
             {
-                return Ok(());
+                return;
             }
         }
         let mut store = self
             .inner
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        store
-            .parse(assignment, page_url)
-            .map(|_| ())
-            .map_err(|e| e.to_string())?;
+        let _ = store.parse(assignment, page_url);
         drop(store);
         self.maybe_persist();
-        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn lock_global_for_test() -> std::sync::MutexGuard<'static, ()> {
+        GLOBAL_JAR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[cfg(test)]
@@ -343,12 +350,15 @@ fn cookie_allowed_on_request(
     request_url: &Url,
     document_url: &Url,
     kind: CookieRequestKind,
+    method: Method,
 ) -> bool {
     match cookie.same_site() {
         None | Some(SameSite::None) => true,
         Some(SameSite::Strict) => same_site(request_url, document_url),
         Some(SameSite::Lax) => match kind {
-            CookieRequestKind::Navigation => true,
+            CookieRequestKind::Navigation => {
+                !(method == Method::POST && !same_site(request_url, document_url))
+            }
             CookieRequestKind::Subresource
             | CookieRequestKind::Fetch
             | CookieRequestKind::WebSocket => same_site(request_url, document_url),
@@ -396,10 +406,10 @@ mod tests {
 
     #[test]
     fn global_without_install_shares_one_jar() {
+        let _jar_guard = CookieJar::lock_global_for_test();
         CookieJar::reset_global();
         let a = CookieJar::global();
-        a.set_document_cookie(&url("http://example.test/"), "a=1; Path=/")
-            .expect("set");
+        a.set_document_cookie(&url("http://example.test/"), "a=1; Path=/");
         let b = CookieJar::global();
         assert!(
             b.document_cookie(&url("http://example.test/"))
@@ -426,8 +436,7 @@ mod tests {
     fn document_cannot_set_httponly_attribute() {
         let jar = CookieJar::empty();
         let page = url("http://example.test/");
-        jar.set_document_cookie(&page, "secret=1; HttpOnly; Path=/")
-            .expect("set");
+        jar.set_document_cookie(&page, "secret=1; HttpOnly; Path=/");
         assert!(!jar.document_cookie(&page).contains("secret"));
         let mut headers = HeaderMap::new();
         jar.append_request_cookies(
@@ -435,6 +444,7 @@ mod tests {
             Some(&page),
             CookieRequestKind::Fetch,
             FetchCredentials::Include,
+            Method::GET,
             &mut headers,
         );
         assert!(!headers.contains_key(http::header::COOKIE));
@@ -448,14 +458,14 @@ mod tests {
             &page,
             &[("Set-Cookie".into(), "hidden=1; Path=/; HttpOnly".into())],
         );
-        jar.set_document_cookie(&page, "hidden=nope; Path=/")
-            .expect("set");
+        jar.set_document_cookie(&page, "hidden=nope; Path=/");
         let mut headers = HeaderMap::new();
         jar.append_request_cookies(
             &page,
             Some(&page),
             CookieRequestKind::Fetch,
             FetchCredentials::Include,
+            Method::GET,
             &mut headers,
         );
         let cookie = headers
@@ -470,14 +480,14 @@ mod tests {
     fn document_set_visible_to_subsequent_requests() {
         let jar = CookieJar::empty();
         let page = url("http://example.test/app");
-        jar.set_document_cookie(&page, "session=abc; Path=/")
-            .expect("set");
+        jar.set_document_cookie(&page, "session=abc; Path=/");
         let mut headers = HeaderMap::new();
         jar.append_request_cookies(
             &page,
             Some(&page),
             CookieRequestKind::Fetch,
             FetchCredentials::SameOrigin,
+            Method::GET,
             &mut headers,
         );
         let cookie = headers
@@ -501,9 +511,42 @@ mod tests {
             Some(&page),
             CookieRequestKind::Navigation,
             FetchCredentials::Include,
+            Method::GET,
             &mut headers,
         );
         assert!(!headers.contains_key(http::header::COOKIE));
+    }
+
+    #[test]
+    fn expired_cookie_assignment_is_ignored() {
+        let jar = CookieJar::empty();
+        let page = url("http://example.test/");
+        jar.set_document_cookie(
+            &page,
+            "old=1; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/",
+        );
+        assert!(!jar.document_cookie(&page).contains("old=1"));
+    }
+
+    #[test]
+    fn rejected_document_cookie_assignment_is_ignored() {
+        let jar = CookieJar::empty();
+        let page = url("http://example.test/");
+        jar.set_document_cookie(&page, "a=1; Domain=example.com; Path=/");
+        assert!(!jar.document_cookie(&page).contains("a=1"));
+    }
+
+    #[test]
+    fn expired_assignment_deletes_existing_cookie() {
+        let jar = CookieJar::empty();
+        let page = url("http://example.test/");
+        jar.set_document_cookie(&page, "stay=1; Path=/");
+        assert!(jar.document_cookie(&page).contains("stay=1"));
+        jar.set_document_cookie(
+            &page,
+            "stay=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/",
+        );
+        assert!(!jar.document_cookie(&page).contains("stay=1"));
     }
 
     #[test]
@@ -512,8 +555,7 @@ mod tests {
         let page = url("http://example.test/");
         jar.store_response_headers(&page, &[("Set-Cookie".into(), "gone=1; Path=/".into())]);
         assert!(jar.document_cookie(&page).contains("gone=1"));
-        jar.set_document_cookie(&page, "gone=; Max-Age=0; Path=/")
-            .expect("delete");
+        jar.set_document_cookie(&page, "gone=; Max-Age=0; Path=/");
         assert!(!jar.document_cookie(&page).contains("gone=1"));
     }
 
@@ -535,6 +577,7 @@ mod tests {
             Some(&page),
             CookieRequestKind::Navigation,
             FetchCredentials::Include,
+            Method::GET,
             &mut headers,
         );
         assert!(!headers.contains_key(http::header::COOKIE));
@@ -556,6 +599,7 @@ mod tests {
             Some(&url("http://www.example.com/")),
             CookieRequestKind::Navigation,
             FetchCredentials::Include,
+            Method::GET,
             &mut www,
         );
         assert!(www.contains_key(http::header::COOKIE));
@@ -565,6 +609,7 @@ mod tests {
             Some(&url("http://other.com/")),
             CookieRequestKind::Navigation,
             FetchCredentials::Include,
+            Method::GET,
             &mut other,
         );
         assert!(!other.contains_key(http::header::COOKIE));
@@ -597,6 +642,7 @@ mod tests {
             Some(&url("https://a.test/page")),
             CookieRequestKind::Fetch,
             FetchCredentials::SameOrigin,
+            Method::GET,
             &mut same,
         );
         assert!(same.contains_key(http::header::COOKIE));
@@ -606,6 +652,7 @@ mod tests {
             Some(&url("https://b.test/page")),
             CookieRequestKind::Fetch,
             FetchCredentials::SameOrigin,
+            Method::GET,
             &mut cross,
         );
         assert!(!cross.contains_key(http::header::COOKIE));
@@ -624,6 +671,7 @@ mod tests {
             Some(&url("https://example.test/")),
             CookieRequestKind::Fetch,
             FetchCredentials::SameOrigin,
+            Method::GET,
             &mut headers,
         );
         assert!(!headers.contains_key(http::header::COOKIE));
@@ -637,6 +685,7 @@ mod tests {
             Some(&url("https://example.test/")),
             CookieRequestKind::Fetch,
             FetchCredentials::SameOrigin,
+            Method::GET,
             &mut same,
         );
         assert!(same.contains_key(http::header::COOKIE));
@@ -676,6 +725,7 @@ mod tests {
 
     #[test]
     fn loopback_set_cookie_echoed_without_replace_global() {
+        let _jar_guard = CookieJar::lock_global_for_test();
         CookieJar::reset_global();
         CookieJar::ensure_process_global(None);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -733,18 +783,19 @@ mod tests {
 
     #[test]
     fn script_set_cookie_sent_on_next_same_origin_fetch() {
+        let _jar_guard = CookieJar::lock_global_for_test();
         CookieJar::reset_global();
         let jar = Arc::new(CookieJar::empty());
         CookieJar::replace_global(Arc::clone(&jar));
         let page = url("http://example.test/");
-        jar.set_document_cookie(&page, "fromScript=1; Path=/")
-            .expect("set");
+        jar.set_document_cookie(&page, "fromScript=1; Path=/");
         let mut headers = HeaderMap::new();
         jar.append_request_cookies(
             &url("http://example.test/api"),
             Some(&page),
             CookieRequestKind::Fetch,
             FetchCredentials::SameOrigin,
+            Method::GET,
             &mut headers,
         );
         let cookie = headers
@@ -753,6 +804,49 @@ mod tests {
             .unwrap_or("");
         assert!(cookie.contains("fromScript=1"));
         CookieJar::reset_global();
+    }
+
+    #[test]
+    fn lax_cookie_omitted_on_cross_site_post_navigation() {
+        let jar = CookieJar::empty();
+        jar.store_response_headers(
+            &url("http://127.0.0.1:8001/"),
+            &[("Set-Cookie".into(), "lax=1; Path=/; SameSite=Lax".into())],
+        );
+        let mut cross = HeaderMap::new();
+        jar.append_request_cookies(
+            &url("http://127.0.0.1:8002/submit"),
+            Some(&url("http://127.0.0.1:8001/page")),
+            CookieRequestKind::Navigation,
+            FetchCredentials::Include,
+            Method::POST,
+            &mut cross,
+        );
+        assert!(!cross.contains_key(http::header::COOKIE));
+    }
+
+    #[test]
+    fn lax_cookie_sent_on_same_port_post_navigation() {
+        let jar = CookieJar::empty();
+        let page = url("http://127.0.0.1:9000/page");
+        jar.store_response_headers(
+            &page,
+            &[("Set-Cookie".into(), "lax=1; Path=/; SameSite=Lax".into())],
+        );
+        let mut headers = HeaderMap::new();
+        jar.append_request_cookies(
+            &url("http://127.0.0.1:9000/submit"),
+            Some(&page),
+            CookieRequestKind::Navigation,
+            FetchCredentials::Include,
+            Method::POST,
+            &mut headers,
+        );
+        let cookie = headers
+            .get(http::header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(cookie.contains("lax=1"));
     }
 
     #[test]
@@ -766,6 +860,7 @@ mod tests {
             Some(&page),
             CookieRequestKind::Subresource,
             FetchCredentials::Include,
+            Method::GET,
             &mut headers,
         );
         let cookie = headers

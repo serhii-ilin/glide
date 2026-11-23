@@ -65,6 +65,7 @@ pub enum WorkerCommand {
         kind: String,
     },
     FireDomContentLoaded,
+    FirePageLoad,
     PageSettled,
     NotifyScriptElements(Vec<(u64, bool)>),
     Pump {
@@ -180,6 +181,10 @@ impl JsWorker {
 
     pub fn fire_dom_content_loaded(&self) {
         let _ = self.tx.send(WorkerCommand::FireDomContentLoaded);
+    }
+
+    pub fn fire_page_load(&self) {
+        let _ = self.tx.send(WorkerCommand::FirePageLoad);
     }
 
     pub fn page_settled(&self) {
@@ -397,6 +402,14 @@ fn worker_main(state: WorkerThreadState) {
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_fire_dom_content_loaded", &[]);
+                settle_task(scope);
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
+            }
+            WorkerCommand::FirePageLoad => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
+                call_global_fn(scope, "__glide_fire_page_load", &[]);
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
@@ -890,6 +903,15 @@ fn map_dom_op(
         "submitForm" => DomRequest::SubmitForm {
             form: arg_handle(scope, args, 2)?,
             submitter: arg_handle(scope, args, 3)?,
+            reply,
+        },
+        "controlField" => DomRequest::ControlField {
+            node: arg_handle(scope, args, 2)?,
+            field: arg_string(scope, args, 3)?,
+            reply,
+        },
+        "syncFormControls" => DomRequest::SyncFormControls {
+            form: arg_handle(scope, args, 2)?,
             reply,
         },
         "randomBytes" => {

@@ -984,6 +984,70 @@ fn mutation_observer_honors_attribute_filter_and_character_data() {
 }
 
 #[test]
+fn mutation_observer_accepts_text_and_comment_targets() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+    <script>
+      var parts = [];
+      function charDataRecs(mo) {
+        return mo.takeRecords().filter(function (r) { return r.type === 'characterData'; });
+      }
+      function okSingle(mo, target) {
+        var recs = charDataRecs(mo);
+        return recs.length === 1 && recs[0].target === target;
+      }
+      var text = document.createTextNode('a');
+      var comment = document.createComment('b');
+      document.body.appendChild(text);
+      document.body.appendChild(comment);
+      var textMo = new MutationObserver(function () {});
+      var commentMo = new MutationObserver(function () {});
+      textMo.observe(text, { characterData: true });
+      commentMo.observe(comment, { characterData: true });
+      text.data = 'x';
+      comment.data = 'y';
+      parts.push(okSingle(textMo, text) ? 'text-ok' : 'text-bad');
+      parts.push(okSingle(commentMo, comment) ? 'comment-ok' : 'comment-bad');
+      var threw = false;
+      try {
+        textMo.observe({}, { characterData: true });
+      } catch (e) {
+        threw = e instanceof TypeError;
+      }
+      parts.push(threw ? 'type-ok' : 'type-bad');
+      var detachedText = document.createTextNode('d');
+      var detachedComment = document.createComment('c');
+      var detachedTextMo = new MutationObserver(function () {});
+      var detachedCommentMo = new MutationObserver(function () {});
+      detachedTextMo.observe(detachedText, { characterData: true });
+      detachedCommentMo.observe(detachedComment, { characterData: true });
+      detachedText.data = 'e';
+      detachedComment.nodeValue = 'f';
+      parts.push(okSingle(detachedTextMo, detachedText) ? 'detached-text-ok' : 'detached-text-bad');
+      parts.push(okSingle(detachedCommentMo, detachedComment)
+        ? 'detached-comment-ok' : 'detached-comment-bad');
+      var bag = document.createElement('div');
+      var nestedText = document.createTextNode('nested');
+      bag.appendChild(nestedText);
+      var cloneHost = document.createElement('div');
+      cloneHost.appendChild(nestedText.cloneNode(true));
+      var bagMo = new MutationObserver(function () {});
+      var cloneMo = new MutationObserver(function () {});
+      bagMo.observe(bag, { characterData: true, subtree: true });
+      cloneMo.observe(cloneHost, { characterData: true, subtree: true });
+      nestedText.data = 'nested2';
+      cloneHost.firstChild.data = 'cloned2';
+      parts.push(okSingle(bagMo, nestedText) ? 'subtree-ok' : 'subtree-bad');
+      parts.push(okSingle(cloneMo, cloneHost.firstChild) ? 'clone-subtree-ok' : 'clone-subtree-bad');
+      document.getElementById('t').textContent = parts.join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(
+        result.final_text,
+        "text-ok|comment-ok|type-ok|detached-text-ok|detached-comment-ok|subtree-ok|clone-subtree-ok"
+    );
+}
+
+#[test]
 fn intersection_observer_fires_for_visible_and_hidden_elements() {
     let html = r#"<!DOCTYPE html><html><body>
       <div id="vis" style="width:40px;height:10px"></div>
@@ -1642,6 +1706,43 @@ fn json_eval_returns_json_text() {
 }
 
 #[test]
+fn input_value_round_trips_same_turn_without_stale_readback() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <input id="i" value="">
+      <p id="t">x</p>
+      <script>
+        var input = document.getElementById('i');
+        input.value = 'hello';
+        document.getElementById('t').textContent = input.value;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "hello");
+}
+
+#[test]
+fn request_submit_rejects_foreign_submitter() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form id="f"></form>
+      <button id="b" type="submit"></button>
+      <p id="t">pending</p>
+      <script>
+        var err = '';
+        try {
+          document.getElementById('f').requestSubmit(document.getElementById('b'));
+        } catch (e) {
+          err = (e.name || 'Error') + ':' + (e.code != null ? e.code : '');
+        }
+        document.getElementById('t').textContent = err;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert!(
+        result.final_text.contains("NotFoundError") || result.final_text.contains("not owned"),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
 fn request_submit_fires_submit_event_and_navigates() {
     let html = r#"<!DOCTYPE html><html><body>
       <form action="/search" method="get">
@@ -1772,6 +1873,7 @@ fn url_search_params_iterates_and_mutates() {
 #[test]
 fn document_cookie_get_set_visible_to_scripts() {
     use std::sync::Arc;
+    let _jar_guard = crate::cookies::CookieJar::lock_global_for_test();
     crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
     let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
       <script>
@@ -1780,6 +1882,25 @@ fn document_cookie_get_set_visible_to_scripts() {
       </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(80));
     assert_eq!(result.final_text, "a=1");
+}
+
+#[test]
+fn document_cookie_expired_assignment_does_not_throw() {
+    use std::sync::Arc;
+    let _jar_guard = crate::cookies::CookieJar::lock_global_for_test();
+    crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var name = 'exp_' + Math.random().toString(36).slice(2);
+        try {
+          document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/';
+          document.getElementById('t').textContent = 'ok';
+        } catch (e) {
+          document.getElementById('t').textContent = 'threw: ' + e.message;
+        }
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "ok");
 }
 
 #[test]
@@ -1880,6 +2001,24 @@ fn custom_element_es6_class_connected_callback() {
         document.getElementById('t').textContent = document.getElementById('a').textContent;
       </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn document_cookie_rejected_assignment_does_not_throw() {
+    use std::sync::Arc;
+    let _jar_guard = crate::cookies::CookieJar::lock_global_for_test();
+    crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        try {
+          document.cookie = 'a=1; Domain=example.com; Path=/';
+          document.getElementById('t').textContent = 'ok';
+        } catch (e) {
+          document.getElementById('t').textContent = 'threw: ' + e.message;
+        }
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
     assert_eq!(result.final_text, "ok");
 }
 

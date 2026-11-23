@@ -5,6 +5,7 @@ mod batch;
 mod bridge;
 pub mod console_feed;
 pub mod diagnostics;
+mod form_controls;
 mod host;
 mod modules;
 mod paint_prune;

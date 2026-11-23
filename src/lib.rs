@@ -25,6 +25,7 @@ pub mod location;
 pub mod logging;
 pub mod mcp;
 pub mod nav;
+pub mod nav_request;
 pub mod net;
 pub mod network_feed;
 pub mod parse;

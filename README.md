@@ -96,6 +96,15 @@ cargo run --release -- --screenshot --no-js https://example.com example-nojs.png
 
 This fetches the page, waits for stylesheets and images, runs page scripts unless `--no-js` is set, and writes a PNG with Vello's CPU rasterizer.
 
+### macOS app bundle and icon
+
+The binary embeds an `Info.plist` (so the app menu reads "Glide") and sets the glider Dock
+icon at startup. To build a double-clickable `Glide.app` (icon from `assets/icon/`):
+
+```sh
+scripts/bundle-macos.sh   # prints <target>/release/Glide.app
+```
+
 ### Agent control (MCP)
 
 `glide --mcp` serves the [Model Context Protocol](https://modelcontextprotocol.io) on stdio
@@ -221,6 +230,7 @@ The chrome is an HTML document drawn by Blitz. It contains, top to bottom, a men
 src/lib.rs        crate modules and library entry points
 src/main.rs       CLI dispatch (window, screenshot, help)
 src/app.rs        window, tab sync, history sync, keyboard shortcuts, JS pump
+src/app_icon.rs   embedded app icon: window icon and macOS Dock icon
 src/tabs.rs       per-tab state, tab selection and session v2
 src/history.rs    back/forward stack
 src/args.rs       CLI parsing

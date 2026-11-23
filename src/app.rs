@@ -184,6 +184,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
 
     let attrs = WindowAttributes::default()
         .with_title("Glide")
+        .with_window_icon(crate::app_icon::window_icon())
         .with_surface_size(winit::dpi::LogicalSize::new(1100.0, 760.0));
     let window = WindowConfig::with_attributes(Box::new(doc), Renderer::new(), attrs);
 
@@ -1889,6 +1890,7 @@ impl ApplicationHandler for Glide {
         self.inner.can_create_surfaces(event_loop);
         #[cfg(target_os = "macos")]
         {
+            crate::app_icon::install_dock_icon();
             let wake = self.inner.proxy.clone();
             let js_enabled = self.html_provider.scripting_enabled.load(Ordering::Relaxed);
             let view = chrome_view_state(

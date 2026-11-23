@@ -143,6 +143,103 @@
     return false;
   }
 
+  function nodeIsConnected(node) {
+    if (!node) return false;
+    let n = node;
+    while (n) {
+      if (n.nodeType === 9) return n === pageDocument;
+      if (n.nodeType === 11 && n.host) n = n.host;
+      else n = n.parentNode;
+    }
+    return false;
+  }
+
+  let domTreeApiPatched = false;
+
+  function nodesFromDomArgs(doc, args) {
+    const out = [];
+    for (let i = 0; i < args.length; i += 1) {
+      const item = args[i];
+      if (item == null) continue;
+      if (typeof item === 'string') out.push(doc.createTextNode(item));
+      else out.push(item);
+    }
+    return out;
+  }
+
+  // Domino 2.1.x lacks several DOM Standard tree APIs Reddit's bundle calls.
+  function installDomTreeApiPatches(impl) {
+    if (domTreeApiPatched || !impl) return;
+    const NodeProto = impl.Node && impl.Node.prototype;
+    const ElementProto = impl.Element && impl.Element.prototype;
+    const FragmentProto = impl.DocumentFragment && impl.DocumentFragment.prototype;
+    if (!NodeProto) return;
+    domTreeApiPatched = true;
+
+    if (typeof NodeProto.getRootNode !== 'function') {
+      NodeProto.getRootNode = function getRootNode(options) {
+        const composed = !!(options && options.composed);
+        let root = this;
+        for (;;) {
+          const parent = root.parentNode;
+          if (!parent) break;
+          if (composed && root.nodeType === 11 && root.host) {
+            root = root.host;
+            continue;
+          }
+          root = parent;
+        }
+        return root;
+      };
+    }
+
+    function installParentNode(proto) {
+      if (!proto || proto.__glide_parent_node_patched) return;
+      proto.__glide_parent_node_patched = true;
+      const docFor = (node) => (node.nodeType === 9 ? node : node.ownerDocument);
+
+      if (typeof proto.append !== 'function') {
+        proto.append = function append(...nodes) {
+          const kids = nodesFromDomArgs(docFor(this), nodes);
+          for (let i = 0; i < kids.length; i += 1) this.appendChild(kids[i]);
+        };
+      }
+      if (typeof proto.prepend !== 'function') {
+        proto.prepend = function prepend(...nodes) {
+          const doc = docFor(this);
+          const kids = nodesFromDomArgs(doc, nodes);
+          const ref = this.firstChild;
+          for (let i = 0; i < kids.length; i += 1) {
+            this.insertBefore(kids[i], ref);
+          }
+        };
+      }
+      if (typeof proto.replaceChildren !== 'function') {
+        proto.replaceChildren = function replaceChildren(...nodes) {
+          const doc = docFor(this);
+          const kids = nodesFromDomArgs(doc, nodes);
+          while (this.firstChild) this.removeChild(this.firstChild);
+          for (let i = 0; i < kids.length; i += 1) this.appendChild(kids[i]);
+        };
+      }
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(NodeProto, 'isConnected')) {
+      Object.defineProperty(NodeProto, 'isConnected', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return nodeIsConnected(this);
+        },
+      });
+    }
+
+    // ParentNode on Document breaks domino's snapshot child walk if installed
+    // before the tree is built; patch element and fragment only.
+    installParentNode(ElementProto);
+    installParentNode(FragmentProto);
+  }
+
   function walkUpgradedInSubtree(root, visitor) {
     walkElementTree(root, (el) => {
       if (ceUpgraded.has(el)) visitor(el);
@@ -1716,6 +1813,7 @@
     global.Node = impl.Node;
     global.Element = impl.Element;
     global.HTMLElement = impl.HTMLElement;
+    installDomTreeApiPatches(impl);
     global.Event = impl.Event;
     global.CustomEvent = impl.CustomEvent;
     global.MouseEvent = impl.MouseEvent;

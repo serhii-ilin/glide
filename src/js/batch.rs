@@ -11,6 +11,7 @@ use blitz_dom::{BaseDocument, LocalName, QualName, ns};
 use blitz_traits::node_id::NodeId;
 use serde::Deserialize;
 use serde_json::json;
+use stylo_dom::ElementState;
 
 use super::bridge::{DomResponse, DomValue, node_to_handle, resolve_handle};
 use crate::logging;
@@ -76,6 +77,8 @@ enum BatchOp {
     },
     #[serde(rename = "text")]
     Text { id: NodeRef, value: String },
+    #[serde(rename = "state")]
+    State { id: NodeRef, defined: bool },
     #[serde(rename = "move")]
     Move {
         id: NodeRef,
@@ -200,11 +203,22 @@ fn apply_op(
                 }
                 _ => {
                     let tag = name.as_deref().unwrap_or("div");
+                    let elem_ns = ns
+                        .as_deref()
+                        .unwrap_or(crate::custom_elements::HTML_NAMESPACE);
+                    let mark_defined =
+                        !crate::custom_elements::is_custom_element_local_name(tag, elem_ns);
                     let mut m = doc.mutate();
                     let id = m.create_element(element_qual(tag, ns.as_deref()), Vec::new());
                     for attr in &attrs {
                         let (n, v, ans) = attr.parts();
                         m.set_attribute(id, attr_qual(n, ans), v);
+                    }
+                    drop(m);
+                    if mark_defined {
+                        doc.snapshot_node_and(id, ElementState::DEFINED, |node| {
+                            node.element_state_mut().insert(ElementState::DEFINED);
+                        });
                     }
                     id
                 }
@@ -241,6 +255,15 @@ fn apply_op(
                 Some(v) => m.set_attribute(node, attr_qual(&name, ns.as_deref()), &v),
                 None => m.clear_attribute(node, attr_qual(&name, ns.as_deref())),
             }
+            Ok(())
+        }
+        BatchOp::State { id, defined } => {
+            let Some(node_id) = resolve_ref(doc, cid_map, &id) else {
+                return Ok(());
+            };
+            doc.snapshot_node_and(node_id, ElementState::DEFINED, |node| {
+                node.element_state_mut().set(ElementState::DEFINED, defined);
+            });
             Ok(())
         }
         BatchOp::Text { id, value } => {

@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">pending</p>
+  <script>
+    try {
+      customElements.define('x-iso', function () {}, { extends: 'button' });
+    } catch (e) {}
+    document.getElementById('t').textContent = 'done';
+  </script>
+</body>
+</html>

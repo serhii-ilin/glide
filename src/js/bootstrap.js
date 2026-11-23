@@ -755,64 +755,6 @@
   };
   global.CSS.escape = cssEscape;
 
-  const CE_RESERVED = new Set([
-    'annotation-xml', 'color-profile', 'font-face', 'font-face-src', 'font-face-uri',
-    'font-face-format', 'font-face-name', 'missing-glyph',
-  ]);
-  const ceRegistry = new Map();
-  const cePending = new Map();
-
-  function validCustomElementName(name) {
-    const n = String(name);
-    if (!n.includes('-')) return false;
-    if (/[A-Z]/.test(n)) return false;
-    if (CE_RESERVED.has(n.toLowerCase())) return false;
-    return /^[a-z][a-z0-9._-]*-[a-z0-9._-]+$/.test(n);
-  }
-
-  function resolveWhenDefined(name) {
-    const pending = cePending.get(name);
-    if (pending) {
-      cePending.delete(name);
-      pending.resolve(ceRegistry.get(name));
-    }
-  }
-
-  global.customElements = {
-    define(name, ctor, _options) {
-      const n = String(name);
-      if (!validCustomElementName(n)) {
-        const err = new SyntaxError('Invalid custom element name');
-        throw err;
-      }
-      if (ceRegistry.has(n)) {
-        const err = typeof DOMException !== 'undefined' && DOMException.NOT_SUPPORTED_ERR != null
-          ? new DOMException(DOMException.NOT_SUPPORTED_ERR)
-          : new Error('Custom element already defined');
-        err.name = 'NotSupportedError';
-        throw err;
-      }
-      if (typeof ctor !== 'function') throw new TypeError('Constructor must be a function');
-      ceRegistry.set(n, ctor);
-      resolveWhenDefined(n);
-    },
-    get(name) {
-      return ceRegistry.get(String(name)) || undefined;
-    },
-    whenDefined(name) {
-      const n = String(name);
-      if (ceRegistry.has(n)) return Promise.resolve(ceRegistry.get(n));
-      if (!cePending.has(n)) {
-        let resolve;
-        const p = new Promise((r) => { resolve = r; });
-        cePending.set(n, { promise: p, resolve });
-        return p;
-      }
-      return cePending.get(n).promise;
-    },
-    upgrade(_root) {},
-  };
-
   function Image(width, height) {
     const img = document.createElement('img');
     if (arguments.length >= 1 && width != null) img.width = width;

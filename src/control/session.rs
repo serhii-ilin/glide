@@ -337,18 +337,19 @@ impl HeadlessSession {
         timeout: Duration,
     ) -> Result<PageInfo, String> {
         match step {
-            HistoryStep::Document { url } => match self.load_url(url, timeout, LoadHistory::Traverse)
-            {
-                Ok(()) => self.page_info(),
-                Err(e) => {
-                    if let Some(h) = self.history.as_ref() {
-                        if let Ok(mut guard) = h.lock() {
+            HistoryStep::Document { url } => {
+                match self.load_url(url, timeout, LoadHistory::Traverse) {
+                    Ok(()) => self.page_info(),
+                    Err(e) => {
+                        if let Some(h) = self.history.as_ref()
+                            && let Ok(mut guard) = h.lock()
+                        {
                             let _ = guard.forward();
                         }
+                        Err(e)
                     }
-                    Err(e)
                 }
-            },
+            }
             HistoryStep::SameDocument {
                 url,
                 state,

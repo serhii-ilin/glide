@@ -988,6 +988,13 @@ fn mutation_observer_accepts_text_and_comment_targets() {
     let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
     <script>
       var parts = [];
+      function charDataRecs(mo) {
+        return mo.takeRecords().filter(function (r) { return r.type === 'characterData'; });
+      }
+      function okSingle(mo, target) {
+        var recs = charDataRecs(mo);
+        return recs.length === 1 && recs[0].target === target;
+      }
       var text = document.createTextNode('a');
       var comment = document.createComment('b');
       document.body.appendChild(text);
@@ -998,10 +1005,8 @@ fn mutation_observer_accepts_text_and_comment_targets() {
       commentMo.observe(comment, { characterData: true });
       text.data = 'x';
       comment.data = 'y';
-      var textRec = textMo.takeRecords().filter(function (r) { return r.type === 'characterData'; })[0];
-      var commentRec = commentMo.takeRecords().filter(function (r) { return r.type === 'characterData'; })[0];
-      parts.push(textRec && textRec.target === text ? 'text-ok' : 'text-bad');
-      parts.push(commentRec && commentRec.target === comment ? 'comment-ok' : 'comment-bad');
+      parts.push(okSingle(textMo, text) ? 'text-ok' : 'text-bad');
+      parts.push(okSingle(commentMo, comment) ? 'comment-ok' : 'comment-bad');
       var threw = false;
       try {
         textMo.observe({}, { characterData: true });
@@ -1017,22 +1022,28 @@ fn mutation_observer_accepts_text_and_comment_targets() {
       detachedCommentMo.observe(detachedComment, { characterData: true });
       detachedText.data = 'e';
       detachedComment.nodeValue = 'f';
-      var detachedTextRec = detachedTextMo.takeRecords().filter(function (r) {
-        return r.type === 'characterData';
-      })[0];
-      var detachedCommentRec = detachedCommentMo.takeRecords().filter(function (r) {
-        return r.type === 'characterData';
-      })[0];
-      parts.push(detachedTextRec && detachedTextRec.target === detachedText
-        ? 'detached-text-ok' : 'detached-text-bad');
-      parts.push(detachedCommentRec && detachedCommentRec.target === detachedComment
+      parts.push(okSingle(detachedTextMo, detachedText) ? 'detached-text-ok' : 'detached-text-bad');
+      parts.push(okSingle(detachedCommentMo, detachedComment)
         ? 'detached-comment-ok' : 'detached-comment-bad');
+      var bag = document.createElement('div');
+      var nestedText = document.createTextNode('nested');
+      bag.appendChild(nestedText);
+      var cloneHost = document.createElement('div');
+      cloneHost.appendChild(nestedText.cloneNode(true));
+      var bagMo = new MutationObserver(function () {});
+      var cloneMo = new MutationObserver(function () {});
+      bagMo.observe(bag, { characterData: true, subtree: true });
+      cloneMo.observe(cloneHost, { characterData: true, subtree: true });
+      nestedText.data = 'nested2';
+      cloneHost.firstChild.data = 'cloned2';
+      parts.push(okSingle(bagMo, nestedText) ? 'subtree-ok' : 'subtree-bad');
+      parts.push(okSingle(cloneMo, cloneHost.firstChild) ? 'clone-subtree-ok' : 'clone-subtree-bad');
       document.getElementById('t').textContent = parts.join('|');
     </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(200));
     assert_eq!(
         result.final_text,
-        "text-ok|comment-ok|type-ok|detached-text-ok|detached-comment-ok"
+        "text-ok|comment-ok|type-ok|detached-text-ok|detached-comment-ok|subtree-ok|clone-subtree-ok"
     );
 }
 
@@ -1825,6 +1836,7 @@ fn url_search_params_iterates_and_mutates() {
 #[test]
 fn document_cookie_get_set_visible_to_scripts() {
     use std::sync::Arc;
+    let _jar_guard = crate::cookies::CookieJar::lock_global_for_test();
     crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
     let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
       <script>
@@ -1838,12 +1850,31 @@ fn document_cookie_get_set_visible_to_scripts() {
 #[test]
 fn document_cookie_expired_assignment_does_not_throw() {
     use std::sync::Arc;
+    let _jar_guard = crate::cookies::CookieJar::lock_global_for_test();
     crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
     let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
       <script>
         var name = 'exp_' + Math.random().toString(36).slice(2);
         try {
           document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/';
+          document.getElementById('t').textContent = 'ok';
+        } catch (e) {
+          document.getElementById('t').textContent = 'threw: ' + e.message;
+        }
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn document_cookie_rejected_assignment_does_not_throw() {
+    use std::sync::Arc;
+    let _jar_guard = crate::cookies::CookieJar::lock_global_for_test();
+    crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        try {
+          document.cookie = 'a=1; Domain=example.com; Path=/';
           document.getElementById('t').textContent = 'ok';
         } catch (e) {
           document.getElementById('t').textContent = 'threw: ' + e.message;

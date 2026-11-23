@@ -429,7 +429,11 @@
       const moOpts = normalizeMoOptions(options);
       if (moOpts.characterData) {
         const nt = target.nodeType;
-        if (nt === 3 || nt === 8 || nt === 7) installCharacterDataInstanceHook(target);
+        if (nt === 3 || nt === 8 || nt === 7) {
+          installCharacterDataInstanceHook(target);
+        } else if (moOpts.subtree) {
+          hookCharacterDataSubtree(target);
+        }
       }
       this._targets.set(target, moOpts);
     }
@@ -767,6 +771,20 @@
   // Domino only emits value mutations for rooted nodes. Page scripts may observe
   // detached Text/Comment nodes (the classic microtask-queue polyfill does), so
   // wrap the node's `_data` slot and emit for unrooted changes ourselves.
+  function hookCharacterDataSubtree(root) {
+    if (!root) return;
+    const stack = [root.firstChild];
+    let walked = 0;
+    while (stack.length && walked < 4096) {
+      const node = stack.pop();
+      if (!node) continue;
+      walked += 1;
+      installCharacterDataInstanceHook(node);
+      if (node.nextSibling) stack.push(node.nextSibling);
+      if (node.firstChild) stack.push(node.firstChild);
+    }
+  }
+
   function installCharacterDataInstanceHook(node) {
     if (!node || node.__glideCharDataDelivery) return;
     const nt = node.nodeType;

@@ -29,6 +29,20 @@ jobs:
             libxcb1-dev libx11-dev libfontconfig1-dev
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # v0 caches predating v8 152.x could restore target/ without
+          # target/*/build/gn_out/obj/librusty_v8.a while v8 fingerprints look
+          # fresh, so clippy passes and nextest fails to link rusty_v8.
+          prefix-key: v1-rust-v8-152
+          cache-directories: |
+            ${{ env.CARGO_HOME }}/.rusty_v8
+
+      - name: Ensure V8 static library after cache restore
+        run: |
+          lib=target/debug/build/gn_out/obj/librusty_v8.a
+          if [ ! -f "$lib" ] && compgen -G 'target/debug/.fingerprint/v8-*' >/dev/null; then
+            cargo clean -p v8
+          fi
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2

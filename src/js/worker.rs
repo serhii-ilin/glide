@@ -41,6 +41,7 @@ thread_local! {
     static DOM_TX: std::cell::RefCell<Option<Sender<DomRpc>>> = const { std::cell::RefCell::new(None) };
     static DOM_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static WORKER_TAB_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static OPAQUE_DOCUMENT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static WORKER_RETIRED: std::cell::RefCell<Option<Arc<AtomicBool>>> =
         const { std::cell::RefCell::new(None) };
     static HOST_WAKE: std::cell::RefCell<Option<Arc<HostWake>>> = const { std::cell::RefCell::new(None) };
@@ -61,6 +62,7 @@ pub enum WorkerCommand {
         storage_json: String,
         tab_id: u64,
         page_epoch: u64,
+        opaque_document_id: u64,
     },
     RunScripts {
         sources: Vec<(String, Option<u64>, bool, String)>,
@@ -176,6 +178,7 @@ impl JsWorker {
         storage_json: String,
         tab_id: u64,
         page_epoch: u64,
+        opaque_document_id: u64,
     ) {
         let _ = self.tx.send(WorkerCommand::InitPage {
             snapshot_json,
@@ -183,6 +186,7 @@ impl JsWorker {
             storage_json,
             tab_id,
             page_epoch,
+            opaque_document_id,
         });
     }
 
@@ -363,10 +367,12 @@ fn worker_main(state: WorkerThreadState) {
                 storage_json,
                 tab_id,
                 page_epoch,
+                opaque_document_id,
             } => {
                 diagnostics::set_page_url(page_url.clone());
                 super::console_feed::set_worker_route(tab_id, page_epoch);
                 WORKER_TAB_ID.with(|t| t.set(tab_id));
+                OPAQUE_DOCUMENT_ID.with(|d| d.set(opaque_document_id));
                 super::promise_console::clear_promise_rows();
                 clear_module_graph();
                 PENDING_DYNAMIC_IMPORTS.with(|p| p.borrow_mut().clear());
@@ -967,7 +973,8 @@ fn map_dom_op(
             index: arg_optional_u32(scope, args, 6),
             page_url: arg_string(scope, args, 7)?,
             tab_id: WORKER_TAB_ID.with(|t| t.get()),
-            doc_generation: DOM_GENERATION.with(|g| g.get()),
+            opaque_document_id: OPAQUE_DOCUMENT_ID.with(|d| d.get()),
+            source_generation: DOM_GENERATION.with(|g| g.get()),
             reply,
         },
         "wsConnect" => DomRequest::WebSocketConnect {

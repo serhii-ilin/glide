@@ -214,10 +214,8 @@ pub struct HeadlessSession {
 
 impl HeadlessSession {
     pub fn new(opts: SessionOptions) -> Self {
-        let profile = crate::profile::ProfileStore::open();
-        let profile_dir = profile.data_dir();
-        crate::cookies::CookieJar::ensure_process_global(profile_dir);
-        crate::web_storage::WebStorage::ensure_process_global(profile_dir);
+        crate::cookies::CookieJar::ensure_process_global(None);
+        crate::web_storage::WebStorage::ensure_process_global(None);
         Self {
             opts,
             document: None,

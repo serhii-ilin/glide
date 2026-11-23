@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufReader, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -13,6 +15,12 @@ const STORAGE_FILE: &str = "local_storage.json";
 pub const QUOTA_BYTES: usize = 5 * 1024 * 1024;
 
 static GLOBAL: RwLock<Option<Arc<WebStorage>>> = RwLock::new(None);
+static NEXT_OPAQUE_DOCUMENT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Unique id for opaque-origin storage partitions (stable across JsHost restarts).
+pub fn allocate_opaque_document_id() -> u64 {
+    NEXT_OPAQUE_DOCUMENT_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 #[cfg(test)]
 static GLOBAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -25,14 +33,20 @@ pub enum StorageArea {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Partition {
-    Tuple { origin: String, tab_id: u64 },
-    Opaque { tab_id: u64, doc_generation: u64 },
+    Tuple {
+        origin: String,
+        tab_id: u64,
+    },
+    Opaque {
+        tab_id: u64,
+        opaque_document_id: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct StorageChange {
     pub area: StorageArea,
-    pub key: String,
+    pub key: Option<String>,
     pub old_value: Option<String>,
     pub new_value: Option<String>,
     pub page_url: String,
@@ -40,9 +54,15 @@ pub struct StorageChange {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+struct PersistedOrigin {
+    #[serde(default)]
+    entries: Vec<(String, String)>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct PersistedFile {
     #[serde(default)]
-    origins: HashMap<String, BTreeMap<String, String>>,
+    origins: HashMap<String, PersistedOrigin>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -52,24 +72,43 @@ struct OrderedStore {
 }
 
 impl OrderedStore {
-    fn from_persisted(map: BTreeMap<String, String>) -> Self {
+    fn from_legacy_map(map: BTreeMap<String, String>) -> Self {
         let order: Vec<String> = map.keys().cloned().collect();
         let values = map.into_iter().collect();
         Self { order, values }
     }
 
-    fn to_persisted(&self) -> BTreeMap<String, String> {
-        let mut out = BTreeMap::new();
-        for key in &self.order {
-            if let Some(value) = self.values.get(key) {
-                out.insert(key.clone(), value.clone());
+    fn from_persisted(origin: &PersistedOrigin) -> Self {
+        if !origin.entries.is_empty() {
+            let mut order = Vec::with_capacity(origin.entries.len());
+            let mut values = HashMap::with_capacity(origin.entries.len());
+            for (key, value) in &origin.entries {
+                if !values.contains_key(key) {
+                    order.push(key.clone());
+                }
+                values.insert(key.clone(), value.clone());
             }
+            return Self { order, values };
         }
-        out
+        Self::default()
+    }
+
+    fn to_persisted(&self) -> PersistedOrigin {
+        PersistedOrigin {
+            entries: self
+                .order
+                .iter()
+                .filter_map(|k| self.values.get(k).map(|v| (k.clone(), v.clone())))
+                .collect(),
+        }
     }
 
     fn len(&self) -> usize {
         self.values.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 
     fn get(&self, key: &str) -> Option<&String> {
@@ -113,6 +152,7 @@ pub struct WebStorage {
     session_tuple: RwLock<HashMap<(u64, String), OrderedStore>>,
     session_opaque: RwLock<HashMap<(u64, u64), OrderedStore>>,
     persist_path: Option<PathBuf>,
+    persist_scheduled: AtomicBool,
 }
 
 impl WebStorage {
@@ -123,6 +163,7 @@ impl WebStorage {
             session_tuple: RwLock::new(HashMap::new()),
             session_opaque: RwLock::new(HashMap::new()),
             persist_path: None,
+            persist_scheduled: AtomicBool::new(false),
         }
     }
 
@@ -133,6 +174,7 @@ impl WebStorage {
             session_tuple: RwLock::new(HashMap::new()),
             session_opaque: RwLock::new(HashMap::new()),
             persist_path: Some(path),
+            persist_scheduled: AtomicBool::new(false),
         }
     }
 
@@ -144,7 +186,7 @@ impl WebStorage {
         let file = PersistedFile::read(path)?;
         let mut tuple = HashMap::new();
         for (origin, map) in file.origins {
-            tuple.insert(origin, OrderedStore::from_persisted(map));
+            tuple.insert(origin, OrderedStore::from_persisted(&map));
         }
         Ok(Self {
             local_tuple: RwLock::new(tuple),
@@ -152,6 +194,7 @@ impl WebStorage {
             session_tuple: RwLock::new(HashMap::new()),
             session_opaque: RwLock::new(HashMap::new()),
             persist_path: Some(path.to_path_buf()),
+            persist_scheduled: AtomicBool::new(false),
         })
     }
 
@@ -211,21 +254,63 @@ impl WebStorage {
                     .collect(),
             }
         };
-        snapshot.write_atomic(path)
-    }
-
-    fn maybe_persist_local(&self) {
-        if self.persist_path.is_some() {
-            let _ = self.save();
+        match snapshot.write_atomic(path) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                crate::logging::warn(
+                    "profile.storage",
+                    "local_storage save failed",
+                    &[
+                        ("error_kind", "io".into()),
+                        ("detail", err.clone()),
+                        ("hint", "check profile dir permissions (F-081)".into()),
+                    ],
+                );
+                Err(err)
+            }
         }
     }
 
-    fn partition(page_url: &str, tab_id: u64, doc_generation: u64) -> Result<Partition, String> {
+    /// Block until any debounced persist finishes and write `localStorage` to disk.
+    pub fn flush_persist(&self) {
+        for _ in 0..200 {
+            if !self.persist_scheduled.load(Ordering::Acquire) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = self.save();
+    }
+
+    fn schedule_persist_local(self: &Arc<Self>) {
+        if self.persist_path.is_none() {
+            return;
+        }
+        if self
+            .persist_scheduled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let store = Arc::clone(self);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            let _ = store.save();
+            store.persist_scheduled.store(false, Ordering::Release);
+        });
+    }
+
+    fn partition(
+        page_url: &str,
+        tab_id: u64,
+        opaque_document_id: u64,
+    ) -> Result<Partition, String> {
         let url = Url::parse(page_url).map_err(|e| e.to_string())?;
         if is_opaque_storage_origin(&url) {
             return Ok(Partition::Opaque {
                 tab_id,
-                doc_generation,
+                opaque_document_id,
             });
         }
         Ok(Partition::Tuple {
@@ -234,14 +319,23 @@ impl WebStorage {
         })
     }
 
-    fn map_size(map: &OrderedStore) -> usize {
-        map.iter_pairs().map(|(k, v)| k.len() + v.len()).sum()
+    pub(crate) fn utf16_len(s: &str) -> usize {
+        s.encode_utf16().count()
+    }
+
+    fn map_size_utf16(map: &OrderedStore) -> usize {
+        map.iter_pairs()
+            .map(|(k, v)| Self::utf16_len(k) + Self::utf16_len(v))
+            .sum()
     }
 
     fn check_quota(map: &OrderedStore, key: &str, new_value: &str) -> Result<(), String> {
-        let old_len = map.get(key).map(|v| key.len() + v.len()).unwrap_or(0);
-        let new_len = key.len() + new_value.len();
-        let total = Self::map_size(map) + new_len.saturating_sub(old_len);
+        let old_len = map
+            .get(key)
+            .map(|v| Self::utf16_len(key) + Self::utf16_len(v))
+            .unwrap_or(0);
+        let new_len = Self::utf16_len(key) + Self::utf16_len(new_value);
+        let total = Self::map_size_utf16(map) + new_len.saturating_sub(old_len);
         if total > QUOTA_BYTES {
             return Err("QuotaExceededError".into());
         }
@@ -260,9 +354,9 @@ impl WebStorage {
         &self,
         page_url: &str,
         tab_id: u64,
-        doc_generation: u64,
+        opaque_document_id: u64,
     ) -> Result<serde_json::Value, String> {
-        let partition = Self::partition(page_url, tab_id, doc_generation)?;
+        let partition = Self::partition(page_url, tab_id, opaque_document_id)?;
         let local: serde_json::Map<String, serde_json::Value> = self
             .snapshot_pairs(StorageArea::Local, &partition)
             .into_iter()
@@ -287,9 +381,14 @@ impl WebStorage {
                 let mut guard = self.local_tuple.write().unwrap_or_else(|p| p.into_inner());
                 f(guard.entry(origin.clone()).or_default())
             }
-            (StorageArea::Local, Partition::Opaque { doc_generation, .. }) => {
+            (
+                StorageArea::Local,
+                Partition::Opaque {
+                    opaque_document_id, ..
+                },
+            ) => {
                 let mut guard = self.local_opaque.write().unwrap_or_else(|p| p.into_inner());
-                f(guard.entry(*doc_generation).or_default())
+                f(guard.entry(*opaque_document_id).or_default())
             }
             (StorageArea::Session, Partition::Tuple { origin, tab_id }) => {
                 let mut guard = self
@@ -302,14 +401,14 @@ impl WebStorage {
                 StorageArea::Session,
                 Partition::Opaque {
                     tab_id,
-                    doc_generation,
+                    opaque_document_id,
                 },
             ) => {
                 let mut guard = self
                     .session_opaque
                     .write()
                     .unwrap_or_else(|p| p.into_inner());
-                f(guard.entry((*tab_id, *doc_generation)).or_default())
+                f(guard.entry((*tab_id, *opaque_document_id)).or_default())
             }
         }
     }
@@ -320,41 +419,41 @@ impl WebStorage {
         partition: &Partition,
         f: impl FnOnce(&OrderedStore) -> R,
     ) -> R {
+        let empty = OrderedStore::default();
         match (area, partition) {
             (StorageArea::Local, Partition::Tuple { origin, .. }) => {
                 let guard = self.local_tuple.read().unwrap_or_else(|p| p.into_inner());
-                let map = guard.get(origin).cloned().unwrap_or_default();
-                f(&map)
+                let map = guard.get(origin).unwrap_or(&empty);
+                f(map)
             }
-            (StorageArea::Local, Partition::Opaque { doc_generation, .. }) => {
+            (
+                StorageArea::Local,
+                Partition::Opaque {
+                    opaque_document_id, ..
+                },
+            ) => {
                 let guard = self.local_opaque.read().unwrap_or_else(|p| p.into_inner());
-                let map = guard.get(doc_generation).cloned().unwrap_or_default();
-                f(&map)
+                let map = guard.get(opaque_document_id).unwrap_or(&empty);
+                f(map)
             }
             (StorageArea::Session, Partition::Tuple { origin, tab_id }) => {
                 let guard = self.session_tuple.read().unwrap_or_else(|p| p.into_inner());
-                let map = guard
-                    .get(&(*tab_id, origin.clone()))
-                    .cloned()
-                    .unwrap_or_default();
-                f(&map)
+                let map = guard.get(&(*tab_id, origin.clone())).unwrap_or(&empty);
+                f(map)
             }
             (
                 StorageArea::Session,
                 Partition::Opaque {
                     tab_id,
-                    doc_generation,
+                    opaque_document_id,
                 },
             ) => {
                 let guard = self
                     .session_opaque
                     .read()
                     .unwrap_or_else(|p| p.into_inner());
-                let map = guard
-                    .get(&(*tab_id, *doc_generation))
-                    .cloned()
-                    .unwrap_or_default();
-                f(&map)
+                let map = guard.get(&(*tab_id, *opaque_document_id)).unwrap_or(&empty);
+                f(map)
             }
         }
     }
@@ -366,10 +465,26 @@ impl WebStorage {
         key: &str,
         page_url: &str,
         tab_id: u64,
-        doc_generation: u64,
+        opaque_document_id: u64,
     ) -> Result<Option<String>, String> {
-        let partition = Self::partition(page_url, tab_id, doc_generation)?;
+        let partition = Self::partition(page_url, tab_id, opaque_document_id)?;
         Ok(self.with_map_read(area, &partition, |map| map.get(key).cloned()))
+    }
+
+    fn emit_storage_change(
+        partition: &Partition,
+        tab_id: u64,
+        source_generation: u64,
+        change: StorageChange,
+    ) {
+        if let Partition::Tuple { origin, .. } = partition {
+            crate::js::storage_events::notify_other_listeners(
+                origin,
+                tab_id,
+                source_generation,
+                &change,
+            );
+        }
     }
 
     #[allow(clippy::too_many_arguments)] // mirrors Web Storage setter inputs from DOM RPC
@@ -380,13 +495,16 @@ impl WebStorage {
         value: &str,
         page_url: &str,
         tab_id: u64,
-        doc_generation: u64,
+        opaque_document_id: u64,
         source_generation: u64,
     ) -> Result<(), String> {
-        let partition = Self::partition(page_url, tab_id, doc_generation)?;
+        let partition = Self::partition(page_url, tab_id, opaque_document_id)?;
         let key = key.to_string();
         let value = value.to_string();
         let old_value = self.with_map_read(area, &partition, |map| map.get(&key).cloned());
+        if old_value.as_deref() == Some(value.as_str()) {
+            return Ok(());
+        }
         self.with_map_mut(area, &partition, |map| {
             Self::check_quota(map, &key, &value)?;
             map.insert(key.clone(), value.clone());
@@ -395,17 +513,19 @@ impl WebStorage {
         if area == StorageArea::Local {
             self.maybe_persist_local();
         }
-        if let Partition::Tuple { origin, .. } = &partition {
-            let change = StorageChange {
-                area,
-                key,
-                old_value,
-                new_value: Some(value),
-                page_url: page_url.to_string(),
-                origin: origin.clone(),
-            };
-            crate::js::storage_events::notify_other_listeners(origin, source_generation, &change);
-        }
+        let origin = match &partition {
+            Partition::Tuple { origin, .. } => origin.clone(),
+            _ => String::new(),
+        };
+        let change = StorageChange {
+            area,
+            key: Some(key),
+            old_value,
+            new_value: Some(value),
+            page_url: page_url.to_string(),
+            origin,
+        };
+        Self::emit_storage_change(&partition, tab_id, source_generation, change);
         Ok(())
     }
 
@@ -416,29 +536,34 @@ impl WebStorage {
         key: &str,
         page_url: &str,
         tab_id: u64,
-        doc_generation: u64,
+        opaque_document_id: u64,
         source_generation: u64,
     ) -> Result<(), String> {
-        let partition = Self::partition(page_url, tab_id, doc_generation)?;
+        let partition = Self::partition(page_url, tab_id, opaque_document_id)?;
         let key = key.to_string();
         let old_value = self.with_map_read(area, &partition, |map| map.get(&key).cloned());
+        if old_value.is_none() {
+            return Ok(());
+        }
         self.with_map_mut(area, &partition, |map| {
             map.remove(&key);
         });
         if area == StorageArea::Local {
             self.maybe_persist_local();
         }
-        if let (Partition::Tuple { origin, .. }, Some(_)) = (&partition, &old_value) {
-            let change = StorageChange {
-                area,
-                key,
-                old_value,
-                new_value: None,
-                page_url: page_url.to_string(),
-                origin: origin.clone(),
-            };
-            crate::js::storage_events::notify_other_listeners(origin, source_generation, &change);
-        }
+        let origin = match &partition {
+            Partition::Tuple { origin, .. } => origin.clone(),
+            _ => String::new(),
+        };
+        let change = StorageChange {
+            area,
+            key: Some(key),
+            old_value,
+            new_value: None,
+            page_url: page_url.to_string(),
+            origin,
+        };
+        Self::emit_storage_change(&partition, tab_id, source_generation, change);
         Ok(())
     }
 
@@ -448,37 +573,44 @@ impl WebStorage {
         area: StorageArea,
         page_url: &str,
         tab_id: u64,
-        doc_generation: u64,
+        opaque_document_id: u64,
         source_generation: u64,
     ) -> Result<(), String> {
-        let partition = Self::partition(page_url, tab_id, doc_generation)?;
-        let prior: Vec<(String, String)> = self.with_map_read(area, &partition, |map| {
-            map.iter_pairs()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        });
+        let partition = Self::partition(page_url, tab_id, opaque_document_id)?;
+        let had_keys = self.with_map_read(area, &partition, |map| !map.is_empty());
+        if !had_keys {
+            return Ok(());
+        }
         self.with_map_mut(area, &partition, |map| map.clear());
         if area == StorageArea::Local {
             self.maybe_persist_local();
         }
-        if let Partition::Tuple { origin, .. } = &partition {
-            for (key, value) in prior {
-                let change = StorageChange {
-                    area,
-                    key,
-                    old_value: Some(value),
-                    new_value: None,
-                    page_url: page_url.to_string(),
-                    origin: origin.clone(),
-                };
-                crate::js::storage_events::notify_other_listeners(
-                    origin,
-                    source_generation,
-                    &change,
-                );
-            }
-        }
+        let origin = match &partition {
+            Partition::Tuple { origin, .. } => origin.clone(),
+            _ => String::new(),
+        };
+        let change = StorageChange {
+            area,
+            key: None,
+            old_value: None,
+            new_value: None,
+            page_url: page_url.to_string(),
+            origin,
+        };
+        Self::emit_storage_change(&partition, tab_id, source_generation, change);
         Ok(())
+    }
+
+    fn maybe_persist_local(&self) {
+        if self.persist_path.is_none() {
+            return;
+        }
+        let global = Self::global();
+        if std::ptr::eq(self, global.as_ref()) {
+            global.schedule_persist_local();
+        } else {
+            let _ = self.save();
+        }
     }
 
     pub fn length(
@@ -486,9 +618,9 @@ impl WebStorage {
         area: StorageArea,
         page_url: &str,
         tab_id: u64,
-        doc_generation: u64,
+        opaque_document_id: u64,
     ) -> Result<u32, String> {
-        let partition = Self::partition(page_url, tab_id, doc_generation)?;
+        let partition = Self::partition(page_url, tab_id, opaque_document_id)?;
         Ok(self.with_map_read(area, &partition, |map| map.len() as u32))
     }
 
@@ -498,9 +630,9 @@ impl WebStorage {
         index: u32,
         page_url: &str,
         tab_id: u64,
-        doc_generation: u64,
+        opaque_document_id: u64,
     ) -> Result<Option<String>, String> {
-        let partition = Self::partition(page_url, tab_id, doc_generation)?;
+        let partition = Self::partition(page_url, tab_id, opaque_document_id)?;
         Ok(self.with_map_read(area, &partition, |map| map.key_at(index as usize).cloned()))
     }
 }
@@ -528,7 +660,36 @@ impl PersistedFile {
             return Ok(Self::default());
         }
         let file = File::open(path).map_err(|e| e.to_string())?;
-        serde_json::from_reader(BufReader::new(file)).map_err(|e| e.to_string())
+        #[derive(Deserialize, Default)]
+        struct RawFile {
+            #[serde(default)]
+            origins: HashMap<String, serde_json::Value>,
+        }
+        let raw: RawFile = match serde_json::from_reader(BufReader::new(file)) {
+            Ok(f) => f,
+            Err(err) => {
+                crate::logging::warn(
+                    "profile.storage",
+                    "local_storage.json corrupt or unreadable",
+                    &[
+                        ("error_kind", "json".into()),
+                        ("detail", err.to_string()),
+                        ("hint", "reset or delete local_storage.json (F-081)".into()),
+                    ],
+                );
+                return Ok(Self::default());
+            }
+        };
+        let mut origins = HashMap::new();
+        for (origin, value) in raw.origins {
+            if let Ok(p) = serde_json::from_value::<PersistedOrigin>(value.clone()) {
+                origins.insert(origin, p);
+            } else if let Ok(legacy) = serde_json::from_value::<BTreeMap<String, String>>(value) {
+                let ordered = OrderedStore::from_legacy_map(legacy);
+                origins.insert(origin, ordered.to_persisted());
+            }
+        }
+        Ok(Self { origins })
     }
 
     fn write_atomic(&self, path: &Path) -> Result<(), String> {
@@ -543,6 +704,11 @@ impl PersistedFile {
             file.sync_all().map_err(|e| e.to_string())?;
         }
         std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        if let Some(parent) = path.parent()
+            && let Ok(dir) = File::open(parent)
+        {
+            let _ = dir.sync_all();
+        }
         Ok(())
     }
 }
@@ -630,15 +796,17 @@ mod tests {
     }
 
     #[test]
-    fn opaque_data_origin_is_per_document_generation() {
+    fn opaque_data_origin_is_per_opaque_document_id() {
         let store = WebStorage::empty();
+        let doc_a = allocate_opaque_document_id();
+        let doc_b = allocate_opaque_document_id();
         store
-            .set_item(StorageArea::Local, "x", "1", "data:,hi", 1, 1, 1)
+            .set_item(StorageArea::Local, "x", "1", "data:,hi", 1, doc_a, 1)
             .expect("set");
-        let next = store
-            .get_item(StorageArea::Local, "x", "data:,hi", 1, 2)
+        let other = store
+            .get_item(StorageArea::Local, "x", "data:,hi", 1, doc_b)
             .expect("get");
-        assert!(next.is_none());
+        assert!(other.is_none());
     }
 
     #[test]
@@ -676,7 +844,7 @@ mod tests {
                 1,
             )
             .expect("set");
-        store.save().expect("save");
+        store.flush_persist();
         let loaded = WebStorage::load_from_path(&path).expect("load");
         let got = loaded
             .get_item(
@@ -772,5 +940,140 @@ mod tests {
             .expect("key")
             .expect("some");
         assert_eq!(first, "b");
+    }
+
+    #[test]
+    fn set_item_unchanged_is_no_op() {
+        let store = WebStorage::empty();
+        store
+            .set_item(
+                StorageArea::Local,
+                "k",
+                "v",
+                url("http://example.test/"),
+                1,
+                1,
+                1,
+            )
+            .expect("set");
+        store
+            .set_item(
+                StorageArea::Local,
+                "k",
+                "v",
+                url("http://example.test/"),
+                1,
+                1,
+                1,
+            )
+            .expect("noop");
+        assert_eq!(
+            store
+                .length(StorageArea::Local, url("http://example.test/"), 1, 1)
+                .expect("len"),
+            1
+        );
+    }
+
+    #[test]
+    fn quota_counts_utf16_code_units() {
+        let store = WebStorage::empty();
+        assert_eq!(WebStorage::utf16_len("é"), 1);
+        assert_eq!(WebStorage::utf16_len("😀"), 2);
+        let key = "k";
+        let value = "😀".repeat(QUOTA_BYTES / 2 + 1);
+        let err = store
+            .set_item(
+                StorageArea::Local,
+                key,
+                &value,
+                url("http://example.test/"),
+                1,
+                1,
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(err, "QuotaExceededError");
+        let accent = "é";
+        store
+            .set_item(
+                StorageArea::Local,
+                accent,
+                accent,
+                url("http://example.test/"),
+                1,
+                1,
+                1,
+            )
+            .expect("accent fits");
+    }
+
+    #[test]
+    fn persist_preserves_insertion_order_on_disk() {
+        let path =
+            std::env::temp_dir().join(format!("glide-storage-order-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = WebStorage::with_persist_path(path.clone());
+        for key in ["z", "a", "m"] {
+            store
+                .set_item(
+                    StorageArea::Local,
+                    key,
+                    key,
+                    url("http://example.test/"),
+                    1,
+                    1,
+                    1,
+                )
+                .expect("set");
+        }
+        store.flush_persist();
+        let raw = std::fs::read_to_string(&path).expect("read");
+        assert!(raw.find("\"z\"").expect("z") < raw.find("\"a\"").expect("a"));
+        assert!(raw.find("\"a\"").expect("a") < raw.find("\"m\"").expect("m"));
+        let loaded = WebStorage::load_from_path(&path).expect("load");
+        assert_eq!(
+            loaded
+                .key_at(StorageArea::Local, 0, url("http://example.test/"), 1, 1)
+                .expect("key")
+                .as_deref(),
+            Some("z")
+        );
+    }
+
+    #[test]
+    fn tuple_origin_persists_through_reinit_with_explicit_profile_dir() {
+        let _guard = WebStorage::lock_global_for_test();
+        let profile_dir =
+            std::env::temp_dir().join(format!("glide-storage-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile_dir);
+        std::fs::create_dir_all(&profile_dir).expect("mkdir");
+        WebStorage::reinit_from_profile(Some(&profile_dir));
+        let store = WebStorage::global();
+        store
+            .set_item(
+                StorageArea::Local,
+                "persist",
+                "yes",
+                url("http://127.0.0.1/"),
+                1,
+                1,
+                1,
+            )
+            .expect("set");
+        store.flush_persist();
+        WebStorage::reinit_from_profile(Some(&profile_dir));
+        let reloaded = WebStorage::global();
+        let got = reloaded
+            .get_item(
+                StorageArea::Local,
+                "persist",
+                url("http://127.0.0.1/"),
+                1,
+                1,
+            )
+            .expect("get");
+        assert_eq!(got.as_deref(), Some("yes"));
+        WebStorage::reset_global();
     }
 }

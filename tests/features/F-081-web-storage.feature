@@ -5,7 +5,7 @@ Feature: F-081 Origin-scoped persistent Web Storage
 
   # Source / basis: HTML Living Standard (Web Storage); product decision: JSON profile persistence (Turso/SQLite considered overkill)
   # Registry: docs/features.md -> F-081
-  # Tests: web_storage::tests::*, js::integration::web_storage_*, js::storage_events::tests::*, headless_js::local_storage_persists_in_profile_across_headless_loads, manual M-060
+  # Tests: web_storage::tests::*, js::integration::web_storage_*, js::storage_events::tests::*, manual M-061
 
   Background:
     Given a page loaded over HTTP on 127.0.0.1 or https://example.test
@@ -21,23 +21,27 @@ Feature: F-081 Origin-scoped persistent Web Storage
 
   Scenario: data: URLs use a non-persistent per-document opaque store
     When a script sets localStorage on a data: document
-    And a new document generation loads another data: URL in the same tab
+    And another data: URL loads in a new opaque document partition
     Then the previous key is not present
 
-  Scenario: localStorage enforces a per-origin quota
-    When a script sets localStorage to more than about five mebibytes for an origin
+  Scenario: localStorage enforces a per-origin quota in UTF-16 code units
+    When a script sets localStorage to more than about five mebibytes of UTF-16 for an origin
     Then setItem throws QuotaExceededError
 
   Scenario: Storage supports the standard API surface
     When a script uses getItem, setItem, removeItem, clear, key, length and property access
     Then each operation behaves per the Web Storage spec
 
+  Scenario: Object.keys lists only stored property names
+    When a script enumerates localStorage with Object.keys
+    Then method names are not included
+
   Scenario: localStorage persists to the profile directory
     When localStorage is written under a temporary profile directory
-  And the browser process loads storage again from that profile
+    And the browser process loads storage again from that profile
     Then the value is still readable
 
   Scenario: storage events reach another same-origin document
-    When two tuple-origin documents are registered
+    When two tuple-origin documents are registered in the same tab
     And one document changes localStorage
-    Then the other document receives a storage event
+    Then the other document receives a storage event with key, oldValue, newValue, url, and storageArea

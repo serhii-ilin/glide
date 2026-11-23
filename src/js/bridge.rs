@@ -91,7 +91,8 @@ pub enum DomRequest {
         index: Option<u32>,
         page_url: String,
         tab_id: u64,
-        doc_generation: u64,
+        opaque_document_id: u64,
+        source_generation: u64,
         reply: u64,
     },
     WebSocketConnect {

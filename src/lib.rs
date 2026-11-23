@@ -6,6 +6,7 @@
 
 pub mod about;
 mod app;
+mod app_icon;
 pub mod args;
 mod bookmarks;
 pub mod chrome;

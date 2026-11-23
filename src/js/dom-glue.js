@@ -395,35 +395,59 @@
     }
   }
 
-  function buildStorage(area, data) {
-    const store = {
-      get length() {
-        return data.size;
-      },
-      key(index) {
-        const keys = Array.from(data.keys());
-        return index >= 0 && index < keys.length ? keys[index] : null;
-      },
-      getItem(name) {
-        const key = String(name);
-        return data.has(key) ? data.get(key) : null;
-      },
-      setItem(key, value) {
-        const name = String(key);
-        const val = String(value);
-        storageRpc('setItem', area, name, val);
-        data.set(name, val);
-      },
-      removeItem(key) {
-        const name = String(key);
-        storageRpc('removeItem', area, name);
-        data.delete(name);
-      },
-      clear() {
-        storageRpc('clear', area);
-        data.clear();
-      },
+  function installStorageEventConstructor() {
+    if (typeof global.StorageEvent === 'function') return;
+    global.StorageEvent = class StorageEvent extends Event {
+      constructor(type, init) {
+        init = init == null ? {} : init;
+        super(String(type), init);
+        const k = init.key;
+        this.key = k == null ? null : String(k);
+        const oldV = init.oldValue;
+        this.oldValue = oldV == null ? null : String(oldV);
+        const newV = init.newValue;
+        this.newValue = newV == null ? null : String(newV);
+        this.url = init.url == null ? '' : String(init.url);
+        this.storageArea = init.storageArea || null;
+      }
     };
+  }
+
+  function defineStorageMethod(obj, name, fn) {
+    Object.defineProperty(obj, name, { value: fn, writable: true, enumerable: false, configurable: true });
+  }
+
+  function buildStorage(area, data) {
+    const store = {};
+    Object.defineProperty(store, 'length', {
+      get() { return data.size; },
+      enumerable: false,
+      configurable: true,
+    });
+    defineStorageMethod(store, 'key', function key(index) {
+      const keys = Array.from(data.keys());
+      return index >= 0 && index < keys.length ? keys[index] : null;
+    });
+    defineStorageMethod(store, 'getItem', function getItem(name) {
+      const key = String(name);
+      return data.has(key) ? data.get(key) : null;
+    });
+    defineStorageMethod(store, 'setItem', function setItem(key, value) {
+      const name = String(key);
+      const val = String(value);
+      if (data.get(name) === val) return;
+      storageRpc('setItem', area, name, val);
+      data.set(name, val);
+    });
+    defineStorageMethod(store, 'removeItem', function removeItem(key) {
+      const name = String(key);
+      storageRpc('removeItem', area, name);
+      data.delete(name);
+    });
+    defineStorageMethod(store, 'clear', function clear() {
+      storageRpc('clear', area);
+      data.clear();
+    });
     return new Proxy(store, {
       get(target, prop) {
         if (prop in target) return target[prop];
@@ -448,8 +472,8 @@
       has(target, prop) {
         return prop in target || (typeof prop === 'string' && data.has(prop));
       },
-      ownKeys(target) {
-        return Array.from(new Set(Reflect.ownKeys(target).concat(Array.from(data.keys()))));
+      ownKeys() {
+        return Array.from(data.keys());
       },
       getOwnPropertyDescriptor(target, prop) {
         if (typeof prop === 'string' && data.has(prop)) {
@@ -471,6 +495,7 @@
     const session = (snap && snap.session) || {};
     Object.keys(local).forEach((k) => localStorageData.set(k, String(local[k])));
     Object.keys(session).forEach((k) => sessionStorageData.set(k, String(session[k])));
+    installStorageEventConstructor();
     global.localStorage = buildStorage('local', localStorageData);
     global.sessionStorage = buildStorage('session', sessionStorageData);
   }
@@ -482,18 +507,30 @@
     } catch (_) {
       return;
     }
-    if (!payload || payload.storageArea !== 'localStorage') return;
+    if (!payload || (payload.storageArea !== 'localStorage' && payload.storageArea !== 'sessionStorage')) {
+      return;
+    }
+    const data = payload.storageArea === 'sessionStorage' ? sessionStorageData : localStorageData;
     const key = payload.key;
-    const data = localStorageData;
-    if (payload.newValue == null) data.delete(key);
-    else data.set(String(key), String(payload.newValue));
+    if (key == null) {
+      data.clear();
+    } else if (payload.newValue == null) {
+      data.delete(String(key));
+    } else {
+      data.set(String(key), String(payload.newValue));
+    }
     try {
-      const event = new global.Event('storage');
-      event.key = key;
-      event.oldValue = payload.oldValue == null ? null : String(payload.oldValue);
-      event.newValue = payload.newValue == null ? null : String(payload.newValue);
-      event.url = String(payload.url || '');
-      event.storageArea = global.localStorage;
+      installStorageEventConstructor();
+      const storageAreaObj = payload.storageArea === 'sessionStorage'
+        ? global.sessionStorage
+        : global.localStorage;
+      const event = new global.StorageEvent('storage', {
+        key: key == null ? null : String(key),
+        oldValue: payload.oldValue == null ? null : String(payload.oldValue),
+        newValue: payload.newValue == null ? null : String(payload.newValue),
+        url: String(payload.url || ''),
+        storageArea: storageAreaObj,
+      });
       global.dispatchEvent(event);
     } catch (_) { /* storage notifications must not throw */ }
   };

@@ -140,7 +140,8 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
             index,
             page_url,
             tab_id,
-            doc_generation,
+            opaque_document_id,
+            source_generation,
             reply,
         } => apply_storage_call(
             &method,
@@ -150,7 +151,8 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
             index,
             &page_url,
             tab_id,
-            doc_generation,
+            opaque_document_id,
+            source_generation,
             reply,
         ),
         DomRequest::ListenTarget {
@@ -263,7 +265,8 @@ fn apply_storage_call(
     index: Option<u32>,
     page_url: &str,
     tab_id: u64,
-    doc_generation: u64,
+    opaque_document_id: u64,
+    source_generation: u64,
     reply: u64,
 ) -> DomResponse {
     let store = crate::web_storage::WebStorage::global();
@@ -285,10 +288,10 @@ fn apply_storage_call(
             } else {
                 parsed.origin().ascii_serialization()
             };
-            crate::js::storage_events::attach(doc_generation, origin, page);
+            crate::js::storage_events::attach(source_generation, origin, page, tab_id);
             DomResponse::ok(reply, DomValue::Null)
         }
-        "snapshot" => match store.snapshot_json(&page, tab_id, doc_generation) {
+        "snapshot" => match store.snapshot_json(&page, tab_id, opaque_document_id) {
             Ok(json) => DomResponse::ok(reply, DomValue::Json(json)),
             Err(err) => DomResponse::err(reply, err),
         },
@@ -296,7 +299,7 @@ fn apply_storage_call(
             let Some(key) = key else {
                 return DomResponse::err(reply, "missing key");
             };
-            match store.get_item(area, key, &page, tab_id, doc_generation) {
+            match store.get_item(area, key, &page, tab_id, opaque_document_id) {
                 Ok(None) => DomResponse::ok(reply, DomValue::Null),
                 Ok(Some(v)) => DomResponse::ok(reply, DomValue::String(v)),
                 Err(err) => DomResponse::err(reply, err),
@@ -313,8 +316,8 @@ fn apply_storage_call(
                 value,
                 &page,
                 tab_id,
-                doc_generation,
-                doc_generation,
+                opaque_document_id,
+                source_generation,
             ) {
                 Ok(()) => DomResponse::ok(reply, DomValue::Null),
                 Err(err) if err == "QuotaExceededError" => DomResponse::err(reply, err),
@@ -325,22 +328,29 @@ fn apply_storage_call(
             let Some(key) = key else {
                 return DomResponse::err(reply, "missing key");
             };
-            match store.remove_item(area, key, &page, tab_id, doc_generation, doc_generation) {
+            match store.remove_item(
+                area,
+                key,
+                &page,
+                tab_id,
+                opaque_document_id,
+                source_generation,
+            ) {
                 Ok(()) => DomResponse::ok(reply, DomValue::Null),
                 Err(err) => DomResponse::err(reply, err),
             }
         }
-        "clear" => match store.clear(area, &page, tab_id, doc_generation, doc_generation) {
+        "clear" => match store.clear(area, &page, tab_id, opaque_document_id, source_generation) {
             Ok(()) => DomResponse::ok(reply, DomValue::Null),
             Err(err) => DomResponse::err(reply, err),
         },
-        "length" => match store.length(area, &page, tab_id, doc_generation) {
+        "length" => match store.length(area, &page, tab_id, opaque_document_id) {
             Ok(n) => DomResponse::ok(reply, DomValue::Number(n as f64)),
             Err(err) => DomResponse::err(reply, err),
         },
         "key" => {
             let index = index.unwrap_or(0);
-            match store.key_at(area, index, &page, tab_id, doc_generation) {
+            match store.key_at(area, index, &page, tab_id, opaque_document_id) {
                 Ok(None) => DomResponse::ok(reply, DomValue::Null),
                 Ok(Some(k)) => DomResponse::ok(reply, DomValue::String(k)),
                 Err(err) => DomResponse::err(reply, err),

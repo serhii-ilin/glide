@@ -317,8 +317,9 @@ impl JsHost {
                 .unwrap_or_else(|| snapshot::snapshot_tree(chrome)),
         )
         .unwrap_or_else(|_| "[]".into());
+        let opaque_document_id = crate::web_storage::allocate_opaque_document_id();
         let storage_json = crate::web_storage::WebStorage::global()
-            .snapshot_json(page_url, self.console_tab_id, self.dom_generation)
+            .snapshot_json(page_url, self.console_tab_id, opaque_document_id)
             .map(|value| value.to_string())
             .unwrap_or_else(|_| r#"{"local":{},"session":{}}"#.to_string());
         if let Ok(parsed) = url::Url::parse(page_url)
@@ -329,6 +330,7 @@ impl JsHost {
                 self.dom_generation,
                 parsed.origin().ascii_serialization(),
                 page_url.to_string(),
+                self.console_tab_id,
             );
         }
         worker.init_page(
@@ -337,6 +339,7 @@ impl JsHost {
             storage_json,
             self.console_tab_id,
             self.console_page_epoch,
+            opaque_document_id,
         );
         self.worker = Some(worker);
 

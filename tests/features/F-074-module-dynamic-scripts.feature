@@ -27,6 +27,7 @@ Feature: F-074 Module and dynamic script execution
   #        diagnostics::bare_module_specifier_is_reported_as_unsupported,
   #        js::modules::tests::*,
   #        js::apply::tests::parse_data_url_percent_decodes_plain_payload
+  # Manual: M-055
   # MCP: n/a (engine behavior; observable through glide_eval, glide_dom and glide_snapshot_text)
 
   Background:

@@ -1227,36 +1227,21 @@ fn tab_strip_inner_html(view: &ChromeViewState) -> String {
 }
 
 fn menu_entry_shortcut_display(item: &crate::menu::MenuItemSpec) -> String {
-    #[cfg(target_os = "macos")]
-    {
-        if item.checked && item.shortcut.is_none() {
-            return "✓".into();
-        }
-        if let Some(s) = item.shortcut {
-            return s.display_macos();
-        }
-        return String::new();
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if item.checked {
-            return "✓".into();
-        }
-        if let Some(s) = item.shortcut {
-            return s.display_macos();
-        }
-        String::new()
+    match item.shortcut {
+        Some(shortcut) => shortcut.display_macos(),
+        None if item.checked => "✓".into(),
+        None => String::new(),
     }
 }
 
-fn menu_items_html(spec: &crate::menu::MenuSpec, _view: &ChromeViewState) -> String {
+fn menu_items_html(spec: &crate::menu::MenuSpec) -> String {
     let mut html = String::new();
     for entry in &spec.items {
         match entry {
             crate::menu::MenuEntry::Item(item) => {
                 let shortcut = menu_entry_shortcut_display(item);
                 let actionable = item.enabled
-                    && item.command != crate::menu::MenuCommand::NativeOnly
+                    && !matches!(item.command, crate::menu::MenuCommand::Native(_))
                     && item.command.id().is_some();
                 if actionable {
                     let href = item.command.id().expect("actionable command has id");
@@ -1313,7 +1298,7 @@ fn menu_bar_inner_html(view: &ChromeViewState) -> String {
         html.push_str(&format!(
             "<div id=\"menu-{name}-dropdown\" class=\"menu-dropdown{open}\">\n{items}</div></div>\n",
             name = menu.name(),
-            items = menu_items_html(&spec, view),
+            items = menu_items_html(&spec),
         ));
     }
     html
@@ -1982,6 +1967,25 @@ mod tests {
         };
         let html = chrome_document_from_state(&view);
         assert!(!html.contains("id=\"menu-bar\""));
+    }
+
+    #[test]
+    fn in_window_dropdown_renders_from_menu_model() {
+        let view = ChromeViewState {
+            in_window_menu: true,
+            bookmarked: true,
+            ..ChromeViewState::default()
+        };
+        let html = chrome_document_from_state(&view);
+        assert!(html.contains("id=\"menu-bar\""));
+        for spec in crate::menu::menu_model(&view, crate::menu::MenuPlatform::InWindow) {
+            for entry in spec.items {
+                if let crate::menu::MenuEntry::Item(item) = entry {
+                    assert!(html.contains(&item.label), "missing {}", item.label);
+                }
+            }
+        }
+        assert!(html.contains("Remove Bookmark"));
     }
 
     #[test]

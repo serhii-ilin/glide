@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use crate::chrome::{ChromeViewState, MenuId, NavCommand};
 use crate::keyboard::BrowserShortcut;
 use crate::tabs::TabId;
-use winit::keyboard::ModifiersState;
 use winit::keyboard::KeyCode;
+use winit::keyboard::ModifiersState;
 
 /// Queue from the macOS menu event handler to the UI thread.
 #[derive(Clone, Default)]
@@ -21,10 +21,6 @@ impl MenuCommandQueue {
 
     pub fn take(&self) -> Vec<MenuCommand> {
         std::mem::take(&mut *self.inner.lock().expect("menu queue"))
-    }
-
-    pub(crate) fn clone_inner(&self) -> Arc<Mutex<Vec<MenuCommand>>> {
-        self.inner.clone()
     }
 }
 
@@ -153,10 +149,29 @@ pub enum MenuCommand {
     EditPaste,
     EditSelectAll,
     /// Handled by AppKit (hide, minimize, about, …); not routed through Glide.
-    NativeOnly,
+    Native(NativeItem),
+}
+
+/// AppKit-provided menu items that muda exposes as predefined items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeItem {
+    About,
+    Services,
+    Hide,
+    HideOthers,
+    ShowAll,
+    Minimize,
+    Zoom,
+    FullScreen,
+    BringAllToFront,
 }
 
 impl MenuCommand {
+    /// Whether the native item carries a checkmark that can change (JS toggle, active tab).
+    pub fn is_checkable(&self) -> bool {
+        matches!(self, Self::ToggleJs | Self::SelectTab(_))
+    }
+
     pub fn id(&self) -> Option<String> {
         match self {
             Self::Back => Some("glide://back".into()),
@@ -190,28 +205,12 @@ impl MenuCommand {
             Self::EditCopy => Some("glide://edit-copy".into()),
             Self::EditPaste => Some("glide://edit-paste".into()),
             Self::EditSelectAll => Some("glide://edit-select-all".into()),
-            Self::NativeOnly => None,
+            Self::Native(_) => None,
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        if let Ok(parsed) = url::Url::parse(id) {
-            if parsed.scheme() == "glide" {
-                if let Some(nav) = crate::chrome::command_from_url(&parsed) {
-                    if let Some(cmd) = Self::from_nav_command(nav) {
-                        return Some(cmd);
-                    }
-                }
-                if let Some(host) = parsed.host_str() {
-                    let rest = parsed
-                        .query()
-                        .map(|q| format!("{host}?{q}"))
-                        .unwrap_or_else(|| host.to_string());
-                    return Self::from_glide_host(&rest);
-                }
-            }
-        }
-        Self::from_glide_host(id)
+        Self::from_glide_host(id.strip_prefix("glide://")?)
     }
 
     fn from_glide_host(rest: &str) -> Option<Self> {
@@ -317,7 +316,7 @@ impl MenuCommand {
             | Self::EditCopy
             | Self::EditPaste
             | Self::EditSelectAll
-            | Self::NativeOnly => None,
+            | Self::Native(_) => None,
         }
     }
 
@@ -572,8 +571,13 @@ fn mac_native_model(view: &ChromeViewState) -> Vec<MenuSpec> {
         "Show Web Inspector"
     };
     let mut window_items = vec![
-        item(MenuCommand::NativeOnly, "Minimize", Some(cmd('m')), true),
-        item(MenuCommand::NativeOnly, "Zoom", None, true),
+        item(
+            MenuCommand::Native(NativeItem::Minimize),
+            "Minimize",
+            Some(cmd('m')),
+            true,
+        ),
+        item(MenuCommand::Native(NativeItem::Zoom), "Zoom", None, true),
         sep(),
         item(
             MenuCommand::PrevTab,
@@ -618,7 +622,7 @@ fn mac_native_model(view: &ChromeViewState) -> Vec<MenuSpec> {
     }
     window_items.push(sep());
     window_items.push(item(
-        MenuCommand::NativeOnly,
+        MenuCommand::Native(NativeItem::BringAllToFront),
         "Bring All to Front",
         None,
         true,
@@ -629,7 +633,40 @@ fn mac_native_model(view: &ChromeViewState) -> Vec<MenuSpec> {
             id: MenuBarMenuId::GlideApp,
             title: "Glide",
             items: vec![
-                item(MenuCommand::NativeOnly, "About Glide", None, true),
+                item(
+                    MenuCommand::Native(NativeItem::About),
+                    "About Glide",
+                    None,
+                    true,
+                ),
+                sep(),
+                item(
+                    MenuCommand::Native(NativeItem::Services),
+                    "Services",
+                    None,
+                    true,
+                ),
+                sep(),
+                item(
+                    MenuCommand::Native(NativeItem::Hide),
+                    "Hide Glide",
+                    Some(cmd('h')),
+                    true,
+                ),
+                item(
+                    MenuCommand::Native(NativeItem::HideOthers),
+                    "Hide Others",
+                    Some(cmd_alt('h')),
+                    true,
+                ),
+                item(
+                    MenuCommand::Native(NativeItem::ShowAll),
+                    "Show All",
+                    None,
+                    true,
+                ),
+                sep(),
+                item(MenuCommand::Quit, "Quit Glide", Some(cmd('q')), true),
             ],
         },
         MenuSpec {
@@ -650,7 +687,12 @@ fn mac_native_model(view: &ChromeViewState) -> Vec<MenuSpec> {
                     Some(cmd_shift('w')),
                     true,
                 ),
-                item(MenuCommand::CloseActiveTab, "Close Tab", Some(cmd('w')), !st),
+                item(
+                    MenuCommand::CloseActiveTab,
+                    "Close Tab",
+                    Some(cmd('w')),
+                    !st,
+                ),
                 sep(),
                 item(MenuCommand::DuplicateTab, "Duplicate Tab", None, true),
             ],
@@ -737,13 +779,18 @@ fn mac_native_model(view: &ChromeViewState) -> Vec<MenuSpec> {
                     true,
                 ),
                 sep(),
-                item(MenuCommand::NativeOnly, "Enter Full Screen", Some(Shortcut {
-                    key: ShortcutKey::Char('f'),
-                    shift: false,
-                    alt: false,
-                    ctrl: true,
-                    cmd: true,
-                }), true),
+                item(
+                    MenuCommand::Native(NativeItem::FullScreen),
+                    "Enter Full Screen",
+                    Some(Shortcut {
+                        key: ShortcutKey::Char('f'),
+                        shift: false,
+                        alt: false,
+                        ctrl: true,
+                        cmd: true,
+                    }),
+                    true,
+                ),
             ],
         },
         MenuSpec {
@@ -829,15 +876,7 @@ fn mac_native_model(view: &ChromeViewState) -> Vec<MenuSpec> {
         MenuSpec {
             id: MenuBarMenuId::Help,
             title: "Help",
-            items: vec![
-                item(MenuCommand::ShowHelp, "Glide Help", None, true),
-                item(
-                    MenuCommand::ShowHelp,
-                    "Keyboard Shortcuts",
-                    None,
-                    true,
-                ),
-            ],
+            items: vec![item(MenuCommand::ShowHelp, "Glide Help", None, true)],
         },
     ]
 }
@@ -859,18 +898,8 @@ fn in_window_model(view: &ChromeViewState) -> Vec<MenuSpec> {
         item(MenuCommand::NewTab, "New Tab", Some(cmd('t')), true),
         item(MenuCommand::DuplicateTab, "Duplicate Tab", None, true),
         sep(),
-        item(
-            MenuCommand::NextTab,
-            "Next Tab",
-            None,
-            !st,
-        ),
-        item(
-            MenuCommand::PrevTab,
-            "Previous Tab",
-            None,
-            !st,
-        ),
+        item(MenuCommand::NextTab, "Next Tab", None, !st),
+        item(MenuCommand::PrevTab, "Previous Tab", None, !st),
     ];
     if view.tabs.len() > 1 {
         tabs_items_fixed.push(sep());
@@ -898,7 +927,12 @@ fn in_window_model(view: &ChromeViewState) -> Vec<MenuSpec> {
             items: vec![
                 item(MenuCommand::NewTab, "New Tab", Some(cmd('t')), true),
                 sep(),
-                item(MenuCommand::CloseActiveTab, "Close Tab", Some(cmd('w')), !st),
+                item(
+                    MenuCommand::CloseActiveTab,
+                    "Close Tab",
+                    Some(cmd('w')),
+                    !st,
+                ),
                 item(
                     MenuCommand::CloseWindow,
                     "Close Window",
@@ -919,7 +953,12 @@ fn in_window_model(view: &ChromeViewState) -> Vec<MenuSpec> {
                 item(MenuCommand::EditCut, "Cut", Some(cmd('x')), false),
                 item(MenuCommand::EditCopy, "Copy", Some(cmd('c')), false),
                 item(MenuCommand::EditPaste, "Paste", Some(cmd('v')), false),
-                item(MenuCommand::EditSelectAll, "Select All", Some(cmd('a')), false),
+                item(
+                    MenuCommand::EditSelectAll,
+                    "Select All",
+                    Some(cmd('a')),
+                    false,
+                ),
             ],
         },
         MenuSpec {
@@ -1026,7 +1065,12 @@ fn in_window_model(view: &ChromeViewState) -> Vec<MenuSpec> {
                         true,
                     ));
                 } else {
-                    items.push(item(MenuCommand::Reload, "Reload Page", Some(cmd('r')), true));
+                    items.push(item(
+                        MenuCommand::Reload,
+                        "Reload Page",
+                        Some(cmd('r')),
+                        true,
+                    ));
                 }
                 items
             },
@@ -1035,7 +1079,12 @@ fn in_window_model(view: &ChromeViewState) -> Vec<MenuSpec> {
             id: MenuBarMenuId::Bookmarks,
             title: "Bookmarks",
             items: vec![
-                item(MenuCommand::ToggleBookmark, bookmark_label, Some(cmd('d')), true),
+                item(
+                    MenuCommand::ToggleBookmark,
+                    bookmark_label,
+                    Some(cmd('d')),
+                    true,
+                ),
                 sep(),
                 item(
                     MenuCommand::ShowBookmarks,
@@ -1068,7 +1117,12 @@ fn in_window_model(view: &ChromeViewState) -> Vec<MenuSpec> {
                 ),
                 sep(),
                 heading("Glide"),
-                item(MenuCommand::NativeOnly, "About Glide", None, false),
+                item(
+                    MenuCommand::Native(NativeItem::About),
+                    "About Glide",
+                    None,
+                    false,
+                ),
             ],
         },
     ]
@@ -1104,7 +1158,7 @@ pub fn actionable_menu_items(platform: MenuPlatform) -> Vec<(String, MenuCommand
             if let MenuEntry::Item(item) = entry
                 && let Some(shortcut) = item.shortcut
                 && item.enabled
-                && item.command != MenuCommand::NativeOnly
+                && !matches!(item.command, MenuCommand::Native(_))
             {
                 out.push((item.label.clone(), item.command.clone(), shortcut));
             }
@@ -1191,11 +1245,11 @@ mod tests {
 
     #[test]
     fn history_items_enabled_state() {
-        let back_off = menu_model(
-            &ChromeViewState::default(),
-            MenuPlatform::MacNative,
-        );
-        let hist = back_off.iter().find(|s| s.id == MenuBarMenuId::History).unwrap();
+        let back_off = menu_model(&ChromeViewState::default(), MenuPlatform::MacNative);
+        let hist = back_off
+            .iter()
+            .find(|s| s.id == MenuBarMenuId::History)
+            .unwrap();
         let back = hist.items.iter().find_map(|e| match e {
             MenuEntry::Item(i) if i.command == MenuCommand::Back => Some(i.enabled),
             _ => None,
@@ -1244,7 +1298,10 @@ mod tests {
             },
             MenuPlatform::MacNative,
         );
-        let view = loading.iter().find(|s| s.id == MenuBarMenuId::View).unwrap();
+        let view = loading
+            .iter()
+            .find(|s| s.id == MenuBarMenuId::View)
+            .unwrap();
         let stop = view.items.iter().find_map(|e| match e {
             MenuEntry::Item(i) if i.command == MenuCommand::Stop => Some(i.enabled),
             _ => None,
@@ -1261,7 +1318,10 @@ mod tests {
             },
             MenuPlatform::MacNative,
         );
-        let bm = specs.iter().find(|s| s.id == MenuBarMenuId::Bookmarks).unwrap();
+        let bm = specs
+            .iter()
+            .find(|s| s.id == MenuBarMenuId::Bookmarks)
+            .unwrap();
         let label = bm.items.iter().find_map(|e| match e {
             MenuEntry::Item(i) if i.command == MenuCommand::ToggleBookmark => Some(i.label.clone()),
             _ => None,
@@ -1278,7 +1338,10 @@ mod tests {
             },
             MenuPlatform::MacNative,
         );
-        let dev = specs.iter().find(|s| s.id == MenuBarMenuId::Develop).unwrap();
+        let dev = specs
+            .iter()
+            .find(|s| s.id == MenuBarMenuId::Develop)
+            .unwrap();
         let checked = dev.items.iter().find_map(|e| match e {
             MenuEntry::Item(i) if i.command == MenuCommand::ToggleJs => Some(i.checked),
             _ => None,
@@ -1307,7 +1370,10 @@ mod tests {
             },
             MenuPlatform::MacNative,
         );
-        let window = specs.iter().find(|s| s.id == MenuBarMenuId::Window).unwrap();
+        let window = specs
+            .iter()
+            .find(|s| s.id == MenuBarMenuId::Window)
+            .unwrap();
         let tabs: Vec<_> = window
             .items
             .iter()
@@ -1339,6 +1405,187 @@ mod tests {
                     shortcut
                 );
             }
+        }
+    }
+
+    fn two_tab_view() -> ChromeViewState {
+        ChromeViewState {
+            tabs: vec![
+                crate::chrome::TabView {
+                    id: 1,
+                    title: "One".into(),
+                    ..Default::default()
+                },
+                crate::chrome::TabView {
+                    id: 2,
+                    title: "Two".into(),
+                    ..Default::default()
+                },
+            ],
+            active_index: Some(0),
+            ..Default::default()
+        }
+    }
+
+    fn all_commands(platform: MenuPlatform) -> Vec<MenuCommand> {
+        menu_model(&two_tab_view(), platform)
+            .into_iter()
+            .flat_map(|spec| spec.items)
+            .filter_map(|entry| match entry {
+                MenuEntry::Item(item) => Some(item.command),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_model_command_id_round_trips() {
+        for platform in [MenuPlatform::MacNative, MenuPlatform::InWindow] {
+            for command in all_commands(platform) {
+                if matches!(command, MenuCommand::Native(_)) {
+                    assert_eq!(command.id(), None);
+                    continue;
+                }
+                let id = command.id().expect("non-native command has an id");
+                assert_eq!(MenuCommand::from_id(&id), Some(command), "{id}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_menu_command_ids_are_unique() {
+        let ids: Vec<String> = all_commands(MenuPlatform::MacNative)
+            .iter()
+            .filter_map(MenuCommand::id)
+            .collect();
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "duplicate ids: {ids:?}");
+    }
+
+    #[test]
+    fn unknown_menu_id_is_rejected() {
+        assert_eq!(MenuCommand::from_id("glide://nope"), None);
+        assert_eq!(MenuCommand::from_id("not a url"), None);
+    }
+
+    #[test]
+    fn app_menu_quit_uses_the_quit_shortcut_path() {
+        let specs = menu_model(&ChromeViewState::default(), MenuPlatform::MacNative);
+        let app = &specs[0];
+        assert_eq!(app.id, MenuBarMenuId::GlideApp);
+        let quit = app
+            .items
+            .iter()
+            .find_map(|e| match e {
+                MenuEntry::Item(i) if i.command == MenuCommand::Quit => Some(i),
+                _ => None,
+            })
+            .expect("Quit Glide item");
+        assert_eq!(
+            quit.shortcut.map(|s| s.display_macos()).as_deref(),
+            Some("⌘Q")
+        );
+        assert_eq!(
+            quit.command.to_browser_shortcut(),
+            Some(BrowserShortcut::Quit)
+        );
+    }
+
+    #[test]
+    fn in_window_model_has_no_app_or_window_menu() {
+        let specs = menu_model(&ChromeViewState::default(), MenuPlatform::InWindow);
+        assert!(
+            specs
+                .iter()
+                .all(|s| !matches!(s.id, MenuBarMenuId::GlideApp | MenuBarMenuId::Window))
+        );
+    }
+
+    #[test]
+    fn develop_menu_label_follows_devtools_state() {
+        let label = |open: bool| {
+            let specs = menu_model(
+                &ChromeViewState {
+                    devtools_open: open,
+                    ..Default::default()
+                },
+                MenuPlatform::MacNative,
+            );
+            specs
+                .iter()
+                .find(|s| s.id == MenuBarMenuId::Develop)
+                .and_then(|s| {
+                    s.items.iter().find_map(|e| match e {
+                        MenuEntry::Item(i) if i.command == MenuCommand::ToggleDevTools => {
+                            Some(i.label.clone())
+                        }
+                        _ => None,
+                    })
+                })
+        };
+        assert_eq!(label(false).as_deref(), Some("Show Web Inspector"));
+        assert_eq!(label(true).as_deref(), Some("Hide Web Inspector"));
+    }
+
+    #[test]
+    fn window_menu_next_prev_tab_need_two_tabs() {
+        let enabled = |view: &ChromeViewState| {
+            menu_model(view, MenuPlatform::MacNative)
+                .into_iter()
+                .find(|s| s.id == MenuBarMenuId::Window)
+                .expect("window menu")
+                .items
+                .into_iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Item(i)
+                        if matches!(i.command, MenuCommand::NextTab | MenuCommand::PrevTab) =>
+                    {
+                        Some(i.enabled)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(enabled(&ChromeViewState::default()), [false, false]);
+        assert_eq!(enabled(&two_tab_view()), [true, true]);
+    }
+
+    #[test]
+    fn undo_and_redo_stay_disabled() {
+        let specs = menu_model(&ChromeViewState::default(), MenuPlatform::MacNative);
+        let edit = specs
+            .iter()
+            .find(|s| s.id == MenuBarMenuId::Edit)
+            .expect("edit");
+        for entry in &edit.items {
+            if let MenuEntry::Item(i) = entry
+                && matches!(i.command, MenuCommand::EditUndo | MenuCommand::EditRedo)
+            {
+                assert!(!i.enabled, "{} must stay disabled", i.label);
+            }
+        }
+    }
+
+    #[test]
+    fn shortcut_display_covers_brackets_and_control() {
+        let back = cmd_key(ShortcutKey::BracketLeft);
+        assert_eq!(back.display_macos(), "⌘[");
+        let full = Shortcut {
+            ctrl: true,
+            ..cmd('f')
+        };
+        assert_eq!(full.display_macos(), "⌃⌘F");
+    }
+
+    fn cmd_key(key: ShortcutKey) -> Shortcut {
+        Shortcut {
+            key,
+            shift: false,
+            alt: false,
+            ctrl: false,
+            cmd: true,
         }
     }
 }

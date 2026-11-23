@@ -1,251 +1,253 @@
 //! macOS native menu bar built from [`crate::menu::menu_model`] via muda.
+//!
+//! The model is the single source of truth: this module only maps it onto AppKit menu items,
+//! keeps the last model it applied, and touches muda in place when the model changes.
 
 #![cfg(target_os = "macos")]
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
-use muda::accelerator::{Accelerator, Code, Modifiers, CMD_OR_CTRL};
+use muda::accelerator::{Accelerator, CMD_OR_CTRL, Code, Modifiers};
 use muda::{
-    AboutMetadata, CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem,
+    AboutMetadata, CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem,
     Submenu,
 };
 
 use crate::chrome::ChromeViewState;
+use crate::logging;
 use crate::menu::{
-    MenuCommand, MenuCommandQueue, MenuEntry, MenuPlatform, MenuSpec, Shortcut, ShortcutKey,
-    menu_model,
+    MenuBarMenuId, MenuCommand, MenuCommandQueue, MenuEntry, MenuItemSpec, MenuPlatform, MenuSpec,
+    NativeItem, Shortcut, ShortcutKey, menu_model,
 };
+
+/// A muda item Glide updates in place (predefined AppKit items and separators are static).
+enum LiveItem {
+    Plain(MenuItem),
+    Check(CheckMenuItem),
+}
+
+impl LiveItem {
+    fn update(&self, spec: &MenuItemSpec) {
+        match self {
+            Self::Plain(item) => {
+                item.set_text(&spec.label);
+                item.set_enabled(spec.enabled);
+            }
+            Self::Check(item) => {
+                item.set_text(&spec.label);
+                item.set_enabled(spec.enabled);
+                item.set_checked(spec.checked);
+            }
+        }
+    }
+}
+
+/// One installed top-level menu: its muda submenu, the entry shape it was built from, and the
+/// updatable items aligned with that shape.
+struct BuiltMenu {
+    submenu: Submenu,
+    shape: Vec<String>,
+    items: Vec<Option<LiveItem>>,
+}
+
+struct Installed {
+    /// Held so the NSApp main menu lives as long as the app.
+    _menu: Menu,
+    built: HashMap<MenuBarMenuId, BuiltMenu>,
+    last: Vec<MenuSpec>,
+}
 
 pub struct NativeMenu {
     queue: MenuCommandQueue,
-    menu: Menu,
-    window_submenu: Rc<RefCell<Option<Submenu>>>,
-    #[allow(dead_code)]
-    item_refs: RefCell<HashMap<String, DynamicItem>>,
-    last_specs: RefCell<Vec<MenuSpec>>,
-    initialized: bool,
-}
-
-enum DynamicItem {
-    Plain(MenuItem),
-    Check(CheckMenuItem),
+    installed: Option<Installed>,
 }
 
 impl NativeMenu {
     pub fn new(queue: MenuCommandQueue) -> Self {
         Self {
             queue,
-            menu: Menu::new(),
-            window_submenu: Rc::new(RefCell::new(None)),
-            item_refs: RefCell::new(HashMap::new()),
-            last_specs: RefCell::new(Vec::new()),
-            initialized: false,
+            installed: None,
         }
     }
 
+    /// Build and install the menu bar. Must run on the main thread, once.
     pub fn ensure_installed(
         &mut self,
-        proxy_wake: impl Fn() + Send + Sync + 'static,
-    ) -> Result<(), String> {
-        if self.initialized {
-            return Ok(());
+        view: &ChromeViewState,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) {
+        if self.installed.is_some() {
+            return;
         }
-        let queue = self.queue.clone_inner();
+        let queue = self.queue.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-            if let Some(cmd) = MenuCommand::from_id(event.id().0.as_str()) {
-                queue.lock().expect("menu queue").push(cmd);
-                proxy_wake();
+            if let Some(command) = MenuCommand::from_id(event.id().0.as_str()) {
+                queue.push(command);
+                wake();
             }
         }));
-        let specs = menu_model(&ChromeViewState::default(), MenuPlatform::MacNative);
-        self.build_from_specs(&specs)?;
-        self.menu
-            .init_for_nsapp();
-        self.initialized = true;
-        Ok(())
-    }
-
-    pub fn sync(&mut self, view: &ChromeViewState) -> Result<(), String> {
         let specs = menu_model(view, MenuPlatform::MacNative);
-        if *self.last_specs.borrow() == specs {
-            return Ok(());
+        match install(&specs) {
+            Ok(installed) => self.installed = Some(installed),
+            Err(err) => logging::warn(
+                "menu.native",
+                "native menu bar unavailable",
+                &[
+                    ("error_kind", "menu_build".into()),
+                    ("detail", err),
+                    (
+                        "hint",
+                        "Commands remain available through keyboard shortcuts (F-049).".into(),
+                    ),
+                ],
+            ),
         }
-        if !self.initialized {
-            return Ok(());
-        }
-        self.menu.remove_for_nsapp();
-        self.build_from_specs(&specs)?;
-        self.menu.init_for_nsapp();
-        *self.last_specs.borrow_mut() = specs;
-        Ok(())
     }
 
-    fn build_from_specs(&mut self, specs: &[MenuSpec]) -> Result<(), String> {
-        self.item_refs.borrow_mut().clear();
-        self.menu = Menu::new();
+    /// Apply a changed model to the live menus; a no-op when nothing changed.
+    pub fn sync(&mut self, view: &ChromeViewState) {
+        let Some(installed) = self.installed.as_mut() else {
+            return;
+        };
+        let specs = menu_model(view, MenuPlatform::MacNative);
+        if installed.last == specs {
+            return;
+        }
+        for spec in &specs {
+            let Some(built) = installed.built.get_mut(&spec.id) else {
+                continue;
+            };
+            if let Err(err) = update_menu(built, spec) {
+                logging::warn(
+                    "menu.native",
+                    "native menu update failed",
+                    &[
+                        ("error_kind", "menu_update".into()),
+                        ("detail", err),
+                        ("hint", "See F-049 in docs/features.md.".into()),
+                    ],
+                );
+            }
+        }
+        installed.last = specs;
+    }
+}
 
-        let glide_sub = Submenu::new("Glide", true);
-        let about = PredefinedMenuItem::about(
+fn install(specs: &[MenuSpec]) -> Result<Installed, String> {
+    let menu = Menu::new();
+    let mut built = HashMap::new();
+    for spec in specs {
+        let submenu = Submenu::new(spec.title, true);
+        let mut menu_built = BuiltMenu {
+            submenu: submenu.clone(),
+            shape: Vec::new(),
+            items: Vec::new(),
+        };
+        fill_menu(&mut menu_built, spec)?;
+        menu.append(&submenu).map_err(|e| e.to_string())?;
+        match spec.id {
+            MenuBarMenuId::Window => submenu.set_as_windows_menu_for_nsapp(),
+            MenuBarMenuId::Help => submenu.set_as_help_menu_for_nsapp(),
+            _ => {}
+        }
+        built.insert(spec.id, menu_built);
+    }
+    menu.init_for_nsapp();
+    Ok(Installed {
+        _menu: menu,
+        built,
+        last: specs.to_vec(),
+    })
+}
+
+fn entry_shape(entry: &MenuEntry) -> String {
+    match entry {
+        MenuEntry::Separator => "-".into(),
+        MenuEntry::Heading(label) => format!("h:{label}"),
+        MenuEntry::Item(item) => match &item.command {
+            MenuCommand::Native(native) => format!("n:{native:?}"),
+            command => command.id().unwrap_or_default(),
+        },
+    }
+}
+
+/// Update `built` in place, or rebuild its items when the entry shape changed (Window tab list).
+fn update_menu(built: &mut BuiltMenu, spec: &MenuSpec) -> Result<(), String> {
+    let shape: Vec<String> = spec.items.iter().map(entry_shape).collect();
+    if shape != built.shape {
+        while built.submenu.remove_at(0).is_some() {}
+        return fill_menu(built, spec);
+    }
+    for (live, entry) in built.items.iter().zip(&spec.items) {
+        if let (Some(live), MenuEntry::Item(item)) = (live, entry) {
+            live.update(item);
+        }
+    }
+    Ok(())
+}
+
+fn fill_menu(built: &mut BuiltMenu, spec: &MenuSpec) -> Result<(), String> {
+    built.shape = spec.items.iter().map(entry_shape).collect();
+    built.items.clear();
+    for entry in &spec.items {
+        let live = append_entry(&built.submenu, entry)?;
+        built.items.push(live);
+    }
+    Ok(())
+}
+
+fn append_entry(submenu: &Submenu, entry: &MenuEntry) -> Result<Option<LiveItem>, String> {
+    let append = |item: &dyn IsMenuItem| submenu.append(item).map_err(|e| e.to_string());
+    match entry {
+        MenuEntry::Separator => append(&PredefinedMenuItem::separator())?,
+        MenuEntry::Heading(_) => {}
+        MenuEntry::Item(item) => {
+            if let MenuCommand::Native(native) = &item.command {
+                append(&native_item(*native))?;
+                return Ok(None);
+            }
+            let id = item
+                .command
+                .id()
+                .ok_or_else(|| "menu command has no id".to_string())?;
+            let accelerator = item.shortcut.and_then(shortcut_to_accelerator);
+            if item.command.is_checkable() {
+                let check = CheckMenuItem::with_id(
+                    id,
+                    &item.label,
+                    item.enabled,
+                    item.checked,
+                    accelerator,
+                );
+                append(&check)?;
+                return Ok(Some(LiveItem::Check(check)));
+            }
+            let plain = MenuItem::with_id(id, &item.label, item.enabled, accelerator);
+            append(&plain)?;
+            return Ok(Some(LiveItem::Plain(plain)));
+        }
+    }
+    Ok(None)
+}
+
+fn native_item(native: NativeItem) -> PredefinedMenuItem {
+    match native {
+        NativeItem::About => PredefinedMenuItem::about(
             Some("About Glide"),
             Some(AboutMetadata {
+                name: Some("Glide".into()),
                 version: Some(env!("CARGO_PKG_VERSION").into()),
                 ..AboutMetadata::default()
             }),
-        );
-        glide_sub.append(&about).map_err(|e| e.to_string())?;
-        glide_sub
-            .append(&PredefinedMenuItem::separator())
-            .map_err(|e| e.to_string())?;
-        glide_sub
-            .append(&PredefinedMenuItem::services(None))
-            .map_err(|e| e.to_string())?;
-        glide_sub
-            .append(&PredefinedMenuItem::separator())
-            .map_err(|e| e.to_string())?;
-        glide_sub
-            .append(&PredefinedMenuItem::hide(Some("Hide Glide")))
-            .map_err(|e| e.to_string())?;
-        glide_sub
-            .append(&PredefinedMenuItem::hide_others(None))
-            .map_err(|e| e.to_string())?;
-        glide_sub
-            .append(&PredefinedMenuItem::show_all(None))
-            .map_err(|e| e.to_string())?;
-        glide_sub
-            .append(&PredefinedMenuItem::separator())
-            .map_err(|e| e.to_string())?;
-        let quit = self.append_command_item(
-            "Quit Glide",
-            MenuCommand::Quit,
-            Some(Shortcut {
-                key: ShortcutKey::Char('q'),
-                shift: false,
-                alt: false,
-                ctrl: false,
-                cmd: true,
-            }),
-            true,
-            false,
-        )?;
-        glide_sub.append(&quit).map_err(|e| e.to_string())?;
-        self.menu.append(&glide_sub).map_err(|e| e.to_string())?;
-
-        let mut window_menu: Option<Submenu> = None;
-        let mut help_menu: Option<Submenu> = None;
-        for spec in specs {
-            if spec.id == crate::menu::MenuBarMenuId::GlideApp {
-                continue;
-            }
-            let sub = Submenu::new(spec.title, true);
-            self.fill_submenu(&sub, &spec.items)?;
-            if spec.id == crate::menu::MenuBarMenuId::Window {
-                sub.set_as_windows_menu_for_nsapp();
-                window_menu = Some(sub.clone());
-            }
-            if spec.id == crate::menu::MenuBarMenuId::Help {
-                sub.set_as_help_menu_for_nsapp();
-                help_menu = Some(sub.clone());
-            }
-            self.menu.append(&sub).map_err(|e| e.to_string())?;
-        }
-        *self.window_submenu.borrow_mut() = window_menu;
-        let _ = help_menu;
-        Ok(())
-    }
-
-    fn fill_submenu(&self, sub: &Submenu, items: &[MenuEntry]) -> Result<(), String> {
-        for entry in items {
-            match entry {
-                MenuEntry::Separator => {
-                    sub.append(&PredefinedMenuItem::separator())
-                        .map_err(|e| e.to_string())?;
-                }
-                MenuEntry::Heading(_) => {}
-                MenuEntry::Item(item) => {
-                    if item.command == MenuCommand::NativeOnly {
-                        let native = match item.label.as_str() {
-                            "Minimize" => PredefinedMenuItem::minimize(Some("Minimize")),
-                            "Zoom" => PredefinedMenuItem::zoom(None),
-                            "Enter Full Screen" => PredefinedMenuItem::fullscreen(None),
-                            "Bring All to Front" => {
-                                PredefinedMenuItem::bring_all_to_front(None)
-                            }
-                            _ => continue,
-                        };
-                        sub.append(&native).map_err(|e| e.to_string())?;
-                        continue;
-                    }
-                    if item.checked || matches!(item.command, MenuCommand::ToggleJs) {
-                        let check = self.append_check_item(
-                            &item.label,
-                            &item.command,
-                            item.shortcut,
-                            item.enabled,
-                            item.checked,
-                        )?;
-                        sub.append(&check).map_err(|e| e.to_string())?;
-                    } else {
-                        let plain = self.append_command_item(
-                            &item.label,
-                            item.command.clone(),
-                            item.shortcut,
-                            item.enabled,
-                            item.checked,
-                        )?;
-                        sub.append(&plain).map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn append_command_item(
-        &self,
-        label: &str,
-        command: MenuCommand,
-        shortcut: Option<Shortcut>,
-        enabled: bool,
-        checked: bool,
-    ) -> Result<MenuItem, String> {
-        let id = command.id().ok_or_else(|| "command missing id".to_string())?;
-        let item = MenuItem::with_id(
-            id.clone(),
-            label,
-            enabled,
-            shortcut.and_then(shortcut_to_accelerator),
-        );
-        if checked {
-            // checkmark lives on a separate type; plain item ignores checked
-        }
-        self.item_refs
-            .borrow_mut()
-            .insert(id, DynamicItem::Plain(item.clone()));
-        Ok(item)
-    }
-
-    fn append_check_item(
-        &self,
-        label: &str,
-        command: &MenuCommand,
-        shortcut: Option<Shortcut>,
-        enabled: bool,
-        checked: bool,
-    ) -> Result<CheckMenuItem, String> {
-        let id = command.id().ok_or_else(|| "command missing id".to_string())?;
-        let item = CheckMenuItem::with_id(
-            id.clone(),
-            label,
-            enabled,
-            checked,
-            shortcut.and_then(shortcut_to_accelerator),
-        );
-        self.item_refs
-            .borrow_mut()
-            .insert(id, DynamicItem::Check(item.clone()));
-        Ok(item)
+        ),
+        NativeItem::Services => PredefinedMenuItem::services(None),
+        NativeItem::Hide => PredefinedMenuItem::hide(Some("Hide Glide")),
+        NativeItem::HideOthers => PredefinedMenuItem::hide_others(None),
+        NativeItem::ShowAll => PredefinedMenuItem::show_all(None),
+        NativeItem::Minimize => PredefinedMenuItem::minimize(None),
+        NativeItem::Zoom => PredefinedMenuItem::maximize(None),
+        NativeItem::FullScreen => PredefinedMenuItem::fullscreen(None),
+        NativeItem::BringAllToFront => PredefinedMenuItem::bring_all_to_front(None),
     }
 }
 
@@ -284,10 +286,11 @@ fn shortcut_to_code(key: ShortcutKey) -> Option<Code> {
             'q' => Some(Code::KeyQ),
             'r' => Some(Code::KeyR),
             't' => Some(Code::KeyT),
+            'v' => Some(Code::KeyV),
             'w' => Some(Code::KeyW),
             'x' => Some(Code::KeyX),
-            'v' => Some(Code::KeyV),
             'z' => Some(Code::KeyZ),
+            '/' => Some(Code::Slash),
             _ => None,
         },
         ShortcutKey::Digit(d) => match d {

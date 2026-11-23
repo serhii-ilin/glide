@@ -23,12 +23,12 @@ pub mod js;
 pub mod keyboard;
 pub mod location;
 pub mod logging;
-pub mod menu;
 pub mod mcp;
-pub mod nav;
-pub mod net;
+pub mod menu;
 #[cfg(target_os = "macos")]
 mod native_menu;
+pub mod nav;
+pub mod net;
 pub mod network_feed;
 pub mod parse;
 pub mod profile;

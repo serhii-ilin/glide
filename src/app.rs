@@ -784,14 +784,14 @@ impl Glide {
             history_log: init.history_log,
             devtools: init.devtools,
             devtools_drag: None,
-        network_route: init.network_route,
-        ime_composing: false,
-        js_wake_armed_until: None,
-        in_window_menu: init.in_window_menu,
-        #[cfg(target_os = "macos")]
-        menu_commands: init.menu_commands,
-        #[cfg(target_os = "macos")]
-        native_menu: init.native_menu,
+            network_route: init.network_route,
+            ime_composing: false,
+            js_wake_armed_until: None,
+            in_window_menu: init.in_window_menu,
+            #[cfg(target_os = "macos")]
+            menu_commands: init.menu_commands,
+            #[cfg(target_os = "macos")]
+            native_menu: init.native_menu,
         }
     }
 
@@ -802,22 +802,17 @@ impl Glide {
         command: crate::menu::MenuCommand,
     ) {
         if let Some(action) = keyboard::EditAction::from_menu(&command) {
-            if let Some(view) = self.inner.windows.get_mut(&window_id) {
-                if keyboard::apply_edit_action(view, action) {
-                    view.request_redraw();
-                    self.sync();
-                }
+            if let Some(view) = self.inner.windows.get_mut(&window_id)
+                && keyboard::apply_edit_action(view, action)
+            {
+                view.request_redraw();
+                self.sync();
             }
-            return;
-        }
-        if let Some(shortcut) = command.to_browser_shortcut() {
+        } else if let Some(shortcut) = command.to_browser_shortcut() {
             self.handle_browser_shortcut_value(event_loop, window_id, shortcut);
-            return;
-        }
-        if let Some(nav) = command.to_nav_command() {
+        } else if let Some(nav) = command.to_nav_command() {
             self.bus.push(nav);
             self.sync();
-            return;
         }
     }
 
@@ -1067,20 +1062,12 @@ impl Glide {
                     }
                     NavCommand::FindNext => {
                         if let Some(tab) = self.tabs.active_mut() {
-                            if !tab.find.open {
-                                tab.find.open_bar(&mut doc);
-                            } else {
-                                tab.find.step(&mut doc, true);
-                            }
+                            tab.find.step(&mut doc, true);
                         }
                     }
                     NavCommand::FindPrev => {
                         if let Some(tab) = self.tabs.active_mut() {
-                            if !tab.find.open {
-                                tab.find.open_bar(&mut doc);
-                            } else {
-                                tab.find.step(&mut doc, false);
-                            }
+                            tab.find.step(&mut doc, false);
                         }
                     }
                     NavCommand::DevToolsToggle => {
@@ -1406,7 +1393,7 @@ impl Glide {
                 self.in_window_menu,
                 self.devtools.state.open,
             );
-            let _ = self.native_menu.sync(&view);
+            self.native_menu.sync(&view);
         }
         sync_tab_network_epoch_from_route(&mut self.tabs, &self.network_route);
         if let Some(tab) = self.tabs.active() {
@@ -1605,6 +1592,14 @@ impl Glide {
                                 keyboard::BrowserShortcut::Find => tab.find.open_bar(&mut chrome),
                                 keyboard::BrowserShortcut::FindClose => {
                                     tab.find.close_bar(&mut chrome)
+                                }
+                                // Menu Find Next/Previous with the bar closed opens it, since
+                                // the key path only classifies the keys while the bar is open.
+                                keyboard::BrowserShortcut::FindNext
+                                | keyboard::BrowserShortcut::FindPrev
+                                    if !tab.find.open =>
+                                {
+                                    tab.find.open_bar(&mut chrome)
                                 }
                                 keyboard::BrowserShortcut::FindNext => {
                                     tab.find.step(&mut chrome, true)
@@ -1838,7 +1833,17 @@ impl ApplicationHandler for Glide {
         #[cfg(target_os = "macos")]
         {
             let wake = self.inner.proxy.clone();
-            let _ = self.native_menu.ensure_installed(move || wake.wake_up());
+            let js_enabled = self.html_provider.scripting_enabled.load(Ordering::Relaxed);
+            let view = chrome_view_state(
+                &self.tabs,
+                js_enabled,
+                &self.bookmarks,
+                None,
+                self.in_window_menu,
+                self.devtools.state.open,
+            );
+            self.native_menu
+                .ensure_installed(&view, move || wake.wake_up());
         }
         self.sync();
     }

@@ -642,7 +642,7 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         | BrowserShortcut::DevToolsElementsExpand
         | BrowserShortcut::DevToolsElementsCollapse
         | BrowserShortcut::DevToolsInspectToggle
-        |         BrowserShortcut::DevToolsInspectCancel => None,
+        | BrowserShortcut::DevToolsInspectCancel => None,
         BrowserShortcut::Scroll(_) => None,
         BrowserShortcut::MinimizeWindow
         | BrowserShortcut::ShowHelp
@@ -652,11 +652,11 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
     }
 }
 
-/// Text-editing actions shared by keyboard and native menus.
+/// Text-editing actions a native menu item can request.
+///
+/// Undo and Redo are not here: Blitz has no undo stack, so those menu items stay disabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditAction {
-    Undo,
-    Redo,
     Cut,
     Copy,
     Paste,
@@ -666,8 +666,6 @@ pub enum EditAction {
 impl EditAction {
     pub fn from_menu(command: &crate::menu::MenuCommand) -> Option<Self> {
         match command {
-            crate::menu::MenuCommand::EditUndo => Some(Self::Undo),
-            crate::menu::MenuCommand::EditRedo => Some(Self::Redo),
             crate::menu::MenuCommand::EditCut => Some(Self::Cut),
             crate::menu::MenuCommand::EditCopy => Some(Self::Copy),
             crate::menu::MenuCommand::EditPaste => Some(Self::Paste),
@@ -675,103 +673,65 @@ impl EditAction {
             _ => None,
         }
     }
-}
 
-fn edit_key_code(action: EditAction) -> KeyCode {
-    match action {
-        EditAction::Undo | EditAction::Redo => KeyCode::KeyZ,
-        EditAction::Cut => KeyCode::KeyX,
-        EditAction::Copy => KeyCode::KeyC,
-        EditAction::Paste => KeyCode::KeyV,
-        EditAction::SelectAll => KeyCode::KeyA,
-    }
-}
-
-fn edit_modifiers(action: EditAction) -> ModifiersState {
-    let primary = primary_modifiers();
-    match action {
-        EditAction::Redo => primary | ModifiersState::SHIFT,
-        EditAction::Undo => primary,
-        EditAction::Cut | EditAction::Copy | EditAction::Paste | EditAction::SelectAll => primary,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn primary_modifiers() -> ModifiersState {
-    ModifiersState::META
-}
-
-#[cfg(not(target_os = "macos"))]
-fn primary_modifiers() -> ModifiersState {
-    ModifiersState::CONTROL
-}
-
-/// Run a text-editing command on the focused chrome or page field (same as the key path).
-pub fn apply_edit_action<Rend: WindowRenderer>(
-    view: &mut View<Rend>,
-    action: EditAction,
-) -> bool {
-    let code = edit_key_code(action);
-    let modifiers = edit_modifiers(action);
-    match action {
-        EditAction::Undo | EditAction::Redo => false,
-        EditAction::Cut | EditAction::Copy | EditAction::Paste => {
-            let mut guard = view.doc.inner_mut();
-            let chrome = &mut *guard;
-            if chrome
-                .get_focussed_node_id()
-                .is_some_and(|id| node_is_text_input(chrome, id))
-            {
-                return apply_clipboard_shortcut(chrome, code, modifiers);
-            }
-            if page_iframe_accepts_keys(chrome)
-                && let Some(true) = forward_page_iframe_key(
-                    chrome,
-                    &synthetic_char_key_event(code, action),
-                    modifiers,
-                )
-            {
-                return true;
-            }
-            false
-        }
-        EditAction::SelectAll => {
-            let mut guard = view.doc.inner_mut();
-            let chrome = &mut *guard;
-            #[cfg(target_os = "macos")]
-            {
-                if apply_macos_chrome_keybinding(chrome, code, modifiers) {
-                    return true;
-                }
-                if page_iframe_accepts_keys(chrome) {
-                    let page_id = page_iframe_id(chrome).expect("iframe");
-                    if let Some(sub) = chrome.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
-                        sub.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(
-                            "selectAll:",
-                        )));
-                        return true;
-                    }
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = (view, code, modifiers);
-            }
-            false
+    fn key_code(self) -> KeyCode {
+        match self {
+            Self::Cut => KeyCode::KeyX,
+            Self::Copy => KeyCode::KeyC,
+            Self::Paste => KeyCode::KeyV,
+            Self::SelectAll => KeyCode::KeyA,
         }
     }
 }
 
-fn synthetic_char_key_event(code: KeyCode, action: EditAction) -> KeyEvent {
-    let ch = match action {
-        EditAction::Copy => 'c',
-        EditAction::Cut => 'x',
-        EditAction::Paste => 'v',
-        _ => 'c',
+fn primary_modifiers() -> ModifiersState {
+    if cfg!(target_os = "macos") {
+        ModifiersState::META
+    } else {
+        ModifiersState::CONTROL
+    }
+}
+
+/// Run a menu edit command on whatever has focus, exactly as its key press would
+/// (page iframe first, then a focused chrome text field), see [`dispatch_text_keys`].
+pub fn apply_edit_action_to_doc(chrome: &mut BaseDocument, action: EditAction) -> bool {
+    let code = action.key_code();
+    let modifiers = primary_modifiers();
+    if let Some(handled) = forward_page_iframe_key(chrome, &synthetic_key_event(code), modifiers) {
+        return handled;
+    }
+    let text_focused = chrome
+        .get_focussed_node_id()
+        .is_some_and(|id| node_is_text_input(chrome, id));
+    if text_focused && apply_clipboard_shortcut(chrome, code, modifiers) {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        apply_macos_chrome_keybinding(chrome, code, modifiers)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// [`apply_edit_action_to_doc`] on a window's chrome document.
+pub fn apply_edit_action<Rend: WindowRenderer>(view: &mut View<Rend>, action: EditAction) -> bool {
+    let mut guard = view.doc.inner_mut();
+    apply_edit_action_to_doc(&mut guard, action)
+}
+
+fn synthetic_key_event(code: KeyCode) -> KeyEvent {
+    let ch = match code {
+        KeyCode::KeyX => "x",
+        KeyCode::KeyV => "v",
+        KeyCode::KeyA => "a",
+        _ => "c",
     };
     KeyEvent {
         location: winit::keyboard::KeyLocation::Standard,
-        logical_key: winit::keyboard::Key::Character(ch.to_string().into()),
+        logical_key: winit::keyboard::Key::Character(ch.into()),
         physical_key: PhysicalKey::Code(code),
         repeat: false,
         text: None,
@@ -1926,6 +1886,9 @@ mod tests {
             Some(EditAction::Copy)
         );
         clip.set("");
+        assert!(apply_edit_action_to_doc(&mut doc, EditAction::Copy));
+        assert_eq!(clip.text(), "selected text");
+        clip.set("");
         assert!(apply_clipboard_shortcut(
             &mut doc,
             KeyCode::KeyC,
@@ -1934,6 +1897,23 @@ mod tests {
         assert_eq!(clip.text(), "selected text");
     }
 
+    #[test]
+    fn menu_edit_paste_inserts_into_address_bar() {
+        let clip = std::sync::Arc::new(MemoryClipboard::default());
+        let mut doc = chrome_test_document();
+        doc.set_shell_provider(clip.clone());
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.with_text_input(url_id, |mut driver| {
+            driver.editor.set_text("");
+            driver.refresh_layout();
+        });
+        focus_address_field(&mut doc);
+        clip.set("pasted");
+        assert!(apply_edit_action_to_doc(&mut doc, EditAction::Paste));
+        assert_eq!(text_value_in_doc(&doc, "url").as_deref(), Some("pasted"));
+    }
+
+    #[test]
     fn headless_address_bar_copy_and_paste() {
         let clip = std::sync::Arc::new(MemoryClipboard::default());
         let mut doc = chrome_test_document();
@@ -2062,6 +2042,38 @@ mod tests {
             sub.inner_mut().set_focus_to(field_id);
         }
         doc
+    }
+
+    #[test]
+    fn menu_edit_copy_in_page_input_matches_shortcut() {
+        let clip = std::sync::Arc::new(MemoryClipboard::default());
+        let html = chrome_document("about:blank", true, false);
+        let mut doc = parse::document_from_html(&html, test_document_config(), false);
+        doc.set_shell_provider(clip.clone());
+        layout_doc(&mut doc);
+        let page_id = doc.get_element_by_id("page").expect("page iframe");
+        {
+            let mut m = doc.mutate();
+            m.set_attribute(page_id, qual_name!("srcdoc"), PAGE_INPUT_FIXTURE);
+        }
+        layout_doc(&mut doc);
+        doc.set_focus_to(page_id);
+        let field_id = doc
+            .get_node(page_id)
+            .and_then(|n| n.subdoc())
+            .and_then(|sub| sub.inner().get_element_by_id("field"))
+            .expect("field");
+        if let Some(sub) = doc.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
+            let mut inner = sub.inner_mut();
+            inner.set_focus_to(field_id);
+            inner.with_text_input(field_id, |mut driver| {
+                driver.editor.set_text("from the page");
+                driver.refresh_layout();
+            });
+            inner.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new("selectAll:")));
+        }
+        assert!(apply_edit_action_to_doc(&mut doc, EditAction::Copy));
+        assert_eq!(clip.text(), "from the page");
     }
 
     #[test]

@@ -47,6 +47,17 @@ pub enum DomRequest {
         submitter: u64,
         reply: u64,
     },
+    /// Live `value` / `checked` from Blitz for domino getters (F-039).
+    ControlField {
+        node: u64,
+        field: String,
+        reply: u64,
+    },
+    /// Blitz control state for every field in a form before submit (F-039).
+    SyncFormControls {
+        form: u64,
+        reply: u64,
+    },
     ListenTarget {
         node: u64,
         event_type: String,

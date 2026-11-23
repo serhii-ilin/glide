@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use blitz_dom::node::NodeData;
 use blitz_dom::{BaseDocument, DocumentConfig, local_name};
 use blitz_net::Provider;
+use blitz_traits::navigation::NavigationOptions;
+use blitz_traits::net::http::HeaderValue;
 use blitz_traits::net::{NetProvider, Request};
 use blitz_traits::node_id::NodeId;
 use blitz_traits::shell::{ColorScheme, Viewport};
@@ -54,18 +56,27 @@ pub fn fetch_page(
     handle: &tokio::runtime::Handle,
     net: &Arc<Provider>,
 ) -> Result<(String, Vec<u8>), String> {
-    if let Ok(parsed) = url::Url::parse(url)
-        && parsed.scheme() == "about"
-    {
+    let parsed = url::Url::parse(url).map_err(|err| err.to_string())?;
+    fetch_page_with_request(Request::get(parsed), js_enabled, handle, net)
+}
+
+pub fn fetch_page_with_request(
+    mut request: Request,
+    js_enabled: bool,
+    handle: &tokio::runtime::Handle,
+    net: &Arc<Provider>,
+) -> Result<(String, Vec<u8>), String> {
+    request.url.set_fragment(None);
+    let parsed = request.url.clone();
+    let url = parsed.to_string();
+    if parsed.scheme() == "about" {
         if let Some(html) = crate::about::about_document(&parsed) {
             return Ok((parsed.to_string(), html.as_bytes().to_vec()));
         }
-        let html = crate::net::error_page_html(url, crate::about::ABOUT_LOCAL_NETWORK_ERROR);
+        let html = crate::net::error_page_html(&url, crate::about::ABOUT_LOCAL_NETWORK_ERROR);
         return Ok((parsed.to_string(), html.into_bytes()));
     }
-    if let Ok(parsed) = url::Url::parse(url)
-        && parsed.scheme() == "file"
-    {
+    if parsed.scheme() == "file" {
         let path = parsed
             .to_file_path()
             .map_err(|_| format!("invalid file URL `{url}`"))?;
@@ -74,12 +85,8 @@ pub fn fetch_page(
         canonical.set_fragment(None);
         return Ok((canonical.to_string(), bytes));
     }
-    let parsed = url::Url::parse(url).map_err(|err| err.to_string())?;
     if parsed.scheme() == "http" || parsed.scheme() == "https" {
-        match handle.block_on(crate::http::fetch_document(
-            Request::get(parsed),
-            js_enabled,
-        )) {
+        match handle.block_on(crate::http::fetch_document(request, js_enabled)) {
             crate::http::DocumentFetch::Page { url, body, .. } => Ok((url, body.to_vec())),
             crate::http::DocumentFetch::Failed { url, reason } => {
                 Err(format!("fetch {url}: {reason}"))
@@ -89,7 +96,7 @@ pub fn fetch_page(
         #[cfg(test)]
         PROVIDER_FETCH_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         handle
-            .block_on(net.fetch_async(Request::get(parsed)))
+            .block_on(net.fetch_async(request))
             .map(|(final_url, bytes)| (final_url, bytes.into()))
             .map_err(|err| format!("fetch {url}: {err}"))
     }
@@ -176,20 +183,31 @@ pub const MAX_JS_NAVIGATIONS: u32 = 5;
 /// what the window does when the iframe reports a navigation.
 #[derive(Default)]
 pub struct JsNavigation {
-    pending: std::sync::Mutex<Option<url::Url>>,
+    pending: std::sync::Mutex<Option<Request>>,
 }
 
 impl JsNavigation {
     /// Take the last requested navigation, if any.
-    pub fn take(&self) -> Option<url::Url> {
-        self.pending.lock().ok().and_then(|mut url| url.take())
+    pub fn take(&self) -> Option<Request> {
+        self.pending.lock().ok().and_then(|mut req| req.take())
     }
 }
 
 impl blitz_traits::navigation::NavigationProvider for JsNavigation {
-    fn navigate_to(&self, options: blitz_traits::navigation::NavigationOptions) {
+    fn navigate_to(&self, options: NavigationOptions) {
+        let mut headers = blitz_traits::net::http::HeaderMap::new();
+        if let Some(ct) = options.content_type.as_deref()
+            && let Ok(value) = HeaderValue::from_str(ct)
+        {
+            headers.insert(blitz_traits::net::http::header::CONTENT_TYPE, value);
+        }
+        let mut request = Request::get(options.url);
+        request.method = options.method;
+        request.content_type = options.content_type;
+        request.headers = headers;
+        request.body = options.document_resource;
         if let Ok(mut pending) = self.pending.lock() {
-            *pending = Some(options.url);
+            *pending = Some(request);
         }
     }
 }
@@ -200,24 +218,33 @@ impl blitz_traits::navigation::NavigationProvider for JsNavigation {
 /// submits a form, `location.assign`) for up to [`MAX_JS_NAVIGATIONS`] hops.
 pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     let mut target = url.to_string();
+    let mut next_request: Option<Request> = None;
     let mut hops = 0;
     loop {
-        let (document, next) = load_once(&target, js_enabled)?;
-        match next {
-            Some(next) if hops < MAX_JS_NAVIGATIONS => {
+        let (document, pending) = load_once(&target, js_enabled, next_request.take())?;
+        match pending {
+            Some(req) if hops < MAX_JS_NAVIGATIONS => {
                 hops += 1;
-                target = next.to_string();
+                target = req.url.to_string();
+                next_request = Some(req);
             }
             _ => return Ok(document),
         }
     }
 }
 
-fn load_once(url: &str, js_enabled: bool) -> Result<(HtmlPageDocument, Option<url::Url>), String> {
+fn load_once(
+    url: &str,
+    js_enabled: bool,
+    navigation_request: Option<Request>,
+) -> Result<(HtmlPageDocument, Option<Request>), String> {
     crate::cookies::CookieJar::ensure_process_global(None);
     let net_impl = Arc::new(Provider::new(None));
     let handle = tokio::runtime::Handle::current();
-    let (final_url, bytes) = fetch_page(url, js_enabled, &handle, &net_impl)?;
+    let (final_url, bytes) = match navigation_request {
+        Some(request) => fetch_page_with_request(request, js_enabled, &handle, &net_impl)?,
+        None => fetch_page(url, js_enabled, &handle, &net_impl)?,
+    };
     let html = String::from_utf8_lossy(&bytes);
 
     let net_provider: Arc<dyn NetProvider> = net_impl.clone();

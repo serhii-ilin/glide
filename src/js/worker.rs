@@ -914,6 +914,10 @@ fn map_dom_op(
             form: arg_handle(scope, args, 2)?,
             reply,
         },
+        "pushFormValues" => DomRequest::PushFormValues {
+            json: arg_string(scope, args, 2)?,
+            reply,
+        },
         "randomBytes" => {
             let size = arg_string(scope, args, 2)?
                 .parse::<usize>()

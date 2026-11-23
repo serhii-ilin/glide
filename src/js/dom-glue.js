@@ -1521,7 +1521,10 @@
     if (!scriptEl || scriptEl.nodeType !== 1 || scriptEl.localName !== 'script') return;
     if (ranScripts.has(scriptEl)) return;
     ranScripts.add(scriptEl);
-    if (scriptEl.getAttribute && scriptEl.getAttribute('src')) return;
+    if (scriptEl.getAttribute && scriptEl.getAttribute('src')) {
+      runDynamicScript(scriptEl);
+      return;
+    }
     const code = scriptEl.textContent || '';
     if (!code) return;
     const prevScript = global.__glideCurrentScript;
@@ -1866,6 +1869,36 @@
     }
   }
 
+  function pushFormControlsToBlitz(form) {
+    if (!form || form.nodeType !== 1) return;
+    const pairs = [];
+    const stack = [form];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || node.nodeType !== 1) continue;
+      const tag = String(node.localName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea') {
+        const id = blitzId(node);
+        if (id != null) {
+          let value = '';
+          try {
+            value = String(node.value);
+          } catch (_) {
+            value = (node.getAttribute && node.getAttribute('value')) || '';
+          }
+          if (controlValueCache.has(node)) value = String(controlValueCache.get(node));
+          pairs.push([id, value]);
+        }
+      }
+      for (let c = node.firstChild; c; c = c.nextSibling) stack.push(c);
+    }
+    if (pairs.length) {
+      try {
+        rpc('pushFormValues', JSON.stringify(pairs));
+      } catch (_) { /* navigation must not throw into the page */ }
+    }
+  }
+
   function installFormControlMirror() {
     if (formControlMirrorInstalled) return;
     const Input = domino.impl.HTMLInputElement;
@@ -1958,10 +1991,11 @@
       },
     });
 
-    function submitFormElement(form, submitter) {
+    function submitFormElement(form, submitter, skipBlitzPull) {
       const formId = blitzId(form);
       if (formId == null) return;
-      syncFormControlsFromBlitz(form);
+      if (!skipBlitzPull) syncFormControlsFromBlitz(form);
+      pushFormControlsToBlitz(form);
       // Fields added or changed in this task must exist in Blitz first.
       flushMutations();
       const submitterId = submitter ? blitzId(submitter) : null;
@@ -1976,7 +2010,7 @@
       configurable: true,
       writable: true,
       value: function submit() {
-        submitFormElement(this, null);
+        submitFormElement(this, null, true);
       },
     });
 
@@ -1991,12 +2025,10 @@
             DOMException.NOT_FOUND_ERR,
           );
         }
-        syncFormControlsFromBlitz(this);
         const evt = new domino.impl.Event('submit', { bubbles: true, cancelable: true });
         if (!this.dispatchEvent(evt)) return;
         flushMutations();
-        syncFormControlsFromBlitz(this);
-        submitFormElement(this, submitter || null);
+        submitFormElement(this, submitter || null, true);
       },
     });
   }

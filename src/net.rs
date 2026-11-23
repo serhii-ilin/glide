@@ -420,12 +420,15 @@ impl GlideNet {
             initiator: NetworkInitiator::Subresource,
         });
         let document_url = self.state.document_url.lock().ok().and_then(|g| g.clone());
+        let fetch_metadata =
+            crate::http::subresource_fetch_metadata(&request, document_url.clone());
         tokio::spawn(async move {
             match crate::http::fetch_followed_with_cookie_context(
                 request,
                 document_url,
                 crate::cookies::CookieRequestKind::Subresource,
                 crate::cookies::FetchCredentials::Include,
+                fetch_metadata,
             )
             .await
             {
@@ -661,9 +664,12 @@ async fn page_fetch(
     }
     if matches!(request.url.scheme(), "http" | "https") {
         if crate::http::is_navigable_http(&request) {
-            return match crate::http::fetch_document(request, scripting_enabled, cookie_document)
-                .await
-            {
+            let ctx = crate::http::DocumentNavigationContext {
+                cookie_document: cookie_document.clone(),
+                initiator: cookie_document,
+                user_activation: true,
+            };
+            return match crate::http::fetch_document(request, scripting_enabled, ctx).await {
                 crate::http::DocumentFetch::Page {
                     url,
                     body,

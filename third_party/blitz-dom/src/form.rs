@@ -331,7 +331,13 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
             // Create an entry with name and charset, and append it to entry list.
             create_entry(name, charset.into());
         }
-        // Otherwise, create an entry with name and the value of the field element, and append it to entry list.
+        // Hidden inputs use the value content attribute, not the text editor buffer
+        // (scripts may update `.value` / `value=` without touching editor state).
+        else if element.name.local == local_name!("input") && element_type == Some("hidden") {
+            let value = element.attr(local_name!("value")).unwrap_or("");
+            create_entry(name, value.into());
+        }
+        // Otherwise, create an entry with name and the value of the field element.
         else if let Some(text) = element.text_input_data() {
             create_entry(name, text.editor.text().to_string().as_str().into());
         } else if let Some(value) = element.attr(local_name!("value")) {

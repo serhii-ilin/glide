@@ -49,6 +49,7 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::SubmitForm { reply, .. }
         | DomRequest::ControlField { reply, .. }
         | DomRequest::SyncFormControls { reply, .. }
+        | DomRequest::PushFormValues { reply, .. }
         | DomRequest::ListenTarget { reply, .. }
         | DomRequest::RandomBytes { reply, .. }
         | DomRequest::CookieGet { reply }
@@ -121,6 +122,11 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
                 })
                 .collect();
             DomResponse::ok(reply, DomValue::Json(serde_json::Value::Array(json)))
+        }
+        DomRequest::PushFormValues { json, reply } => {
+            let pairs: Vec<(u64, String)> = serde_json::from_str(&json).unwrap_or_default();
+            super::form_controls::push_form_values(doc, &pairs);
+            DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::RandomBytes { size, reply } => apply_random_bytes(size, reply),
         DomRequest::CookieGet { reply } => apply_cookie_get(base_url, reply),
@@ -327,8 +333,10 @@ pub fn start_fetch(
     );
     let method_for_log = method.clone();
     let url_for_log = url.clone();
+    let fetch_mode = crate::http::fetch_api_sec_mode(&request.url, page_url.as_ref(), creds);
+    let fetch_metadata = crate::http::FetchMetadata::fetch_api(page_url.clone(), fetch_mode);
     handle.spawn(async move {
-        let response = fetch_response(net, request, reply).await;
+        let response = fetch_response(net, request, reply, page_url, creds, fetch_metadata).await;
         record_js_network(
             stamp,
             &method_for_log,
@@ -397,7 +405,14 @@ fn record_js_network(
     );
 }
 
-async fn fetch_response(net: Option<Arc<Provider>>, request: Request, reply: u64) -> DomResponse {
+async fn fetch_response(
+    net: Option<Arc<Provider>>,
+    request: Request,
+    reply: u64,
+    page_url: Option<Url>,
+    creds: crate::cookies::FetchCredentials,
+    fetch_metadata: crate::http::FetchMetadata,
+) -> DomResponse {
     if request.url.scheme() == "about" {
         if let Some(html) = crate::about::about_document(&request.url) {
             return DomResponse::ok(
@@ -415,8 +430,14 @@ async fn fetch_response(net: Option<Arc<Provider>>, request: Request, reply: u64
         return DomResponse::err(reply, "fetch failed: A local network error occurred");
     }
     if request.url.scheme() == "http" || request.url.scheme() == "https" {
-        return match tokio::time::timeout(FETCH_TIMEOUT, crate::http::fetch_followed(request)).await
-        {
+        let fetch = crate::http::fetch_followed_with_cookie_context(
+            request,
+            page_url,
+            crate::cookies::CookieRequestKind::Fetch,
+            creds,
+            fetch_metadata,
+        );
+        return match tokio::time::timeout(FETCH_TIMEOUT, fetch).await {
             Ok(Ok(resp)) => DomResponse::ok(reply, fetch_json(&resp)),
             Ok(Err(err)) => DomResponse::err(reply, format!("fetch failed: {err}")),
             Err(_) => DomResponse::err(reply, "fetch timed out"),
@@ -958,6 +979,59 @@ mod tests {
     }
 
     #[test]
+    fn hidden_input_entry_list_uses_value_attribute_not_stale_editor() {
+        use blitz_traits::net::{Body, EntryValue, FormData};
+        #[derive(Default)]
+        struct BodyRecorder(Mutex<Vec<FormData>>);
+        impl NavigationProvider for BodyRecorder {
+            fn navigate_to(&self, options: NavigationOptions) {
+                if let Body::Form(form) = options.document_resource {
+                    self.0.lock().expect("recorder").push(form);
+                }
+            }
+        }
+        let recorder = Arc::new(BodyRecorder::default());
+        let config = DocumentConfig {
+            base_url: Some("https://example.test/".into()),
+            navigation_provider: Some(recorder.clone()),
+            ..DocumentConfig::default()
+        };
+        let mut doc = crate::parse::document_from_html(
+            "<!DOCTYPE html><html><body><form action=\"/search\" method=\"post\">\
+         <input type=\"hidden\" name=\"gbv\" value=\"1\"></form></body></html>",
+            config,
+            false,
+        );
+        let form = doc.query_selector("form").expect("selector").expect("form");
+        let hidden = doc
+            .query_selector("input[type=hidden]")
+            .expect("selector")
+            .expect("hidden");
+        let mut m = doc.mutate();
+        m.set_attribute(hidden, blitz_dom::qual_name!("value"), "2");
+        drop(m);
+        apply_request(
+            &mut doc,
+            "https://example.test/",
+            DomRequest::SubmitForm {
+                form: node_to_handle(form),
+                submitter: node_to_handle(form),
+                reply: 1,
+            },
+        );
+        let bodies = recorder.0.lock().expect("recorder");
+        let gbv = bodies[0]
+            .iter()
+            .find(|e| e.name == "gbv")
+            .expect("gbv field");
+        assert_eq!(
+            gbv.value,
+            EntryValue::String("2".into()),
+            "hidden gbv must reflect updated value attribute"
+        );
+    }
+
+    #[test]
     fn post_form_select_multiple_selected_options() {
         use blitz_traits::net::{Body, FormData};
         #[derive(Default)]
@@ -1073,7 +1147,16 @@ mod tests {
     #[tokio::test]
     async fn fetch_about_blank_returns_local_html_without_provider() {
         let request = Request::get(url::Url::parse("about:blank").expect("url"));
-        let response = fetch_response(None, request, 1).await;
+        let meta = crate::http::FetchMetadata::fetch_api(None, crate::http::SecFetchMode::Cors);
+        let response = fetch_response(
+            None,
+            request,
+            1,
+            None,
+            crate::cookies::FetchCredentials::Include,
+            meta,
+        )
+        .await;
         match response.value {
             DomValue::Json(value) => {
                 assert_eq!(value["status"], 200);

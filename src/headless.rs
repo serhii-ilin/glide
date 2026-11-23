@@ -86,7 +86,11 @@ pub fn fetch_page_with_request(
         return Ok((canonical.to_string(), bytes));
     }
     if parsed.scheme() == "http" || parsed.scheme() == "https" {
-        match handle.block_on(crate::http::fetch_document(request, js_enabled, None)) {
+        match handle.block_on(crate::http::fetch_document(
+            request,
+            js_enabled,
+            crate::http::DocumentNavigationContext::default(),
+        )) {
             crate::http::DocumentFetch::Page { url, body, .. } => Ok((url, body.to_vec())),
             crate::http::DocumentFetch::Failed { url, reason } => {
                 Err(format!("fetch {url}: {reason}"))

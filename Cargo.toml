@@ -84,6 +84,7 @@ publicsuffix = "2.3"
 
 [patch.crates-io]
 blitz-dom = { path = "third_party/blitz-dom" }
+blitz-net = { path = "third_party/blitz-net" }
 
 [dev-dependencies]
 # Constructs Blitz pointer events in wheel/hover tests (same crate blitz-traits uses).

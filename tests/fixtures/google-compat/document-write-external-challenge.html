@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p id="status">loading</p>
+<script>
+document.write('<script src="challenge.js"><\/script>');
+window.onload = function () {
+  try {
+    challenge();
+    document.getElementById('status').textContent = 'write-challenge-ok';
+  } catch (e) {
+    document.getElementById('status').textContent = 'write-challenge-fail:' + e;
+  }
+};
+</script>
+</body>
+</html>

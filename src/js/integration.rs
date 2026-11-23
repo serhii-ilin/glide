@@ -2537,3 +2537,143 @@ fn websocket_rejects_mixed_content_and_bad_url() {
     assert!(text.contains("mixed:SecurityError"), "{text}");
     assert!(text.contains("bad:SyntaxError"), "{text}");
 }
+
+// --- F-079 Reddit DOM tree APIs (domino gaps) ---
+
+#[test]
+fn reddit_dom_api_get_root_node_connected() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t"></p>
+      <script>
+        var p = document.getElementById('t');
+        p.textContent = document.body.getRootNode() === document ? 'doc' : 'no';
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "doc");
+}
+
+#[test]
+fn custom_element_define_get_root_node_in_connected_callback() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <x-rd id="a"></x-rd><p id="t"></p>
+      <script>
+        class XRd extends HTMLElement {
+          connectedCallback() {
+            var root = this.getRootNode();
+            document.getElementById('t').textContent =
+              root === document ? 'doc' : 'other';
+          }
+        }
+        customElements.define('x-rd', XRd);
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "doc");
+}
+
+#[test]
+fn reddit_dom_api_is_connected() {
+    let html = r#"<!DOCTYPE html><html><body><span id="a">x</span><p id="t"></p>
+      <script>
+        var el = document.getElementById('a');
+        var det = document.createElement('motion-span');
+        document.getElementById('t').textContent =
+          (el.isConnected ? '1' : '0') + ',' + (det.isConnected ? '1' : '0');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "1,0");
+}
+
+#[test]
+fn reddit_dom_api_contains() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p"><i id="c"></i></div><p id="t"></p>
+      <script>
+        var p = document.getElementById('p');
+        var c = document.getElementById('c');
+        var o = document.createElement('div');
+        document.getElementById('t').textContent =
+          (p.contains(c) ? '1' : '0') + ',' + (p.contains(o) ? '1' : '0');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "1,0");
+}
+
+#[test]
+fn reddit_dom_api_closest() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p"><b id="c">x</b></div><p id="t"></p>
+      <script>
+        var p = document.getElementById('p');
+        var c = document.getElementById('c');
+        document.getElementById('t').textContent =
+          (c.closest('div') === p ? '1' : '0');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "1");
+}
+
+#[test]
+fn reddit_dom_api_toggle_attribute() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p"></div><p id="t"></p>
+      <script>
+        var p = document.getElementById('p');
+        var a = p.toggleAttribute('data-x', true);
+        var b = p.toggleAttribute('data-x', false);
+        document.getElementById('t').textContent = a + ',' + b + ',' + p.hasAttribute('data-x');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "true,false,false");
+}
+
+#[test]
+fn reddit_dom_api_get_attribute_names() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p" class="a" data-b="1"></div><p id="t"></p>
+      <script>
+        var names = document.getElementById('p').getAttributeNames().sort();
+        document.getElementById('t').textContent = names.join('+');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert!(result.final_text.contains("class"), "{}", result.final_text);
+    assert!(
+        result.final_text.contains("data-b"),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn reddit_dom_api_replace_children() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p">old</div><p id="t"></p>
+      <script>
+        document.getElementById('p').replaceChildren(document.createTextNode('new'));
+        document.getElementById('t').textContent = document.getElementById('p').textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "new");
+}
+
+#[test]
+fn reddit_dom_api_append_prepend() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p">mid</div><p id="t"></p>
+      <script>
+        var p = document.getElementById('p');
+        p.prepend('pre-');
+        p.append('-suf');
+        document.getElementById('t').textContent = p.textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "pre-mid-suf");
+}
+
+#[test]
+fn reddit_dom_api_before_after_replace_with() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p"><i id="i">x</i></div><p id="t"></p>
+      <script>
+        var p = document.getElementById('p');
+        var i = document.getElementById('i');
+        i.before('|B|');
+        i.after('|A|');
+        var em = document.createElement('em');
+        i.replaceWith(em);
+        document.getElementById('t').textContent = p.textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "|B||A|");
+}

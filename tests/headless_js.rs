@@ -12,6 +12,10 @@ fn fixture_url(name: &str) -> String {
     format!("file://{}", path.display())
 }
 
+fn reddit_compat_fixture(name: &str) -> String {
+    fixture_url(&format!("reddit-compat/{name}"))
+}
+
 #[test]
 fn js_on_runs_inline_script() {
     let rt = tokio_runtime();
@@ -931,4 +935,132 @@ fn document_write_fetches_external_script_before_load() {
     .expect("load");
     assert!(text.contains("write-challenge-ok"), "{text}");
     assert!(text.contains("CHALLENGE-OK"), "{text}");
+}
+
+#[test]
+fn reddit_custom_element_get_root_node_fixture() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&reddit_compat_fixture("get-root-node-ce.html"), true).expect("load");
+    assert!(
+        text.contains("doc:connected"),
+        "expected getRootNode during define upgrade: {text}"
+    );
+}
+
+#[test]
+fn reddit_polyfills_loader_loopback() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for _ in 0..8 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (status, body, ctype) = if req.starts_with("GET /loader.js") {
+                (
+                    "200 OK".to_string(),
+                    "document.getElementById('t').dataset.polyfill='1';".to_string(),
+                    "application/javascript",
+                )
+            } else if req.starts_with("GET /") {
+                (
+                    "200 OK".to_string(),
+                    format!(
+                        "<!DOCTYPE html><html><body><p id=\"t\">before</p>\
+<script>\
+(function load(u,cb){{var s=document.createElement('script');\
+s.src=u;s.onload=function(){{cb('load');}};s.onerror=function(){{cb('error');}};\
+document.head.appendChild(s);}})\
+('http://127.0.0.1:{port}/loader.js',function(e){{\
+ var t=document.getElementById('t');t.textContent=e;t.dataset.exec=t.dataset.polyfill||'0';\
+}});\
+</script></body></html>"
+                    ),
+                    "text/html; charset=utf-8",
+                )
+            } else {
+                ("404 Not Found".to_string(), String::new(), "text/plain")
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/");
+    let text = dump_text(&url, true).expect("load");
+    assert_eq!(text.trim(), "load");
+}
+
+#[test]
+fn reddit_js_challenge_redirect() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for _ in 0..8 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("/");
+            let (status, body) = if path.starts_with("/challenge") {
+                (
+                    "200 OK".to_string(),
+                    format!(
+                        "<!DOCTYPE html><html><body><p>challenge</p>\
+<script>\
+document.cookie='js_challenge=1; path=/';\
+location.replace('http://127.0.0.1:{port}/?js_challenge=1');\
+</script></body></html>"
+                    ),
+                )
+            } else if path.starts_with("/?js_challenge") || path == "/" {
+                (
+                    "200 OK".to_string(),
+                    "<!DOCTYPE html><html><body><p>HOME-CHALLENGE-OK</p></body></html>".to_string(),
+                )
+            } else {
+                ("404 Not Found".to_string(), String::new())
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/challenge");
+    let text = dump_text(&url, true).expect("load");
+    assert!(
+        text.contains("HOME-CHALLENGE-OK"),
+        "expected final home document: {text}"
+    );
+    assert!(!text.contains("challenge"), "{text}");
+}
+
+#[test]
+fn reddit_dom_api_smoke_fixture() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&reddit_compat_fixture("dom-api-smoke.html"), true).expect("load");
+    assert!(text.contains("root:doc"), "{text}");
+    assert!(text.contains("detached:self"), "{text}");
+    assert!(text.contains("ap:pr-rc-ap"), "{text}");
 }

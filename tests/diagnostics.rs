@@ -175,3 +175,18 @@ fn bare_module_specifier_is_reported_as_unsupported() {
     assert!(stdout.contains("before"), "dump: {stdout}");
     assert!(!stdout.contains("bare ran"), "dump: {stdout}");
 }
+
+#[test]
+fn reddit_compat_composed_fixture_clean_diagnostics() {
+    let (stdout, stderr) = run_fixture("reddit-compat/reddit-composed.html", "debug");
+
+    assert!(
+        !stderr.contains("target=\"js.uncaught\""),
+        "unexpected uncaught on reddit composed fixture: {stderr}"
+    );
+    assert!(
+        stderr.contains("msg=\"page scripts settled\"") && stderr.contains("status=\"clean\""),
+        "expected clean page summary: {stderr}"
+    );
+    assert!(stdout.contains("REDDIT-COMPOSED-OK"), "dump: {stdout}");
+}

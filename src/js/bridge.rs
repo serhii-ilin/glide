@@ -58,6 +58,11 @@ pub enum DomRequest {
         form: u64,
         reply: u64,
     },
+    /// Domino control `value` strings applied to Blitz before form submit (F-078).
+    PushFormValues {
+        json: String,
+        reply: u64,
+    },
     ListenTarget {
         node: u64,
         event_type: String,

@@ -49,6 +49,7 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::SubmitForm { reply, .. }
         | DomRequest::ControlField { reply, .. }
         | DomRequest::SyncFormControls { reply, .. }
+        | DomRequest::PushFormValues { reply, .. }
         | DomRequest::ListenTarget { reply, .. }
         | DomRequest::RandomBytes { reply, .. }
         | DomRequest::CookieGet { reply }
@@ -121,6 +122,11 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
                 })
                 .collect();
             DomResponse::ok(reply, DomValue::Json(serde_json::Value::Array(json)))
+        }
+        DomRequest::PushFormValues { json, reply } => {
+            let pairs: Vec<(u64, String)> = serde_json::from_str(&json).unwrap_or_default();
+            super::form_controls::push_form_values(doc, &pairs);
+            DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::RandomBytes { size, reply } => apply_random_bytes(size, reply),
         DomRequest::CookieGet { reply } => apply_cookie_get(base_url, reply),
@@ -955,6 +961,59 @@ mod tests {
         let bodies = recorder.0.lock().expect("recorder");
         let names: Vec<_> = bodies[0].iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"go"));
+    }
+
+    #[test]
+    fn hidden_input_entry_list_uses_value_attribute_not_stale_editor() {
+        use blitz_traits::net::{Body, EntryValue, FormData};
+        #[derive(Default)]
+        struct BodyRecorder(Mutex<Vec<FormData>>);
+        impl NavigationProvider for BodyRecorder {
+            fn navigate_to(&self, options: NavigationOptions) {
+                if let Body::Form(form) = options.document_resource {
+                    self.0.lock().expect("recorder").push(form);
+                }
+            }
+        }
+        let recorder = Arc::new(BodyRecorder::default());
+        let config = DocumentConfig {
+            base_url: Some("https://example.test/".into()),
+            navigation_provider: Some(recorder.clone()),
+            ..DocumentConfig::default()
+        };
+        let mut doc = crate::parse::document_from_html(
+            "<!DOCTYPE html><html><body><form action=\"/search\" method=\"post\">\
+         <input type=\"hidden\" name=\"gbv\" value=\"1\"></form></body></html>",
+            config,
+            false,
+        );
+        let form = doc.query_selector("form").expect("selector").expect("form");
+        let hidden = doc
+            .query_selector("input[type=hidden]")
+            .expect("selector")
+            .expect("hidden");
+        let mut m = doc.mutate();
+        m.set_attribute(hidden, blitz_dom::qual_name!("value"), "2");
+        drop(m);
+        apply_request(
+            &mut doc,
+            "https://example.test/",
+            DomRequest::SubmitForm {
+                form: node_to_handle(form),
+                submitter: node_to_handle(form),
+                reply: 1,
+            },
+        );
+        let bodies = recorder.0.lock().expect("recorder");
+        let gbv = bodies[0]
+            .iter()
+            .find(|e| e.name == "gbv")
+            .expect("gbv field");
+        assert_eq!(
+            gbv.value,
+            EntryValue::String("2".into()),
+            "hidden gbv must reflect updated value attribute"
+        );
     }
 
     #[test]

@@ -1743,6 +1743,33 @@ fn request_submit_rejects_foreign_submitter() {
 }
 
 #[test]
+fn hidden_gbv_submit_handler_updates_entry_list() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form action="/search" method="get">
+        <input type="hidden" name="gbv" id="gbv" value="1">
+      </form>
+      <script>
+        var f = document.forms[0];
+        f.onsubmit = function () {
+          if (typeof XMLHttpRequest !== 'undefined') {
+            var el = document.getElementById('gbv');
+            try { el.value = '2'; } catch (_) {}
+            el.setAttribute('value', '2');
+          }
+        };
+        f.requestSubmit();
+      </script></body></html>"#;
+    let (_, urls) =
+        super::harness::run_inline_page_with_navigation(html, Duration::from_millis(80));
+    assert_eq!(urls.len(), 1, "{urls:?}");
+    assert!(
+        urls[0].contains("gbv=2"),
+        "expected upgraded gbv in navigation URL, got {}",
+        urls[0]
+    );
+}
+
+#[test]
 fn request_submit_fires_submit_event_and_navigates() {
     let html = r#"<!DOCTYPE html><html><body>
       <form action="/search" method="get">

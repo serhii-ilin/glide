@@ -58,6 +58,17 @@ fn is_form_control(tag: &str) -> bool {
     )
 }
 
+/// Apply domino-reported control values onto Blitz before building the entry list.
+pub fn push_form_values(doc: &mut BaseDocument, pairs: &[(u64, String)]) {
+    for &(handle, ref value) in pairs {
+        let Some(id) = super::bridge::resolve_handle(doc, handle) else {
+            continue;
+        };
+        let mut m = doc.mutate();
+        m.set_attribute(id, blitz_dom::qual_name!("value"), value);
+    }
+}
+
 /// Live Blitz state for every control associated with `form`.
 pub fn sync_form_controls(doc: &BaseDocument, form: NodeId) -> Vec<(u64, String, Option<bool>)> {
     if doc.get_node(form).is_none() {

@@ -85,7 +85,28 @@ fn origin_header_value(url: &Url) -> Option<String> {
 }
 
 const MAX_REDIRECTS: usize = 20;
-const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/81.0";
+
+/// Honest Glide user agent naming the host OS at compile time.
+pub fn user_agent() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Glide/0.1 Safari/537.36"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Glide/0.1 Safari/537.36"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Glide/0.1 Safari/537.36"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Glide/0.1 Safari/537.36"
+    }
+}
+
+const ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 
 /// A completed HTTP exchange after redirects have been followed.
 #[derive(Debug, Clone)]
@@ -774,6 +795,68 @@ fn same_origin(a: &Url, b: &Url) -> bool {
         && a.port_or_known_default() == b.port_or_known_default()
 }
 
+fn push_default_header(
+    out: &mut Vec<(http::header::HeaderName, http::header::HeaderValue)>,
+    hop: &Hop,
+    name: &str,
+    value: &str,
+) {
+    let Ok(n) = http::header::HeaderName::from_bytes(name.as_bytes()) else {
+        return;
+    };
+    if hop.headers.contains_key(&n) {
+        return;
+    }
+    let Ok(v) = http::header::HeaderValue::from_str(value) else {
+        return;
+    };
+    out.push((n, v));
+}
+
+fn default_fetch_metadata_headers(
+    hop: &Hop,
+) -> Vec<(http::header::HeaderName, http::header::HeaderValue)> {
+    use crate::cookies::CookieRequestKind;
+    let nav = hop.cookie_kind == CookieRequestKind::Navigation;
+    let mut out = Vec::new();
+    push_default_header(&mut out, hop, "accept-language", ACCEPT_LANGUAGE);
+    if nav {
+        push_default_header(
+            &mut out,
+            hop,
+            "accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        );
+        push_default_header(&mut out, hop, "sec-fetch-dest", "document");
+        push_default_header(&mut out, hop, "sec-fetch-mode", "navigate");
+        push_default_header(&mut out, hop, "sec-fetch-user", "?1");
+        let site = hop
+            .cookie_document
+            .as_ref()
+            .filter(|doc| same_origin(doc, &hop.url))
+            .map(|_| "same-origin")
+            .unwrap_or("none");
+        push_default_header(&mut out, hop, "sec-fetch-site", site);
+    } else {
+        push_default_header(&mut out, hop, "accept", "*/*");
+        push_default_header(&mut out, hop, "sec-fetch-mode", "no-cors");
+        push_default_header(&mut out, hop, "sec-fetch-dest", "empty");
+        let site = hop
+            .cookie_document
+            .as_ref()
+            .map(|doc| {
+                if same_origin(doc, &hop.url) {
+                    "same-origin"
+                } else {
+                    "cross-site"
+                }
+            })
+            .unwrap_or("cross-site");
+        push_default_header(&mut out, hop, "sec-fetch-site", site);
+    }
+    out
+}
+
 async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
     let mut headers = hop.headers.clone();
     crate::cookies::CookieJar::global().append_request_cookies(
@@ -795,7 +878,10 @@ async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
     let mut builder = client().request(hop.method.clone(), hop.url.clone());
     builder = builder.headers(headers);
     if !hop.headers.contains_key(http::header::USER_AGENT) {
-        builder = builder.header(http::header::USER_AGENT, USER_AGENT);
+        builder = builder.header(http::header::USER_AGENT, user_agent());
+    }
+    for (name, value) in default_fetch_metadata_headers(hop) {
+        builder = builder.header(name, value);
     }
     builder = match &hop.body {
         Body::Empty => builder,
@@ -1326,6 +1412,118 @@ mod tests {
             !req.lines()
                 .any(|l| l.to_ascii_lowercase().starts_with("cookie:")),
             "cross-site lax cookie must not be sent: {req}"
+        );
+    }
+
+    #[test]
+    fn user_agent_names_glide_not_firefox_81() {
+        let ua = user_agent();
+        assert!(!ua.contains("Firefox/81"));
+        assert!(ua.contains("Glide/"));
+        #[cfg(target_os = "linux")]
+        assert!(ua.contains("Linux"));
+        #[cfg(target_os = "macos")]
+        assert!(ua.contains("Macintosh"));
+        #[cfg(target_os = "windows")]
+        assert!(ua.contains("Windows NT"));
+    }
+
+    #[test]
+    fn navigation_request_includes_accept_language_and_sec_fetch() {
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("GET /nav") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: text/html\r\n", "<p>ok</p>");
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/nav")).unwrap();
+        match rt.block_on(fetch_document(Request::get(url), false, None)) {
+            DocumentFetch::Page { .. } => {}
+            DocumentFetch::Failed { reason, .. } => panic!("nav failed: {reason}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        let ua = req
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+            .expect("user-agent header");
+        assert!(!ua.to_ascii_lowercase().contains("firefox/81"), "{req}");
+        assert!(ua.contains("Glide/"), "{req}");
+        assert!(
+            req.lines()
+                .any(|l| { l.to_ascii_lowercase().starts_with("accept-language: en-us") }),
+            "{req}"
+        );
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-dest: document")),
+            "{req}"
+        );
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-mode: navigate")),
+            "{req}"
+        );
+        assert!(
+            req.lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("sec-fetch-user: ?1")),
+            "{req}"
+        );
+    }
+
+    #[test]
+    fn subresource_request_includes_sec_fetch_and_glide_user_agent() {
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("GET /res") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response(
+                    "200 OK",
+                    "Content-Type: text/css\r\n",
+                    "body { color: red }",
+                );
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let doc = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let res = Url::parse(&format!("http://127.0.0.1:{port}/res")).unwrap();
+        match rt.block_on(fetch_followed_with_cookie_context(
+            Request::get(res),
+            Some(doc),
+            crate::cookies::CookieRequestKind::Subresource,
+            crate::cookies::FetchCredentials::Include,
+        )) {
+            Ok(_) => {}
+            Err(err) => panic!("subresource failed: {err}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        let ua = req
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+            .expect("user-agent");
+        assert!(ua.contains("Glide/"), "{req}");
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-mode: no-cors")),
+            "{req}"
+        );
+        assert!(
+            req.lines().any(|l| l
+                .to_ascii_lowercase()
+                .starts_with("sec-fetch-site: same-origin")),
+            "{req}"
         );
     }
 }

@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<body>
+<form id="f" action="/search" method="post">
+  <input type="hidden" name="gbv" id="gbv" value="1">
+  <input type="submit" id="go">
+</form>
+<script>
+document.getElementById('f').onsubmit = function () {
+  if (typeof XMLHttpRequest !== 'undefined') {
+    document.getElementById('gbv').value = '2';
+  }
+};
+document.getElementById('f').requestSubmit(document.getElementById('go'));
+</script>
+</body>
+</html>

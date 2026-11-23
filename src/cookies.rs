@@ -270,10 +270,11 @@ impl CookieJar {
             .inner
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        store
-            .parse(assignment, page_url)
-            .map(|_| ())
-            .map_err(|e| e.to_string())?;
+        match store.parse(assignment, page_url) {
+            Ok(_) => {}
+            Err(cookie_store::CookieError::Expired) => {}
+            Err(e) => return Err(e.to_string()),
+        }
         drop(store);
         self.maybe_persist();
         Ok(())
@@ -479,6 +480,18 @@ mod tests {
             &mut headers,
         );
         assert!(!headers.contains_key(http::header::COOKIE));
+    }
+
+    #[test]
+    fn expired_cookie_assignment_is_ignored() {
+        let jar = CookieJar::empty();
+        let page = url("http://example.test/");
+        jar.set_document_cookie(
+            &page,
+            "old=1; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/",
+        )
+        .expect("expired assignment ignored");
+        assert!(!jar.document_cookie(&page).contains("old=1"));
     }
 
     #[test]

@@ -1813,3 +1813,21 @@ fn document_cookie_get_set_visible_to_scripts() {
     let result = super::harness::run_inline_page(html, Duration::from_millis(80));
     assert_eq!(result.final_text, "a=1");
 }
+
+#[test]
+fn document_cookie_expired_assignment_does_not_throw() {
+    use std::sync::Arc;
+    crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        var name = 'exp_' + Math.random().toString(36).slice(2);
+        try {
+          document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/';
+          document.getElementById('t').textContent = 'ok';
+        } catch (e) {
+          document.getElementById('t').textContent = 'threw: ' + e.message;
+        }
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "ok");
+}

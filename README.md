@@ -16,7 +16,7 @@ cargo run --release -- news.ycombinator.com
 cargo run --release -- --dump-text file://$PWD/tests/fixtures/js-toggle.html
 ```
 
-A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML frontend (`https://duckduckgo.com/html/`), which does not need page JavaScript. `file://` URLs open local files.
+A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML frontend (`https://duckduckgo.com/html/`), which does not need page JavaScript. `file://` URLs open local files. `about:blank` is an empty document (new tabs, or typing it in the address bar); other `about:` URLs show a local error page.
 
 | Key | Action |
 | --- | --- |

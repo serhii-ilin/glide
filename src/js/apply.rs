@@ -142,7 +142,7 @@ fn navigate(doc: &BaseDocument, base_url: &str, raw: &str) {
     let Ok(parsed) = parsed else {
         return;
     };
-    if matches!(parsed.scheme(), "javascript" | "about") {
+    if parsed.scheme() == "javascript" {
         return;
     }
     doc.navigation_provider
@@ -319,6 +319,22 @@ fn record_js_network(
 }
 
 async fn fetch_response(net: Option<Arc<Provider>>, request: Request, reply: u64) -> DomResponse {
+    if request.url.scheme() == "about" {
+        if let Some(html) = crate::about::about_document(&request.url) {
+            return DomResponse::ok(
+                reply,
+                fetch_json(&crate::http::Followed {
+                    url: request.url.to_string(),
+                    status: 200,
+                    body: Bytes::from(html),
+                    redirected: false,
+                    content_type: "text/html".to_string(),
+                    headers: Vec::new(),
+                }),
+            );
+        }
+        return DomResponse::err(reply, "fetch failed: A local network error occurred");
+    }
     if request.url.scheme() == "http" || request.url.scheme() == "https" {
         return match tokio::time::timeout(FETCH_TIMEOUT, crate::http::fetch_followed(request)).await
         {
@@ -804,6 +820,35 @@ mod tests {
             },
         );
         assert_eq!(recorded(&recorder), vec!["https://example.test/next?x=1"]);
+        apply_request(
+            &mut doc,
+            "https://example.test/",
+            DomRequest::Navigate {
+                url: "about:blank".into(),
+                reply: 1,
+            },
+        );
+        assert_eq!(
+            recorded(&recorder),
+            vec!["https://example.test/next?x=1", "about:blank",]
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_about_blank_returns_local_html_without_provider() {
+        let request = Request::get(url::Url::parse("about:blank").expect("url"));
+        let response = fetch_response(None, request, 1).await;
+        match response.value {
+            DomValue::Json(value) => {
+                assert_eq!(value["status"], 200);
+                assert!(
+                    value["body"]
+                        .as_str()
+                        .is_some_and(|b| b.contains("<body></body>"))
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 
     #[test]

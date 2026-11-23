@@ -44,12 +44,25 @@ pub struct SettleOutcome {
 }
 
 /// Fetch document bytes for a URL without building a DOM.
+#[cfg(test)]
+pub(crate) static PROVIDER_FETCH_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub fn fetch_page(
     url: &str,
     js_enabled: bool,
     handle: &tokio::runtime::Handle,
     net: &Arc<Provider>,
 ) -> Result<(String, Vec<u8>), String> {
+    if let Ok(parsed) = url::Url::parse(url)
+        && parsed.scheme() == "about"
+    {
+        if let Some(html) = crate::about::about_document(&parsed) {
+            return Ok((parsed.to_string(), html.as_bytes().to_vec()));
+        }
+        let html = crate::net::error_page_html(url, crate::about::ABOUT_LOCAL_NETWORK_ERROR);
+        return Ok((parsed.to_string(), html.into_bytes()));
+    }
     if let Ok(parsed) = url::Url::parse(url)
         && parsed.scheme() == "file"
     {
@@ -73,6 +86,8 @@ pub fn fetch_page(
             }
         }
     } else {
+        #[cfg(test)]
+        PROVIDER_FETCH_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         handle
             .block_on(net.fetch_async(Request::get(parsed)))
             .map(|(final_url, bytes)| (final_url, bytes.into()))
@@ -488,6 +503,43 @@ mod tests {
             true,
         );
         assert_eq!(format_dump_text(&doc, true), "a\nb\n");
+    }
+
+    #[test]
+    fn fetch_about_blank_without_network() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        PROVIDER_FETCH_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+        let net = Arc::new(Provider::new(None));
+        let (resolved, body) =
+            fetch_page("about:blank", false, rt.handle(), &net).expect("about:blank loads");
+        assert_eq!(resolved, "about:blank");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.contains("<body></body>"));
+        assert_eq!(
+            PROVIDER_FETCH_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[test]
+    fn fetch_unsupported_about_urls_local_error_without_provider() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        PROVIDER_FETCH_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+        let net = Arc::new(Provider::new(None));
+        for url in ["about:src", "about:blank/", "about://blank", "ABOUT:BLANK"] {
+            let (resolved, body) = fetch_page(url, false, rt.handle(), &net).expect("loads");
+            let expected = url::Url::parse(url).expect("url").to_string();
+            assert_eq!(resolved, expected);
+            let text = String::from_utf8(body).expect("utf8");
+            assert!(text.contains("Can&apos;t open page"), "{url}");
+            assert!(!text.contains("<body></body>"), "{url}");
+        }
+        assert_eq!(
+            PROVIDER_FETCH_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
     }
 
     #[test]

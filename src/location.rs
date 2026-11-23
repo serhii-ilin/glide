@@ -16,7 +16,7 @@ pub fn resolve_location(raw: &str) -> String {
     }
 
     if let Ok(url) = Url::parse(raw) {
-        if matches!(url.scheme(), "http" | "https" | "file") {
+        if matches!(url.scheme(), "http" | "https" | "file" | "about") {
             return url.to_string();
         }
         if url.as_str() == "glide://bookmarks" {
@@ -94,6 +94,18 @@ mod tests {
     fn glide_bookmarks_passes_through() {
         assert_eq!(resolve_location("glide://bookmarks"), "glide://bookmarks");
         let search = resolve_location("glide://back");
+        assert!(
+            search.starts_with("https://duckduckgo.com/html/?q="),
+            "{search}"
+        );
+    }
+
+    #[test]
+    fn keeps_about_urls() {
+        assert_eq!(resolve_location("about:blank"), "about:blank");
+        assert_eq!(resolve_location("about:blank#frag"), "about:blank#frag");
+        assert_eq!(resolve_location("about:blank?x=1"), "about:blank?x=1");
+        let search = resolve_location("about back");
         assert!(
             search.starts_with("https://duckduckgo.com/html/?q="),
             "{search}"

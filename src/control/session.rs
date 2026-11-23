@@ -545,7 +545,7 @@ pub(crate) fn resolve_nav_url(raw: &str) -> String {
     if let Ok(url) = url::Url::parse(trimmed) {
         match url.scheme() {
             "file" => return trimmed.to_string(),
-            "http" | "https" | "data" => return url.to_string(),
+            "http" | "https" | "data" | "about" => return url.to_string(),
             _ => {}
         }
     }
@@ -596,5 +596,12 @@ mod tests {
             search.starts_with("https://duckduckgo.com/html/?q="),
             "{search}"
         );
+    }
+
+    #[test]
+    fn resolve_nav_url_keeps_about_scheme() {
+        assert_eq!(resolve_nav_url("about:blank"), "about:blank");
+        assert_eq!(resolve_nav_url("about:blank#frag"), "about:blank#frag");
+        assert_eq!(resolve_nav_url("about:blank?x=1"), "about:blank?x=1");
     }
 }

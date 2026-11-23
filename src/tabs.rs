@@ -454,6 +454,13 @@ mod tests {
     }
 
     #[test]
+    fn new_tab_starts_on_about_blank() {
+        let mut tabs = TabManager::new();
+        tabs.new_tab();
+        assert_eq!(tabs.active().map(Tab::url), Some("about:blank"));
+    }
+
+    #[test]
     fn ensure_one_tab_opens_a_default_tab() {
         let mut tabs = TabManager::new();
         assert!(tabs.is_empty());

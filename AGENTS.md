@@ -10,6 +10,7 @@ These rules apply to humans, Claude and Cursor agents alike.
 src/lib.rs            crate modules and library entry points
 src/main.rs           CLI dispatch (window, screenshot, --dump-text, help)
 src/app.rs            window, history sync, keyboard shortcuts, JS pump
+src/app_icon.rs       embedded app icon: window icon (RGBA decode) and macOS Dock icon
 src/history.rs        back/forward stack
 src/args.rs           CLI parsing
 src/chrome.rs         chrome markup (HTML) and navigation commands
@@ -47,7 +48,9 @@ tests/fixtures/       local HTML used by tests
 - No `unwrap()`/`expect()` outside tests, except for a real invariant, and then
   `expect("why this cannot fail")`. Propagate errors with `?`; the crate's idiom is
   `Result<_, String>` at boundaries.
-- No `unsafe` outside the V8 boundary in `src/js/`.
+- No `unsafe` outside the V8 boundary in `src/js/`, with one exception: `src/app_icon.rs` may
+  make the single `setApplicationIconImage` call that sets the macOS Dock icon (objc2 has no
+  safe binding), with a `// SAFETY:` comment.
 - Never block the UI thread. Network work runs on tokio; scripts run on the `glide-js`
   thread; the UI thread only applies results.
 - Keep functions small and testable: put logic in pure functions (key mapping, URL

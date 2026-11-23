@@ -1295,6 +1295,16 @@
         configurable: true,
         get: () => pageLocation,
       });
+      Object.defineProperty(global.document, 'cookie', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return String(rpc('cookieGet') || '');
+        },
+        set(value) {
+          rpc('cookieSet', String(value));
+        },
+      });
     } catch (_) { /* domino defines these as readonly */ }
   }
 

@@ -591,20 +591,36 @@ async fn page_fetch(
     if test_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
     }
-    if crate::http::is_navigable_http(&request) {
-        return match crate::http::fetch_document(request, scripting_enabled).await {
-            crate::http::DocumentFetch::Page {
-                url,
-                body,
-                status,
-                headers,
-            } => Ok(PageLoadSuccess {
-                url,
-                bytes: body,
-                status,
-                headers,
+    if matches!(request.url.scheme(), "http" | "https")
+        && !matches!(request.body, blitz_traits::net::Body::Form(_))
+    {
+        let mut request = request;
+        crate::cookies::CookieJar::global()
+            .append_request_cookies(&request.url, &mut request.headers);
+        if crate::http::is_navigable_http(&request) {
+            return match crate::http::fetch_document(request, scripting_enabled).await {
+                crate::http::DocumentFetch::Page {
+                    url,
+                    body,
+                    status,
+                    headers,
+                } => Ok(PageLoadSuccess {
+                    url,
+                    bytes: body,
+                    status,
+                    headers,
+                }),
+                crate::http::DocumentFetch::Failed { reason, .. } => Err(LoadFail::Failed(reason)),
+            };
+        }
+        return match crate::http::fetch_followed(request).await {
+            Ok(resp) => Ok(PageLoadSuccess {
+                url: resp.url,
+                bytes: resp.body,
+                status: resp.status,
+                headers: resp.headers,
             }),
-            crate::http::DocumentFetch::Failed { reason, .. } => Err(LoadFail::Failed(reason)),
+            Err(reason) => Err(LoadFail::Failed(reason)),
         };
     }
     match provider.fetch_async(request).await {

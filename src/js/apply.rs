@@ -49,6 +49,8 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::SubmitForm { reply, .. }
         | DomRequest::ListenTarget { reply, .. }
         | DomRequest::RandomBytes { reply, .. }
+        | DomRequest::CookieGet { reply }
+        | DomRequest::CookieSet { reply, .. }
         | DomRequest::NodeCount { reply } => *reply,
         #[cfg(debug_assertions)]
         DomRequest::TestResize { reply, .. } => *reply,
@@ -95,6 +97,8 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
             DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::RandomBytes { size, reply } => apply_random_bytes(size, reply),
+        DomRequest::CookieGet { reply } => apply_cookie_get(base_url, reply),
+        DomRequest::CookieSet { value, reply } => apply_cookie_set(base_url, &value, reply),
         DomRequest::ListenTarget {
             node,
             event_type,
@@ -150,6 +154,24 @@ fn navigate(doc: &BaseDocument, base_url: &str, raw: &str) {
 }
 
 const MAX_RANDOM_BYTES: usize = 65_536;
+
+fn apply_cookie_get(base_url: &str, reply: u64) -> DomResponse {
+    let Ok(page_url) = Url::parse(base_url) else {
+        return DomResponse::ok(reply, DomValue::String(String::new()));
+    };
+    let value = crate::cookies::CookieJar::global().document_cookie(&page_url);
+    DomResponse::ok(reply, DomValue::String(value))
+}
+
+fn apply_cookie_set(base_url: &str, assignment: &str, reply: u64) -> DomResponse {
+    let Ok(page_url) = Url::parse(base_url) else {
+        return DomResponse::err(reply, "invalid document url");
+    };
+    match crate::cookies::CookieJar::global().set_document_cookie(&page_url, assignment) {
+        Ok(()) => DomResponse::ok(reply, DomValue::Null),
+        Err(err) => DomResponse::err(reply, err),
+    }
+}
 
 fn apply_random_bytes(size: usize, reply: u64) -> DomResponse {
     if size > MAX_RANDOM_BYTES {
@@ -216,13 +238,14 @@ pub fn start_fetch(
         send_now(DomResponse::err(reply, "no async runtime"));
         return;
     };
-    let request = match build_fetch_request(parsed, &method, &headers, &body) {
+    let mut request = match build_fetch_request(parsed, &method, &headers, &body) {
         Ok(req) => req,
         Err(err) => {
             send_now(DomResponse::err(reply, err));
             return;
         }
     };
+    crate::cookies::CookieJar::global().append_request_cookies(&request.url, &mut request.headers);
     let method_for_log = method.clone();
     let url_for_log = url.clone();
     handle.spawn(async move {
@@ -781,6 +804,32 @@ mod tests {
             },
         );
         assert_eq!(recorded(&recorder), vec!["https://example.test/next?x=1"]);
+    }
+
+    #[test]
+    fn cookie_rpc_get_hides_httponly() {
+        use std::sync::Arc;
+        crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
+        let page = url::Url::parse("http://example.test/").unwrap();
+        crate::cookies::CookieJar::global().store_response_headers(
+            &page,
+            &[("Set-Cookie".into(), "hidden=1; Path=/; HttpOnly".into())],
+        );
+        crate::cookies::CookieJar::global()
+            .store_response_headers(&page, &[("Set-Cookie".into(), "shown=2; Path=/".into())]);
+        let mut doc = blitz_dom::BaseDocument::new(blitz_dom::DocumentConfig::default());
+        let resp = apply_request(
+            &mut doc,
+            "http://example.test/",
+            DomRequest::CookieGet { reply: 1 },
+        );
+        match resp.value {
+            DomValue::String(s) => {
+                assert!(s.contains("shown=2"));
+                assert!(!s.contains("hidden"));
+            }
+            other => panic!("unexpected cookie get: {other:?}"),
+        }
     }
 
     #[test]

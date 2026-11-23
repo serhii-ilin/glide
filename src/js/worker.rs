@@ -838,6 +838,11 @@ fn map_dom_op(
                 .map_err(|_| "randomBytes size must be a non-negative integer".to_string())?;
             DomRequest::RandomBytes { size, reply }
         }
+        "cookieGet" => DomRequest::CookieGet { reply },
+        "cookieSet" => DomRequest::CookieSet {
+            value: arg_string(scope, args, 2)?,
+            reply,
+        },
         #[cfg(debug_assertions)]
         "nodeCount" => DomRequest::NodeCount { reply },
         #[cfg(debug_assertions)]

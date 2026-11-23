@@ -1362,6 +1362,8 @@ dependencies = [
  "blitz-paint",
  "blitz-shell",
  "blitz-traits",
+ "cookie",
+ "cookie_store",
  "crossbeam-channel",
  "directories",
  "getrandom 0.4.3",

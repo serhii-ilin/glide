@@ -57,6 +57,15 @@ pub enum DomRequest {
         size: usize,
         reply: u64,
     },
+    /// `document.cookie` getter (F-058).
+    CookieGet {
+        reply: u64,
+    },
+    /// `document.cookie` setter (F-058).
+    CookieSet {
+        value: String,
+        reply: u64,
+    },
     /// Test hook: number of live Blitz nodes. Dispatched only from debug builds.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     NodeCount {

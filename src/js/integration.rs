@@ -2538,7 +2538,7 @@ fn websocket_rejects_mixed_content_and_bad_url() {
     assert!(text.contains("bad:SyntaxError"), "{text}");
 }
 
-// --- F-079 Reddit DOM tree APIs (domino gaps) ---
+// --- F-080 Reddit DOM tree APIs (Glide patches; contains/closest/toggleAttribute are domino-native regressions) ---
 
 #[test]
 fn reddit_dom_api_get_root_node_connected() {
@@ -2660,6 +2660,101 @@ fn reddit_dom_api_append_prepend() {
       </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(100));
     assert_eq!(result.final_text, "pre-mid-suf");
+}
+
+#[test]
+fn reddit_get_root_node_shadow_host_composed() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t"></p>
+      <script>
+        var frag = document.createDocumentFragment();
+        frag.host = document.body;
+        var child = document.createElement('span');
+        frag.appendChild(child);
+        var r0 = child.getRootNode() === frag;
+        var r1 = child.getRootNode({composed: true}) === document;
+        var conn = child.isConnected;
+        var det = document.createElement('span');
+        var frag2 = document.createDocumentFragment();
+        frag2.host = det;
+        var inner = document.createElement('i');
+        frag2.appendChild(inner);
+        var detConn = inner.isConnected;
+        document.getElementById('t').textContent =
+          [r0 ? 'frag' : 'no', r1 ? 'doc' : 'no', conn ? 'c1' : 'c0', detConn ? 'd1' : 'd0'].join(',');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(150));
+    assert!(
+        result.final_text.contains("frag,doc,c1,d0"),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn reddit_parent_node_append_null_stringifies() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p"></div><p id="t"></p>
+      <script>
+        var p = document.getElementById('p');
+        p.append(null);
+        document.getElementById('t').textContent = p.textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "null");
+}
+
+#[test]
+fn reddit_append_moves_document_fragment_children() {
+    let html = r#"<!DOCTYPE html><html><body><div id="a"></div><div id="b"></div><p id="t"></p>
+      <script>
+        var frag = document.createDocumentFragment();
+        frag.appendChild(document.createTextNode('moved'));
+        document.getElementById('a').append(frag);
+        var moved = frag.childNodes.length === 0 && document.getElementById('a').textContent === 'moved';
+        document.getElementById('t').textContent = moved ? 'ok' : 'no';
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn reddit_append_inclusive_ancestor_throws_and_leaves_tree() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p"><i id="ok">1</i></div><p id="t"></p>
+      <script>
+        var p = document.getElementById('p');
+        var ok = document.getElementById('ok');
+        var threw = false;
+        try { p.append(ok, p); } catch (e) { threw = e.name === 'HierarchyRequestError'; }
+        document.getElementById('t').textContent = (threw ? 'err' : 'no') + ':' + p.contains(ok);
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "err:true");
+}
+
+#[test]
+fn reddit_replace_children_self_throws() {
+    let html = r#"<!DOCTYPE html><html><body><div id="p"><span>keep</span></div><p id="t"></p>
+      <script>
+        var p = document.getElementById('p');
+        var threw = false;
+        try { p.replaceChildren(p); } catch (e) { threw = e.name === 'HierarchyRequestError'; }
+        document.getElementById('t').textContent = (threw ? 'err' : 'no') + ':' + p.textContent;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert_eq!(result.final_text, "err:keep");
+}
+
+#[test]
+fn reddit_document_append_text() {
+    let html = r#"<!DOCTYPE html><html><body><html id="extra"></html><p id="t"></p>
+      <script>
+        var before = document.documentElement.childNodes.length;
+        document.append('x');
+        var after = document.documentElement.childNodes.length;
+        var root = document.documentElement.getRootNode() === document;
+        document.getElementById('t').textContent = before + ',' + after + ',' + (root ? 'doc' : 'no');
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(100));
+    assert!(result.final_text.contains("doc"), "{}", result.final_text);
 }
 
 #[test]

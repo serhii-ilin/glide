@@ -146,25 +146,102 @@
   function nodeIsConnected(node) {
     if (!node) return false;
     let n = node;
+    const seen = new Set();
     while (n) {
+      if (seen.has(n)) return false;
+      seen.add(n);
       if (n.nodeType === 9) return n === pageDocument;
-      if (n.nodeType === 11 && n.host) n = n.host;
-      else n = n.parentNode;
+      if (n.parentNode) {
+        n = n.parentNode;
+        continue;
+      }
+      if (n.nodeType === 11 && n.host) {
+        n = n.host;
+        continue;
+      }
+      break;
     }
     return false;
   }
 
   let domTreeApiPatched = false;
 
-  function nodesFromDomArgs(doc, args) {
-    const out = [];
-    for (let i = 0; i < args.length; i += 1) {
-      const item = args[i];
-      if (item == null) continue;
-      if (typeof item === 'string') out.push(doc.createTextNode(item));
-      else out.push(item);
+  function hierarchyRequestError() {
+    const DOMException = domino.impl.DOMException;
+    const err = new DOMException('', DOMException.HIERARCHY_REQUEST_ERR);
+    err.name = 'HierarchyRequestError';
+    throw err;
+  }
+
+  function isInclusiveAncestor(ancestor, node) {
+    if (!ancestor || !node) return false;
+    let n = node;
+    while (n) {
+      if (n === ancestor) return true;
+      n = n.parentNode;
     }
-    return out;
+    return false;
+  }
+
+  function documentForParent(parent) {
+    return parent.nodeType === 9 ? parent : parent.ownerDocument;
+  }
+
+  function nodeFromParentArg(doc, item) {
+    if (item == null) return doc.createTextNode(String(item));
+    if (typeof item === 'string') return doc.createTextNode(item);
+    if (typeof item === 'number' || typeof item === 'boolean') {
+      return doc.createTextNode(String(item));
+    }
+    if (item && item.nodeType) return item;
+    return doc.createTextNode(String(item));
+  }
+
+  function nodesFromParentArgs(doc, nodes) {
+    const built = [];
+    for (let i = 0; i < nodes.length; i += 1) {
+      built.push(nodeFromParentArg(doc, nodes[i]));
+    }
+    return built;
+  }
+
+  function nodesToDocumentFragment(doc, nodes) {
+    const frag = doc.createDocumentFragment();
+    for (let i = 0; i < nodes.length; i += 1) {
+      frag.appendChild(nodeFromParentArg(doc, nodes[i]));
+    }
+    return frag;
+  }
+
+  function validatePreInsertNodes(parent, nodes) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      validatePreInsert(parent, nodes[i]);
+    }
+  }
+
+  function validatePreInsert(parent, node) {
+    if (!node || !node.nodeType) throw new TypeError('not a node');
+    if (node.nodeType === 11) {
+      let c = node.firstChild;
+      while (c) {
+        validatePreInsert(parent, c);
+        c = c.nextSibling;
+      }
+      return;
+    }
+    if (isInclusiveAncestor(node, parent)) hierarchyRequestError();
+  }
+
+  function insertFragmentChildren(parent, ref, frag) {
+    const kids = [];
+    let c = frag.firstChild;
+    while (c) {
+      kids.push(c);
+      c = c.nextSibling;
+    }
+    for (let i = 0; i < kids.length; i += 1) {
+      parent.insertBefore(kids[i], ref);
+    }
   }
 
   // Domino 2.1.x lacks several DOM Standard tree APIs Reddit's bundle calls.
@@ -173,6 +250,7 @@
     const NodeProto = impl.Node && impl.Node.prototype;
     const ElementProto = impl.Element && impl.Element.prototype;
     const FragmentProto = impl.DocumentFragment && impl.DocumentFragment.prototype;
+    const DocumentProto = impl.Document && impl.Document.prototype;
     if (!NodeProto) return;
     domTreeApiPatched = true;
 
@@ -180,46 +258,57 @@
       NodeProto.getRootNode = function getRootNode(options) {
         const composed = !!(options && options.composed);
         let root = this;
+        const seen = new Set();
         for (;;) {
+          if (seen.has(root)) return root;
+          seen.add(root);
           const parent = root.parentNode;
-          if (!parent) break;
+          if (parent) {
+            root = parent;
+            continue;
+          }
           if (composed && root.nodeType === 11 && root.host) {
             root = root.host;
             continue;
           }
-          root = parent;
+          return root;
         }
-        return root;
       };
     }
 
     function installParentNode(proto) {
       if (!proto || proto.__glide_parent_node_patched) return;
       proto.__glide_parent_node_patched = true;
-      const docFor = (node) => (node.nodeType === 9 ? node : node.ownerDocument);
 
       if (typeof proto.append !== 'function') {
         proto.append = function append(...nodes) {
-          const kids = nodesFromDomArgs(docFor(this), nodes);
-          for (let i = 0; i < kids.length; i += 1) this.appendChild(kids[i]);
+          const doc = documentForParent(this);
+          const built = nodesFromParentArgs(doc, nodes);
+          validatePreInsertNodes(this, built);
+          const frag = doc.createDocumentFragment();
+          for (let i = 0; i < built.length; i += 1) frag.appendChild(built[i]);
+          insertFragmentChildren(this, null, frag);
         };
       }
       if (typeof proto.prepend !== 'function') {
         proto.prepend = function prepend(...nodes) {
-          const doc = docFor(this);
-          const kids = nodesFromDomArgs(doc, nodes);
-          const ref = this.firstChild;
-          for (let i = 0; i < kids.length; i += 1) {
-            this.insertBefore(kids[i], ref);
-          }
+          const doc = documentForParent(this);
+          const built = nodesFromParentArgs(doc, nodes);
+          validatePreInsertNodes(this, built);
+          const frag = doc.createDocumentFragment();
+          for (let i = 0; i < built.length; i += 1) frag.appendChild(built[i]);
+          insertFragmentChildren(this, this.firstChild, frag);
         };
       }
       if (typeof proto.replaceChildren !== 'function') {
         proto.replaceChildren = function replaceChildren(...nodes) {
-          const doc = docFor(this);
-          const kids = nodesFromDomArgs(doc, nodes);
+          const doc = documentForParent(this);
+          const built = nodesFromParentArgs(doc, nodes);
+          validatePreInsertNodes(this, built);
           while (this.firstChild) this.removeChild(this.firstChild);
-          for (let i = 0; i < kids.length; i += 1) this.appendChild(kids[i]);
+          const frag = doc.createDocumentFragment();
+          for (let i = 0; i < built.length; i += 1) frag.appendChild(built[i]);
+          insertFragmentChildren(this, null, frag);
         };
       }
     }
@@ -234,10 +323,56 @@
       });
     }
 
-    // ParentNode on Document breaks domino's snapshot child walk if installed
-    // before the tree is built; patch element and fragment only.
+    function documentInsertParent(doc) {
+      return doc.documentElement || doc;
+    }
+
+    function installDocumentParentNode(proto) {
+      if (!proto || proto.__glide_document_parent_node_patched) return;
+      proto.__glide_document_parent_node_patched = true;
+
+      proto.append = function append(...nodes) {
+        const parent = documentInsertParent(this);
+        const built = nodesFromParentArgs(this, nodes);
+        validatePreInsertNodes(parent, built);
+        const frag = this.createDocumentFragment();
+        for (let i = 0; i < built.length; i += 1) frag.appendChild(built[i]);
+        insertFragmentChildren(parent, null, frag);
+      };
+      proto.prepend = function prepend(...nodes) {
+        const parent = documentInsertParent(this);
+        const built = nodesFromParentArgs(this, nodes);
+        validatePreInsertNodes(parent, built);
+        const frag = this.createDocumentFragment();
+        for (let i = 0; i < built.length; i += 1) frag.appendChild(built[i]);
+        insertFragmentChildren(parent, parent.firstChild, frag);
+      };
+      proto.replaceChildren = function replaceChildren(...nodes) {
+        const parent = documentInsertParent(this);
+        const built = nodesFromParentArgs(this, nodes);
+        validatePreInsertNodes(parent, built);
+        while (parent.firstChild) parent.removeChild(parent.firstChild);
+        const frag = this.createDocumentFragment();
+        for (let i = 0; i < built.length; i += 1) frag.appendChild(built[i]);
+        insertFragmentChildren(parent, null, frag);
+      };
+    }
+
+    // installDomTreeApiPatches runs from installGlobals after the snapshot exists.
     installParentNode(ElementProto);
     installParentNode(FragmentProto);
+    domTreeApiInstallDocumentParent = installDocumentParentNode;
+  }
+
+  let domTreeApiInstallDocumentParent = null;
+
+  function patchPageDocumentParentNode() {
+    if (!domTreeApiInstallDocumentParent || !pageDocument) return;
+    // ParentNode on Document.prototype hits a domino/MutationObserver recursion;
+    // the live `pageDocument` instance is the document scripts call.
+    if (typeof pageDocument.append !== 'function') {
+      domTreeApiInstallDocumentParent(pageDocument);
+    }
   }
 
   function walkUpgradedInSubtree(root, visitor) {
@@ -1814,6 +1949,7 @@
     global.Element = impl.Element;
     global.HTMLElement = impl.HTMLElement;
     installDomTreeApiPatches(impl);
+    patchPageDocumentParentNode();
     global.Event = impl.Event;
     global.CustomEvent = impl.CustomEvent;
     global.MouseEvent = impl.MouseEvent;

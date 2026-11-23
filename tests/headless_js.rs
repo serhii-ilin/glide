@@ -969,6 +969,8 @@ fn reddit_polyfills_loader_loopback() {
                     "document.getElementById('t').dataset.polyfill='1';".to_string(),
                     "application/javascript",
                 )
+            } else if req.starts_with("GET /missing.js") {
+                ("404 Not Found".to_string(), String::new(), "text/plain")
             } else if req.starts_with("GET /") {
                 (
                     "200 OK".to_string(),
@@ -979,7 +981,8 @@ fn reddit_polyfills_loader_loopback() {
 s.src=u;s.onload=function(){{cb('load');}};s.onerror=function(){{cb('error');}};\
 document.head.appendChild(s);}})\
 ('http://127.0.0.1:{port}/loader.js',function(e){{\
- var t=document.getElementById('t');t.textContent=e;t.dataset.exec=t.dataset.polyfill||'0';\
+ var t=document.getElementById('t');\
+ t.textContent=e+':'+(t.dataset.polyfill==='1'?'1':'0');\
 }});\
 </script></body></html>"
                     ),
@@ -999,7 +1002,58 @@ document.head.appendChild(s);}})\
     let _guard = rt.enter();
     let url = format!("http://127.0.0.1:{port}/");
     let text = dump_text(&url, true).expect("load");
-    assert_eq!(text.trim(), "load");
+    assert_eq!(text.trim(), "load:1");
+}
+
+#[test]
+fn reddit_polyfills_loader_missing_fires_error() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for _ in 0..8 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (status, body, ctype) = if req.starts_with("GET /missing.js") {
+                ("404 Not Found".to_string(), String::new(), "text/plain")
+            } else if req.starts_with("GET /") {
+                (
+                    "200 OK".to_string(),
+                    format!(
+                        "<!DOCTYPE html><html><body><p id=\"t\">before</p>\
+<script>\
+(function load(u,cb){{var s=document.createElement('script');\
+s.src=u;s.onload=function(){{cb('load');}};s.onerror=function(){{cb('error');}};\
+document.head.appendChild(s);}})\
+('http://127.0.0.1:{port}/missing.js',function(e){{\
+ var t=document.getElementById('t');\
+ t.textContent=e+':'+(t.dataset.polyfill==='1'?'1':'0');\
+}});\
+</script></body></html>"
+                    ),
+                    "text/html; charset=utf-8",
+                )
+            } else {
+                ("404 Not Found".to_string(), String::new(), "text/plain")
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/");
+    let text = dump_text(&url, true).expect("load");
+    assert_eq!(text.trim(), "error:0");
 }
 
 #[test]
@@ -1029,10 +1083,19 @@ location.replace('http://127.0.0.1:{port}/?js_challenge=1');\
 </script></body></html>"
                     ),
                 )
-            } else if path.starts_with("/?js_challenge") || path == "/" {
+            } else if path.starts_with("/?js_challenge")
+                || req.lines().any(|l| {
+                    l.to_ascii_lowercase().starts_with("cookie:") && l.contains("js_challenge=1")
+                })
+            {
                 (
                     "200 OK".to_string(),
                     "<!DOCTYPE html><html><body><p>HOME-CHALLENGE-OK</p></body></html>".to_string(),
+                )
+            } else if path == "/" {
+                (
+                    "200 OK".to_string(),
+                    "<!DOCTYPE html><html><body><p>CHALLENGE-FAIL</p></body></html>".to_string(),
                 )
             } else {
                 ("404 Not Found".to_string(), String::new())
@@ -1053,6 +1116,45 @@ location.replace('http://127.0.0.1:{port}/?js_challenge=1');\
         "expected final home document: {text}"
     );
     assert!(!text.contains("challenge"), "{text}");
+    assert!(!text.contains("CHALLENGE-FAIL"), "{text}");
+}
+
+#[test]
+fn reddit_js_challenge_plain_home_rejected() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for _ in 0..4 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("/");
+            let body = if path.starts_with("/?js_challenge")
+                || req.lines().any(|l| {
+                    l.to_ascii_lowercase().starts_with("cookie:") && l.contains("js_challenge=1")
+                }) {
+                "<!DOCTYPE html><html><body><p>HOME-CHALLENGE-OK</p></body></html>"
+            } else {
+                "<!DOCTYPE html><html><body><p>CHALLENGE-FAIL</p></body></html>"
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let url = format!("http://127.0.0.1:{port}/");
+    let text = dump_text(&url, true).expect("load");
+    assert!(text.contains("CHALLENGE-FAIL"), "{text}");
 }
 
 #[test]
@@ -1062,5 +1164,6 @@ fn reddit_dom_api_smoke_fixture() {
     let text = dump_text(&reddit_compat_fixture("dom-api-smoke.html"), true).expect("load");
     assert!(text.contains("root:doc"), "{text}");
     assert!(text.contains("detached:self"), "{text}");
+    assert!(text.contains("sib:|b||a|"), "{text}");
     assert!(text.contains("ap:pr-rc-ap"), "{text}");
 }

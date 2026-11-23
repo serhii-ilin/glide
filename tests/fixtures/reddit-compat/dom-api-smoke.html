@@ -13,6 +13,11 @@
     log.push('conn:' + (inner.isConnected ? '1' : '0'));
     log.push('contains:' + (document.contains(inner) ? '1' : '0'));
     log.push('closest:' + (inner.closest('div') === host ? '1' : '0'));
+    var sib = document.createElement('em');
+    inner.before('|b|');
+    inner.after('|a|');
+    inner.replaceWith(sib);
+    log.push('sib:' + host.textContent);
     host.toggleAttribute('data-a', true);
     log.push('toggle:' + (host.hasAttribute('data-a') ? '1' : '0'));
     log.push('names:' + host.getAttributeNames().indexOf('data-a'));
@@ -21,11 +26,6 @@
     host.append(document.createTextNode('-ap'));
     host.prepend(document.createTextNode('pr-'));
     log.push('ap:' + host.textContent);
-    var sib = document.createElement('em');
-    inner.before('|b|');
-    inner.after('|a|');
-    inner.replaceWith(sib);
-    log.push('sib:' + host.textContent);
     document.getElementById('t').textContent = log.join(',');
   </script>
 </body>

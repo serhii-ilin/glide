@@ -89,6 +89,63 @@ fn file_url(path: &Path) -> String {
 }
 
 #[test]
+fn navigate_about_blank_reports_empty_document() {
+    let backend = session_js_on();
+    let ControlResult::Page(info) = call(
+        &backend,
+        ControlRequest::Navigate(NavigateParams {
+            url: "about:blank".into(),
+            timeout_ms: None,
+        }),
+    )
+    .expect("navigate about:blank") else {
+        panic!("expected page info");
+    };
+    assert_eq!(info.url, "about:blank");
+    assert!(!info.url.contains("duckduckgo.com"));
+    assert!(!info.loading);
+    let ControlResult::Text { text, .. } = call(
+        &backend,
+        ControlRequest::SnapshotText(TextParams { max_chars: None }),
+    )
+    .expect("snapshot") else {
+        panic!("expected text");
+    };
+    assert!(text.trim().is_empty(), "expected empty body text: {text:?}");
+}
+
+#[test]
+fn navigate_about_blank_history_back_round_trips() {
+    let backend = session_js_on();
+    call(
+        &backend,
+        ControlRequest::Navigate(NavigateParams {
+            url: "about:blank".into(),
+            timeout_ms: None,
+        }),
+    )
+    .expect("about:blank");
+    let fixture = fixture_url("mcp-page-a.html");
+    let ControlResult::Page(info) = call(
+        &backend,
+        ControlRequest::Navigate(NavigateParams {
+            url: fixture.clone(),
+            timeout_ms: None,
+        }),
+    )
+    .expect("fixture") else {
+        panic!("expected page");
+    };
+    assert!(info.url.contains("mcp-page-a.html"));
+    let ControlResult::Page(back) =
+        call(&backend, ControlRequest::Back(WaitParams::default())).expect("back")
+    else {
+        panic!("expected page");
+    };
+    assert_eq!(back.url, "about:blank");
+}
+
+#[test]
 fn navigate_reports_url_title_and_settled() {
     let backend = session_js_on();
     let url = fixture_url("mcp-page-a.html");

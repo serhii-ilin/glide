@@ -161,4 +161,13 @@ mod tests {
         assert_eq!(h.index(), 1);
         assert!(h.back().is_some());
     }
+
+    #[test]
+    fn back_from_second_page_returns_about_blank() {
+        let mut h = History::new("about:blank".into());
+        h.push("https://example.test/page".into());
+        assert_eq!(h.current(), "https://example.test/page");
+        assert_eq!(h.back().as_deref(), Some("about:blank"));
+        assert_eq!(h.current(), "about:blank");
+    }
 }

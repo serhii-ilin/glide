@@ -223,11 +223,18 @@ impl GlideNet {
         resolved_url: String,
         html: String,
         handler: Box<dyn NetHandler>,
+        network_error: Option<String>,
     ) {
         let token = self.state.begin_page_load();
         let state = self.state.clone();
         let waker = self.waker.clone();
         let generation = token.generation;
+        let stamp = self.network_route.begin_document_load();
+        let started = Instant::now();
+        let (status, error) = match &network_error {
+            Some(reason) => (None, Some(reason.clone())),
+            None => (Some(200), None),
+        };
         tokio::spawn(async move {
             let _guard = PageLoadGuard {
                 state: &state,
@@ -235,6 +242,20 @@ impl GlideNet {
                 doc_id,
                 waker: &waker,
             };
+            record_network_complete(
+                stamp,
+                started,
+                NetworkCompleted {
+                    method: "GET".to_string(),
+                    url: resolved_url.clone(),
+                    initiator: NetworkInitiator::Document,
+                    status,
+                    error,
+                    size_bytes: Some(html.len() as u64),
+                    response_headers: Vec::new(),
+                    duration_ms: 0,
+                },
+            );
             handler.bytes(resolved_url, Bytes::from(html));
         });
     }
@@ -250,18 +271,27 @@ impl GlideNet {
     }
 
     fn fetch_page(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
-        if request.url.scheme() == "about"
-            && let Some(html) = crate::about::about_document(&request.url)
-        {
+        if request.url.scheme() == "about" {
             let resolved = request.url.to_string();
-            self.deliver_internal_page(doc_id, resolved, html.to_string(), handler);
+            if let Some(html) = crate::about::about_document(&request.url) {
+                self.deliver_internal_page(doc_id, resolved, html.to_string(), handler, None);
+                return;
+            }
+            let html = error_page_html(&resolved, crate::about::ABOUT_LOCAL_NETWORK_ERROR);
+            self.deliver_internal_page(
+                doc_id,
+                resolved,
+                html,
+                handler,
+                Some(crate::about::ABOUT_LOCAL_NETWORK_ERROR.to_string()),
+            );
             return;
         }
 
         if request.url.scheme() == "glide" {
             if let Some(html) = self.try_internal_glide_page(&request.url) {
                 let resolved = request.url.to_string();
-                self.deliver_internal_page(doc_id, resolved, html, handler);
+                self.deliver_internal_page(doc_id, resolved, html, handler, None);
                 return;
             }
             let token = self.state.begin_page_load();
@@ -833,13 +863,24 @@ mod tests {
         let inner = Arc::new(Provider::new(Some(waker.clone())));
         let state = Arc::new(LoadState::default());
         state.set_chrome_doc_id(7);
-        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
+        let route = Arc::new(NetworkRoute::default());
+        route.set(3, 1);
+        let net = GlideNet::with_scripting(
+            inner,
+            state.clone(),
+            waker,
+            test_bookmarks_supplier(),
+            Arc::new(AtomicBool::new(true)),
+            route,
+        );
+
+        let _ = crate::network_feed::drain_pending();
 
         let record = Arc::new(StdMutex::new(None));
         let handler = Box::new(RecordHandler {
             done: record.clone(),
         });
-        let url = Url::parse("about:blank").expect("about url");
+        let url = Url::parse("about:blank?x=1#frag").expect("about url");
         net.fetch(7, Request::get(url), handler);
 
         for _ in 0..200 {
@@ -854,11 +895,61 @@ mod tests {
             .expect("record")
             .take()
             .expect("handler should receive bytes");
-        assert_eq!(resolved, "about:blank");
+        assert_eq!(resolved, "about:blank?x=1#frag");
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("<body></body>"));
-        assert!(!text.contains("Can't open page"));
+        assert!(!text.contains("Can&apos;t open page"));
         assert!(!state.page_loading());
+
+        let events = crate::network_feed::drain_pending();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].url, "about:blank?x=1#frag");
+        assert_eq!(events[0].status, Some(200));
+        assert_eq!(events[0].initiator, NetworkInitiator::Document);
+    }
+
+    #[test]
+    fn unsupported_about_urls_serve_local_error_page_without_provider() {
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+
+        let waker: Arc<dyn NetWaker> = Arc::new(|_| {});
+        let inner = Arc::new(Provider::new(Some(waker.clone())));
+        let state = Arc::new(LoadState::default());
+        state.set_chrome_doc_id(8);
+        let net = GlideNet::new(inner, state.clone(), waker, test_bookmarks_supplier());
+
+        let cases = ["about:src", "about:blank/", "about://blank", "ABOUT:BLANK"];
+        for case in cases {
+            let record = Arc::new(StdMutex::new(None));
+            let handler = Box::new(RecordHandler {
+                done: record.clone(),
+            });
+            let url = Url::parse(case).expect("about url");
+            net.fetch(8, Request::get(url), handler);
+
+            for _ in 0..200 {
+                if record.lock().expect("record").is_some() && !state.page_loading() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            let (resolved, body) = record
+                .lock()
+                .expect("record")
+                .take()
+                .expect("handler should receive bytes");
+            let expected = Url::parse(case).expect("about url").to_string();
+            assert_eq!(resolved, expected, "resolved url");
+            let text = String::from_utf8_lossy(&body);
+            assert!(text.contains("Can&apos;t open page"), "{case}");
+            assert!(
+                text.contains(crate::about::ABOUT_LOCAL_NETWORK_ERROR),
+                "{case}"
+            );
+            assert!(!text.contains("<body></body>"), "{case}");
+        }
     }
 
     #[test]

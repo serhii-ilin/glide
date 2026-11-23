@@ -54,7 +54,7 @@ A bare host gets `https://`. A phrase with spaces is sent to DuckDuckGo's HTML f
 | Cmd/Ctrl+. | Stop loading |
 | Cmd/Ctrl+M | Minimize the window |
 | Cmd/Ctrl+Shift+W | Close the window |
-| Cmd/Ctrl+Shift+/ | Keyboard shortcuts help |
+| Ctrl+Shift+/ (not on macOS: reserved by Help search) | Keyboard shortcuts help |
 | Space / Shift+Space / PgUp / PgDn / Home / End / arrows | Scroll the page when no text field is focused |
 
 The in-window **DevTools** panel (F12) has Console, Elements, and Network tabs. The Network tab lists completed document loads, subresources, and page `fetch` / `XHR` for the active tab (filter box, **Clear**, and per-row detail); the per-tab log clears on navigation.

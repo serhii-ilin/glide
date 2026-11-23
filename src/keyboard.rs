@@ -82,6 +82,27 @@ pub fn browser_shortcut(
     text_input_focused: bool,
     find_bar_open: bool,
 ) -> Option<BrowserShortcut> {
+    browser_shortcut_on(
+        cfg!(target_os = "macos"),
+        code,
+        modifiers,
+        text_input_focused,
+        find_bar_open,
+    )
+}
+
+/// [`browser_shortcut`] with the platform explicit so both variants are testable everywhere.
+///
+/// Off macOS, Ctrl+Alt+B and Ctrl+M yield to a focused text input: Windows delivers AltGr
+/// as Ctrl+Alt, and Ctrl+M is Enter in some text fields.
+pub fn browser_shortcut_on(
+    macos: bool,
+    code: KeyCode,
+    modifiers: ModifiersState,
+    text_input_focused: bool,
+    find_bar_open: bool,
+) -> Option<BrowserShortcut> {
+    let yield_to_text = !macos && text_input_focused;
     let primary = modifiers.control_key() || modifiers.meta_key();
     let alt = modifiers.alt_key();
     let shift = modifiers.shift_key();
@@ -126,8 +147,12 @@ pub fn browser_shortcut(
             return Some(BrowserShortcut::DevToolsInspectToggle);
         }
         KeyCode::KeyD if primary && !shift => return Some(BrowserShortcut::ToggleBookmark),
-        KeyCode::KeyB if primary && alt && !shift => return Some(BrowserShortcut::ShowBookmarks),
-        KeyCode::KeyM if primary && !shift && !alt => return Some(BrowserShortcut::MinimizeWindow),
+        KeyCode::KeyB if primary && alt && !shift && !yield_to_text => {
+            return Some(BrowserShortcut::ShowBookmarks);
+        }
+        KeyCode::KeyM if primary && !shift && !alt && !yield_to_text => {
+            return Some(BrowserShortcut::MinimizeWindow);
+        }
         KeyCode::Period if primary && !shift && !alt => {
             return Some(BrowserShortcut::Stop);
         }
@@ -720,6 +745,23 @@ pub fn apply_edit_action_to_doc(chrome: &mut BaseDocument, action: EditAction) -
 pub fn apply_edit_action<Rend: WindowRenderer>(view: &mut View<Rend>, action: EditAction) -> bool {
     let mut guard = view.doc.inner_mut();
     apply_edit_action_to_doc(&mut guard, action)
+}
+
+/// Events that replay a menu edit chord as a real key press when nothing editable took
+/// it: NSMenu consumed the key before winit saw it, so Blitz's own handling (for example
+/// copying selected text in the DevTools panel) would otherwise be lost. The modifier
+/// state is set for the press and restored afterwards.
+pub fn edit_fallback_events(action: EditAction, previous: ModifiersState) -> Vec<WindowEvent> {
+    let code = action.key_code();
+    vec![
+        WindowEvent::ModifiersChanged(primary_modifiers().into()),
+        WindowEvent::KeyboardInput {
+            device_id: None,
+            event: synthetic_key_event(code),
+            is_synthetic: false,
+        },
+        WindowEvent::ModifiersChanged(previous.into()),
+    ]
 }
 
 fn synthetic_key_event(code: KeyCode) -> KeyEvent {
@@ -1895,6 +1937,75 @@ mod tests {
             primary_mods()
         ));
         assert_eq!(clip.text(), "selected text");
+    }
+
+    #[test]
+    fn menu_edit_without_editable_focus_is_not_handled_and_falls_back_to_a_key_press() {
+        let mut doc = chrome_test_document();
+        doc.clear_focus();
+        assert!(!apply_edit_action_to_doc(&mut doc, EditAction::Copy));
+        let events = edit_fallback_events(EditAction::Copy, ModifiersState::empty());
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            &events[0],
+            WindowEvent::ModifiersChanged(m) if m.state() == primary_modifiers()
+        ));
+        assert!(matches!(
+            &events[1],
+            WindowEvent::KeyboardInput { event, .. }
+                if event.physical_key == PhysicalKey::Code(KeyCode::KeyC)
+                    && event.state == ElementState::Pressed
+        ));
+        assert!(matches!(
+            &events[2],
+            WindowEvent::ModifiersChanged(m) if m.state().is_empty()
+        ));
+    }
+
+    #[test]
+    fn ctrl_alt_b_and_ctrl_m_yield_to_text_input_off_macos() {
+        let ctrl_alt = mods(true, true, false, false);
+        let ctrl = mods(true, false, false, false);
+        let meta_alt = mods(false, true, false, true);
+        let meta = mods(false, false, false, true);
+        for (macos, code, m, text, expected) in [
+            (false, KeyCode::KeyB, ctrl_alt, true, None),
+            (
+                false,
+                KeyCode::KeyB,
+                ctrl_alt,
+                false,
+                Some(BrowserShortcut::ShowBookmarks),
+            ),
+            (false, KeyCode::KeyM, ctrl, true, None),
+            (
+                false,
+                KeyCode::KeyM,
+                ctrl,
+                false,
+                Some(BrowserShortcut::MinimizeWindow),
+            ),
+            (
+                true,
+                KeyCode::KeyB,
+                meta_alt,
+                true,
+                Some(BrowserShortcut::ShowBookmarks),
+            ),
+            (
+                true,
+                KeyCode::KeyM,
+                meta,
+                true,
+                Some(BrowserShortcut::MinimizeWindow),
+            ),
+        ] {
+            assert_eq!(
+                browser_shortcut_on(macos, code, m, text, false),
+                expected,
+                "macos={macos} {code:?} text_focused={text}"
+            );
+        }
     }
 
     #[test]

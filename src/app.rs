@@ -802,10 +802,17 @@ impl Glide {
         command: crate::menu::MenuCommand,
     ) {
         if let Some(action) = keyboard::EditAction::from_menu(&command) {
-            if let Some(view) = self.inner.windows.get_mut(&window_id)
-                && keyboard::apply_edit_action(view, action)
-            {
+            let Some(view) = self.inner.windows.get_mut(&window_id) else {
+                return;
+            };
+            if keyboard::apply_edit_action(view, action) {
                 view.request_redraw();
+                self.sync();
+            } else {
+                let previous = view.keyboard_modifiers.state();
+                for event in keyboard::edit_fallback_events(action, previous) {
+                    self.inner.window_event(event_loop, window_id, event);
+                }
                 self.sync();
             }
         } else if let Some(shortcut) = command.to_browser_shortcut() {
@@ -1592,14 +1599,6 @@ impl Glide {
                                 keyboard::BrowserShortcut::Find => tab.find.open_bar(&mut chrome),
                                 keyboard::BrowserShortcut::FindClose => {
                                     tab.find.close_bar(&mut chrome)
-                                }
-                                // Menu Find Next/Previous with the bar closed opens it, since
-                                // the key path only classifies the keys while the bar is open.
-                                keyboard::BrowserShortcut::FindNext
-                                | keyboard::BrowserShortcut::FindPrev
-                                    if !tab.find.open =>
-                                {
-                                    tab.find.open_bar(&mut chrome)
                                 }
                                 keyboard::BrowserShortcut::FindNext => {
                                     tab.find.step(&mut chrome, true)

@@ -15,13 +15,33 @@ pub struct MenuCommandQueue {
 }
 
 impl MenuCommandQueue {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<MenuCommand>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn push(&self, command: MenuCommand) {
-        self.inner.lock().expect("menu queue").push(command);
+        self.lock().push(command);
     }
 
     pub fn take(&self) -> Vec<MenuCommand> {
-        std::mem::take(&mut *self.inner.lock().expect("menu queue"))
+        std::mem::take(&mut *self.lock())
     }
+}
+
+/// Fields of a `menu.native` warning, in the shared diagnostics schema.
+pub fn native_menu_warning_fields(error_kind: &str, detail: String) -> Vec<(&'static str, String)> {
+    vec![
+        ("feature", "F-049".into()),
+        ("error_kind", error_kind.into()),
+        ("detail", detail),
+        (
+            "hint",
+            "Commands remain available through keyboard shortcuts; see F-049 in docs/features.md."
+                .into(),
+        ),
+    ]
 }
 
 /// Where the menu model is rendered.
@@ -691,7 +711,9 @@ fn mac_native_model(view: &ChromeViewState) -> Vec<MenuSpec> {
                     MenuCommand::CloseActiveTab,
                     "Close Tab",
                     Some(cmd('w')),
-                    !st,
+                    // AppKit may swallow the chord of a disabled item, so the last tab
+                    // stays enabled; the shortcut path closes the window then.
+                    true,
                 ),
                 sep(),
                 item(MenuCommand::DuplicateTab, "Duplicate Tab", None, true),
@@ -715,12 +737,17 @@ fn mac_native_model(view: &ChromeViewState) -> Vec<MenuSpec> {
                 ),
                 sep(),
                 item(MenuCommand::Find, "Find…", Some(cmd('f')), true),
-                item(MenuCommand::FindNext, "Find Next", Some(cmd('g')), true),
+                item(
+                    MenuCommand::FindNext,
+                    "Find Next",
+                    Some(cmd('g')),
+                    view.find_bar_open,
+                ),
                 item(
                     MenuCommand::FindPrev,
                     "Find Previous",
                     Some(cmd_shift('g')),
-                    true,
+                    view.find_bar_open,
                 ),
             ],
         },
@@ -1272,14 +1299,72 @@ mod tests {
     }
 
     #[test]
-    fn close_tab_disabled_single_tab() {
+    fn close_tab_stays_enabled_with_one_tab_on_mac_native() {
         let specs = menu_model(&ChromeViewState::default(), MenuPlatform::MacNative);
         let file = specs.iter().find(|s| s.id == MenuBarMenuId::File).unwrap();
         let close = file.items.iter().find_map(|e| match e {
             MenuEntry::Item(i) if i.label == "Close Tab" => Some(i.enabled),
             _ => None,
         });
-        assert_eq!(close, Some(false));
+        assert_eq!(close, Some(true));
+    }
+
+    #[test]
+    fn native_menu_warning_uses_schema_fields() {
+        let fields = native_menu_warning_fields("menu_build", "boom".into());
+        let line = crate::logging::format_record(
+            crate::logging::Level::Warn,
+            "menu.native",
+            "native menu bar unavailable",
+            &fields,
+            crate::logging::Level::Warn,
+        )
+        .expect("warn is enabled");
+        assert!(line.contains("target=\"menu.native\""), "{line}");
+        for key in [
+            "feature=\"F-049\"",
+            "error_kind=\"menu_build\"",
+            "detail=\"boom\"",
+            "hint=",
+        ] {
+            assert!(line.contains(key), "{key} in {line}");
+        }
+    }
+
+    #[test]
+    fn find_next_prev_enabled_only_with_find_bar_open() {
+        let enabled = |view: &ChromeViewState| -> Vec<bool> {
+            let specs = menu_model(view, MenuPlatform::MacNative);
+            let edit = specs.iter().find(|s| s.id == MenuBarMenuId::Edit).unwrap();
+            edit.items
+                .iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Item(i)
+                        if matches!(i.command, MenuCommand::FindNext | MenuCommand::FindPrev) =>
+                    {
+                        Some(i.enabled)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(enabled(&ChromeViewState::default()), vec![false, false]);
+        let open = ChromeViewState {
+            find_bar_open: true,
+            ..ChromeViewState::default()
+        };
+        assert_eq!(enabled(&open), vec![true, true]);
+    }
+
+    #[test]
+    fn select_tab_command_routes_to_tab_selection() {
+        let command = MenuCommand::SelectTab(7);
+        assert_eq!(
+            MenuCommand::from_id(&command.id().unwrap()),
+            Some(command.clone())
+        );
+        assert_eq!(command.to_nav_command(), Some(NavCommand::SelectTab(7)));
+        assert_eq!(command.to_browser_shortcut(), None);
     }
 
     #[test]

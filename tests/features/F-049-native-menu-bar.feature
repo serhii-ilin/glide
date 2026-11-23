@@ -43,10 +43,33 @@ Feature: F-049 Native macOS menu bar
     When the tab can go back and forward
     Then Back and Forward are enabled
 
-  # Test: menu::tests::close_tab_disabled_single_tab, menu::tests::window_menu_next_prev_tab_need_two_tabs
+  # Test: menu::tests::close_tab_stays_enabled_with_one_tab_on_mac_native, menu::tests::window_menu_next_prev_tab_need_two_tabs
   Scenario: Tab commands need more than one tab
     Given only one tab is open
-    Then Close Tab, Show Previous Tab and Show Next Tab are disabled
+    Then Show Previous Tab and Show Next Tab are disabled
+    And Close Tab stays enabled so AppKit still delivers Cmd+W, which closes the window on the last tab
+
+  # Test: menu::tests::find_next_prev_enabled_only_with_find_bar_open
+  Scenario: Find Next and Previous need the find bar
+    Given the find bar is closed
+    Then Find Next and Find Previous are disabled and Cmd+G is not captured
+    When the find bar is open
+    Then Find Next and Find Previous are enabled
+
+  # Test: menu::tests::select_tab_command_routes_to_tab_selection
+  Scenario: A Window menu tab item selects that tab
+    When the item for a tab is chosen
+    Then the SelectTab command round-trips through its id and maps to that tab's selection
+
+  # Test: keyboard::tests::ctrl_alt_b_and_ctrl_m_yield_to_text_input_off_macos
+  Scenario: Non-macOS chords yield to text input
+    Given a platform other than macOS and a focused text input
+    Then Ctrl+Alt+B and Ctrl+M do not trigger Show Bookmarks or Minimize
+
+  # Test: menu::tests::native_menu_warning_uses_schema_fields
+  Scenario: Native menu failures are logged in the diagnostics schema
+    When the native menu cannot be built or updated
+    Then a menu.native warning carries feature, error_kind, detail and hint fields
 
   # Test: menu::tests::stop_enabled_while_loading
   Scenario: Stop is enabled only while loading
@@ -101,6 +124,12 @@ Feature: F-049 Native macOS menu bar
     Then the clipboard holds the address text
     And Edit > Paste inserts clipboard text into the address bar
     And with a page input focused, Edit > Copy copies the page input text
+
+  # Test: keyboard::tests::menu_edit_without_editable_focus_is_not_handled_and_falls_back_to_a_key_press
+  Scenario: Edit chords with no editable focus fall back to the key press
+    Given nothing editable is focused
+    When Edit > Copy is chosen
+    Then the edit action reports unhandled and the chord is replayed as a key press for Blitz's default handling
 
   # Test: menu::tests::app_menu_quit_uses_the_quit_shortcut_path; manual M-056 for the session
   Scenario: Quit saves the session

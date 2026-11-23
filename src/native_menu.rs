@@ -92,14 +92,7 @@ impl NativeMenu {
             Err(err) => logging::warn(
                 "menu.native",
                 "native menu bar unavailable",
-                &[
-                    ("error_kind", "menu_build".into()),
-                    ("detail", err),
-                    (
-                        "hint",
-                        "Commands remain available through keyboard shortcuts (F-049).".into(),
-                    ),
-                ],
+                &crate::menu::native_menu_warning_fields("menu_build", err),
             ),
         }
     }
@@ -121,11 +114,7 @@ impl NativeMenu {
                 logging::warn(
                     "menu.native",
                     "native menu update failed",
-                    &[
-                        ("error_kind", "menu_update".into()),
-                        ("detail", err),
-                        ("hint", "See F-049 in docs/features.md.".into()),
-                    ],
+                    &crate::menu::native_menu_warning_fields("menu_update", err),
                 );
             }
         }

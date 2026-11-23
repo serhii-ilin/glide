@@ -77,6 +77,28 @@ pub enum DomRequest {
         value: String,
         reply: u64,
     },
+    WebSocketConnect {
+        socket_id: u64,
+        url: String,
+        protocols: String,
+        reply: u64,
+    },
+    WebSocketSend {
+        socket_id: u64,
+        data: String,
+        binary: bool,
+        reply: u64,
+    },
+    WebSocketClose {
+        socket_id: u64,
+        code: u16,
+        reason: String,
+        reply: u64,
+    },
+    WebSocketBuffered {
+        socket_id: u64,
+        reply: u64,
+    },
     /// Test hook: number of live Blitz nodes. Dispatched only from debug builds.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     NodeCount {

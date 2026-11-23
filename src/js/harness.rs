@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use blitz_dom::DocumentConfig;
 use blitz_net::Provider;
-use tokio::runtime::Handle;
+use tokio::runtime::{Handle, Runtime};
 
 use crate::html::{GlideHtmlProvider, HtmlPageDocument};
 use crate::js::{JsHost, JsTap};
@@ -15,6 +15,14 @@ use crate::parse;
 pub struct JsRunResult {
     pub final_text: String,
     pub console_wire: Vec<crate::js::console_feed::ConsoleWireEvent>,
+}
+
+pub(crate) fn harness_tokio_runtime() -> Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
 }
 
 /// Records `location.assign` / form-submit navigations instead of loading them.
@@ -32,11 +40,12 @@ impl blitz_traits::navigation::NavigationProvider for RecordedNavigation {
 }
 
 pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
-    run_inline_page_with_runtime(html, pump_for, rt.handle(), 0)
+    run_inline_page_on_base(html, "https://example.test/", pump_for)
+}
+
+pub fn run_inline_page_on_base(html: &str, page_base: &str, pump_for: Duration) -> JsRunResult {
+    let rt = harness_tokio_runtime();
+    run_inline_page_with_runtime_on_base(html, pump_for, rt.handle(), 0, page_base)
 }
 
 pub fn run_inline_page_with_extra_settle(
@@ -44,10 +53,7 @@ pub fn run_inline_page_with_extra_settle(
     pump_for: Duration,
     extra_settle: u32,
 ) -> JsRunResult {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
+    let rt = harness_tokio_runtime();
     run_inline_page_with_runtime(html, pump_for, rt.handle(), extra_settle)
 }
 
@@ -56,21 +62,35 @@ pub fn run_inline_page_with_navigation(
     html: &str,
     pump_for: Duration,
 ) -> (JsRunResult, Vec<String>) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
-    let (result, urls) = run_inline_page_full(html, pump_for, rt.handle(), 0, true);
+    let rt = harness_tokio_runtime();
+    let (result, urls) = run_inline_page_full(
+        html,
+        pump_for,
+        rt.handle(),
+        0,
+        true,
+        "https://example.test/",
+    );
     (result, urls.unwrap_or_default())
 }
 
-fn run_inline_page_with_runtime(
+pub(crate) fn run_inline_page_with_runtime(
     html: &str,
     pump_for: Duration,
     rt: &Handle,
     extra_settle: u32,
 ) -> JsRunResult {
-    run_inline_page_full(html, pump_for, rt, extra_settle, false).0
+    run_inline_page_with_runtime_on_base(html, pump_for, rt, extra_settle, "https://example.test/")
+}
+
+pub(crate) fn run_inline_page_with_runtime_on_base(
+    html: &str,
+    pump_for: Duration,
+    rt: &Handle,
+    extra_settle: u32,
+    page_base: &str,
+) -> JsRunResult {
+    run_inline_page_full(html, pump_for, rt, extra_settle, false, page_base).0
 }
 
 fn run_inline_page_full(
@@ -79,9 +99,11 @@ fn run_inline_page_full(
     rt: &Handle,
     extra_settle: u32,
     record_navigation: bool,
+    page_base: &str,
 ) -> (JsRunResult, Option<Vec<String>>) {
     let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
     let _ = crate::js::console_feed::drain_pending();
+    let _rt_enter = rt.enter();
 
     let net = Arc::new(Provider::new(None));
     let tap = JsTap::new_enabled();
@@ -91,19 +113,20 @@ fn run_inline_page_full(
     };
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
     js_host.set_console_route(0, 1);
+    js_host.set_network_route(0, 1);
     let recorder = record_navigation.then(|| Arc::new(RecordedNavigation::default()));
     let navigation: Option<Arc<dyn blitz_traits::navigation::NavigationProvider>> = recorder
         .as_ref()
         .map(|r| Arc::clone(r) as Arc<dyn blitz_traits::navigation::NavigationProvider>);
     let config = DocumentConfig {
-        base_url: Some("https://example.test/".into()),
+        base_url: Some(page_base.into()),
         net_provider: Some(net.clone()),
         navigation_provider: navigation,
         html_parser_provider: Some(Arc::new(provider)),
         ..Default::default()
     };
     let mut document = HtmlPageDocument(parse::document_from_html(html, config, true));
-    js_host.maybe_start_page(&document.0, "https://example.test/", rt);
+    js_host.maybe_start_page(&document.0, page_base, rt);
     js_host.finish_script_resolution_sync(rt, &crate::js::scripts::collect_scripts(&document.0));
 
     let start = Instant::now();
@@ -153,12 +176,10 @@ pub fn run_inline_page_with_repl_post(
     pump_for: Duration,
     post_eval: Duration,
 ) -> Result<Vec<crate::js::console_feed::ConsoleWireEvent>, String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let rt = harness_tokio_runtime();
     let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
     let _ = crate::js::console_feed::drain_pending();
+    let _rt_enter = rt.enter();
     let net = Arc::new(Provider::new(None));
     let tap = JsTap::new_enabled();
     let provider = GlideHtmlProvider {
@@ -167,6 +188,7 @@ pub fn run_inline_page_with_repl_post(
     };
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
     js_host.set_console_route(0, 1);
+    js_host.set_network_route(0, 1);
     let config = DocumentConfig {
         base_url: Some("https://example.test/".into()),
         net_provider: Some(net.clone()),
@@ -237,12 +259,10 @@ pub struct EvalHarness {
 
 impl EvalHarness {
     pub fn new(html: &str, js_enabled: bool, pump_for: Duration) -> Self {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
+        let rt = harness_tokio_runtime();
         let console_test_lock = crate::js::console_feed::test_console_serial_lock();
         let _ = crate::js::console_feed::drain_pending();
+        let _rt_enter = rt.enter();
         let net = Arc::new(Provider::new(None));
         let tap = if js_enabled {
             JsTap::new_enabled()
@@ -255,6 +275,7 @@ impl EvalHarness {
         };
         let mut js_host = JsHost::new(js_enabled, tap, Some(net.clone()));
         js_host.set_console_route(0, 1);
+        js_host.set_network_route(0, 1);
         let config = DocumentConfig {
             base_url: Some("https://example.test/".into()),
             net_provider: Some(net.clone()),
@@ -369,12 +390,10 @@ pub fn run_inline_page_with_repl_sequence(
     pump_for: Duration,
     post_eval_each: Duration,
 ) -> Result<Vec<crate::js::console_feed::ConsoleWireEvent>, String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let rt = harness_tokio_runtime();
     let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
     let _ = crate::js::console_feed::drain_pending();
+    let _rt_enter = rt.enter();
     let net = Arc::new(Provider::new(None));
     let tap = JsTap::new_enabled();
     let provider = GlideHtmlProvider {
@@ -383,6 +402,7 @@ pub fn run_inline_page_with_repl_sequence(
     };
     let mut js_host = JsHost::new(true, tap, Some(net.clone()));
     js_host.set_console_route(0, 1);
+    js_host.set_network_route(0, 1);
     let config = DocumentConfig {
         base_url: Some("https://example.test/".into()),
         net_provider: Some(net.clone()),

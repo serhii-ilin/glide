@@ -51,8 +51,53 @@ thread_local! {
 /// Reply channel for one eval request; the worker sends the preview or the error text.
 pub type EvalReply = crossbeam_channel::Sender<Result<String, String>>;
 
+/// Commands delivered to the glide-js thread (page control and async socket I/O).
+#[derive(Debug)]
+pub enum WorkerCommand {
+    InitPage {
+        snapshot_json: String,
+        page_url: String,
+        tab_id: u64,
+        page_epoch: u64,
+    },
+    RunScripts {
+        sources: Vec<(String, Option<u64>, bool, String)>,
+        kind: String,
+    },
+    FireDomContentLoaded,
+    FirePageLoad,
+    PageSettled,
+    NotifyScriptElements(Vec<(u64, bool)>),
+    Pump {
+        now_ms: u64,
+    },
+    FlushRaf,
+    DispatchBubble {
+        path: Vec<u64>,
+        event_type: String,
+    },
+    SetConsoleRoute {
+        tab_id: u64,
+        page_epoch: u64,
+    },
+    SetNetworkRoute {
+        tab_id: u64,
+        network_epoch: u64,
+    },
+    Eval {
+        source: String,
+        tab_id: u64,
+        page_epoch: u64,
+        reply: Option<EvalReply>,
+    },
+    WebSocketEvent {
+        json: String,
+    },
+    Shutdown,
+}
+
 pub struct JsWorker {
-    tx: Sender<WorkerMessage>,
+    tx: Sender<WorkerCommand>,
     retired: Arc<AtomicBool>,
     worker_stopped: Arc<AtomicBool>,
     wake_deadline_ms: Arc<AtomicU64>,
@@ -79,54 +124,11 @@ impl JsWorker {
     }
 }
 
-#[derive(Debug)]
-enum WorkerMessage {
-    InitPage {
-        snapshot_json: String,
-        page_url: String,
-        tab_id: u64,
-        page_epoch: u64,
-    },
-    RunScripts {
-        /// Source, element handle, and whether this is an ES module.
-        sources: Vec<(String, Option<u64>, bool, String)>,
-        /// `classic`, `defer`, or `async`. Empty means not a parser script.
-        kind: String,
-    },
-    FireDomContentLoaded,
-    FirePageLoad,
-    /// All scripts queued for this load have run; emit the per-page summary.
-    PageSettled,
-    NotifyScriptElements(Vec<(u64, bool)>),
-    Pump {
-        now_ms: u64,
-    },
-    FlushRaf,
-    DispatchBubble {
-        path: Vec<u64>,
-        event_type: String,
-    },
-    SetConsoleRoute {
-        tab_id: u64,
-        page_epoch: u64,
-    },
-    SetNetworkRoute {
-        tab_id: u64,
-        network_epoch: u64,
-    },
-    Eval {
-        source: String,
-        tab_id: u64,
-        page_epoch: u64,
-        reply: Option<EvalReply>,
-    },
-    Shutdown,
-}
-
 impl JsWorker {
     pub fn spawn(dom_tx: Sender<DomRpc>, generation: u64, host_wake: Arc<HostWake>) -> Self {
         init_v8();
         let (tx, rx) = unbounded();
+        super::websocket::register_command_sender(generation, tx.clone());
         let retired = Arc::new(AtomicBool::new(false));
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let wake_deadline_ms = Arc::new(AtomicU64::new(WAKE_NONE));
@@ -162,7 +164,7 @@ impl JsWorker {
     }
 
     pub fn init_page(&self, snapshot_json: String, page_url: String, tab_id: u64, page_epoch: u64) {
-        let _ = self.tx.send(WorkerMessage::InitPage {
+        let _ = self.tx.send(WorkerCommand::InitPage {
             snapshot_json,
             page_url,
             tab_id,
@@ -171,54 +173,60 @@ impl JsWorker {
     }
 
     pub fn run_scripts(&self, sources: Vec<(String, Option<u64>, bool, String)>, kind: &str) {
-        let _ = self.tx.send(WorkerMessage::RunScripts {
+        let _ = self.tx.send(WorkerCommand::RunScripts {
             sources,
             kind: kind.to_string(),
         });
     }
 
     pub fn fire_dom_content_loaded(&self) {
-        let _ = self.tx.send(WorkerMessage::FireDomContentLoaded);
+        let _ = self.tx.send(WorkerCommand::FireDomContentLoaded);
     }
 
     pub fn fire_page_load(&self) {
-        let _ = self.tx.send(WorkerMessage::FirePageLoad);
+        let _ = self.tx.send(WorkerCommand::FirePageLoad);
     }
 
     pub fn page_settled(&self) {
-        let _ = self.tx.send(WorkerMessage::PageSettled);
+        let _ = self.tx.send(WorkerCommand::PageSettled);
     }
 
     pub fn notify_script_elements(&self, elements: Vec<(u64, bool)>) {
-        let _ = self.tx.send(WorkerMessage::NotifyScriptElements(elements));
+        let _ = self.tx.send(WorkerCommand::NotifyScriptElements(elements));
     }
 
     pub fn pump(&self, now_ms: u64) {
-        let _ = self.tx.send(WorkerMessage::Pump { now_ms });
+        let _ = self.tx.send(WorkerCommand::Pump { now_ms });
     }
 
     pub fn flush_raf(&self) {
-        let _ = self.tx.send(WorkerMessage::FlushRaf);
+        let _ = self.tx.send(WorkerCommand::FlushRaf);
     }
 
     pub fn dispatch_dom_bubble(&self, path: Vec<u64>, event_type: impl Into<String>) {
-        let _ = self.tx.send(WorkerMessage::DispatchBubble {
+        let _ = self.tx.send(WorkerCommand::DispatchBubble {
             path,
             event_type: event_type.into(),
         });
     }
 
     pub fn set_network_route(&self, tab_id: u64, network_epoch: u64) {
-        let _ = self.tx.send(WorkerMessage::SetNetworkRoute {
+        let _ = self.tx.send(WorkerCommand::SetNetworkRoute {
             tab_id,
             network_epoch,
         });
     }
 
+    /// Clone of the glide-js command channel (WebSocket I/O and page control).
+    #[allow(dead_code)] // F-077: host/tests may enqueue `WebSocketEvent` commands.
+    pub fn command_sender(&self) -> Sender<WorkerCommand> {
+        self.tx.clone()
+    }
+
     pub fn set_console_route(&self, tab_id: u64, page_epoch: u64) {
         let _ = self
             .tx
-            .send(WorkerMessage::SetConsoleRoute { tab_id, page_epoch });
+            .send(WorkerCommand::SetConsoleRoute { tab_id, page_epoch });
     }
 
     pub fn eval_console(
@@ -228,7 +236,7 @@ impl JsWorker {
         page_epoch: u64,
         reply: Option<EvalReply>,
     ) {
-        let _ = self.tx.send(WorkerMessage::Eval {
+        let _ = self.tx.send(WorkerCommand::Eval {
             source,
             tab_id,
             page_epoch,
@@ -242,7 +250,7 @@ impl Drop for JsWorker {
         self.retired.store(true, Ordering::SeqCst);
         self.wake_deadline_ms.store(WAKE_NONE, Ordering::Release);
         self.worker_stopped.store(true, Ordering::Release);
-        let _ = self.tx.send(WorkerMessage::Shutdown);
+        let _ = self.tx.send(WorkerCommand::Shutdown);
         // Detach the worker; do not join from the UI thread.
         self._join = None;
     }
@@ -273,7 +281,7 @@ impl Drop for WorkerExitGuard {
 struct WorkerThreadState {
     dom_tx: Sender<DomRpc>,
     generation: u64,
-    cmd_rx: Receiver<WorkerMessage>,
+    cmd_rx: Receiver<WorkerCommand>,
     retired: Arc<AtomicBool>,
     worker_stopped: Arc<AtomicBool>,
     wake_deadline_ms: Arc<AtomicU64>,
@@ -335,7 +343,7 @@ fn worker_main(state: WorkerThreadState) {
             break;
         }
         match msg {
-            WorkerMessage::InitPage {
+            WorkerCommand::InitPage {
                 snapshot_json,
                 page_url,
                 tab_id,
@@ -356,7 +364,7 @@ fn worker_main(state: WorkerThreadState) {
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::RunScripts { sources, kind } => {
+            WorkerCommand::RunScripts { sources, kind } => {
                 scripts_run = scripts_run.saturating_add(sources.len() as u64);
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
@@ -389,7 +397,7 @@ fn worker_main(state: WorkerThreadState) {
                 call_global_fn(scope, "__glide_set_script_kind", &[cleared.into()]);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::FireDomContentLoaded => {
+            WorkerCommand::FireDomContentLoaded => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
@@ -397,7 +405,7 @@ fn worker_main(state: WorkerThreadState) {
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::FirePageLoad => {
+            WorkerCommand::FirePageLoad => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
@@ -405,12 +413,12 @@ fn worker_main(state: WorkerThreadState) {
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::PageSettled => {
+            WorkerCommand::PageSettled => {
                 if !worker_retired() {
                     diagnostics::log_page_summary(scripts_run);
                 }
             }
-            WorkerMessage::NotifyScriptElements(elements) => {
+            WorkerCommand::NotifyScriptElements(elements) => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
@@ -419,7 +427,7 @@ fn worker_main(state: WorkerThreadState) {
                 }
                 settle_task(scope);
             }
-            WorkerMessage::Pump { now_ms } => {
+            WorkerCommand::Pump { now_ms } => {
                 LAST_NOW_MS.with(|c| c.set(now_ms));
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
@@ -430,7 +438,7 @@ fn worker_main(state: WorkerThreadState) {
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::FlushRaf => {
+            WorkerCommand::FlushRaf => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
@@ -438,16 +446,16 @@ fn worker_main(state: WorkerThreadState) {
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::SetConsoleRoute { tab_id, page_epoch } => {
+            WorkerCommand::SetConsoleRoute { tab_id, page_epoch } => {
                 super::console_feed::set_worker_route(tab_id, page_epoch);
             }
-            WorkerMessage::SetNetworkRoute {
+            WorkerCommand::SetNetworkRoute {
                 tab_id,
                 network_epoch,
             } => {
                 crate::network_feed::set_worker_route(tab_id, network_epoch);
             }
-            WorkerMessage::Eval {
+            WorkerCommand::Eval {
                 source,
                 tab_id,
                 page_epoch,
@@ -463,7 +471,7 @@ fn worker_main(state: WorkerThreadState) {
                 }
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::DispatchBubble { path, event_type } => {
+            WorkerCommand::DispatchBubble { path, event_type } => {
                 v8::scope!(let hs, isolate);
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
@@ -477,7 +485,17 @@ fn worker_main(state: WorkerThreadState) {
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }
-            WorkerMessage::Shutdown => break,
+            WorkerCommand::WebSocketEvent { json } => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
+                let payload = v8::String::new(scope, &json).unwrap();
+                call_global_fn(scope, "__glide_ws_deliver", &[payload.into()]);
+                settle_task(scope);
+                request_host_wake();
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
+            }
+            WorkerCommand::Shutdown => break,
         }
     }
     // The exit guard also covers a panic; this bump records a clean shutdown for tests.
@@ -907,6 +925,33 @@ fn map_dom_op(
             value: arg_string(scope, args, 2)?,
             reply,
         },
+        "wsConnect" => DomRequest::WebSocketConnect {
+            socket_id: arg_u64(scope, args, 2)?,
+            url: arg_string(scope, args, 3)?,
+            protocols: arg_string(scope, args, 4).unwrap_or_else(|_| "[]".into()),
+            reply,
+        },
+        "wsSend" => {
+            let binary = arg_string(scope, args, 4)
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            DomRequest::WebSocketSend {
+                socket_id: arg_u64(scope, args, 2)?,
+                data: arg_string(scope, args, 3)?,
+                binary,
+                reply,
+            }
+        }
+        "wsClose" => DomRequest::WebSocketClose {
+            socket_id: arg_u64(scope, args, 2)?,
+            code: arg_u16(scope, args, 3).unwrap_or(1000),
+            reason: arg_string(scope, args, 4).unwrap_or_default(),
+            reply,
+        },
+        "wsBuffered" => DomRequest::WebSocketBuffered {
+            socket_id: arg_u64(scope, args, 2)?,
+            reply,
+        },
         #[cfg(debug_assertions)]
         "nodeCount" => DomRequest::NodeCount { reply },
         #[cfg(debug_assertions)]
@@ -917,6 +962,26 @@ fn map_dom_op(
         },
         other => return Err(format!("unknown dom op {other}")),
     })
+}
+
+fn arg_u64(
+    scope: &v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    idx: i32,
+) -> Result<u64, String> {
+    let text = arg_string(scope, args, idx)?;
+    text.parse::<u64>()
+        .map_err(|_| format!("arg {idx} not an integer"))
+}
+
+fn arg_u16(
+    scope: &v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    idx: i32,
+) -> Result<u16, String> {
+    let text = arg_string(scope, args, idx)?;
+    text.parse::<u16>()
+        .map_err(|_| format!("arg {idx} not an integer"))
 }
 
 #[cfg(debug_assertions)]

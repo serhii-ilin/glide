@@ -1807,6 +1807,236 @@
   }
   global.TextDecoder = TextDecoder;
 
+  const WS_CONNECTING = 0;
+  const WS_OPEN = 1;
+  const WS_CLOSING = 2;
+  const WS_CLOSED = 3;
+  let nextWsId = 1;
+  const wsRegistry = new Map();
+
+  function wsDomError(name, message) {
+    const e = new Error(message || name);
+    e.name = name;
+    return e;
+  }
+
+  function utf8ByteLength(value) {
+    return new TextEncoder().encode(String(value)).length;
+  }
+
+  function bytesToBase64(bytes) {
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      const sub = bytes.subarray(i, i + chunk);
+      binary += String.fromCharCode.apply(null, sub);
+    }
+    return btoa(binary);
+  }
+
+  function base64ToBytes(b64) {
+    const raw = atob(String(b64 || ''));
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes;
+  }
+
+  if (typeof global.Event !== 'function') {
+    global.Event = function Event(type, init) {
+      this.type = String(type);
+      const options = init || {};
+      this.bubbles = !!options.bubbles;
+      this.cancelable = !!options.cancelable;
+    };
+  }
+
+  function validateCloseCode(code) {
+    if (code !== 1000 && !(code >= 3000 && code <= 4999)) {
+      throw wsDomError('InvalidAccessError', 'close code out of range');
+    }
+    if (code === 1005) {
+      throw wsDomError('InvalidAccessError', 'close code 1005 is reserved');
+    }
+  }
+
+  class MessageEvent extends global.Event {
+    constructor(type, init) {
+      super(type);
+      init = init || {};
+      this.data = init.data;
+      this.origin = init.origin || '';
+      this.lastEventId = init.lastEventId || '';
+      this.source = init.source || null;
+      this.ports = init.ports || [];
+    }
+  }
+
+  class CloseEvent extends global.Event {
+    constructor(type, init) {
+      super(type);
+      init = init || {};
+      this.code = init.code == null ? 1006 : Number(init.code);
+      this.reason = init.reason == null ? '' : String(init.reason);
+      this.wasClean = !!init.wasClean;
+    }
+  }
+
+  function dispatchWsEvent(ws, type, eventInit) {
+    let event;
+    if (type === 'message') {
+      event = new MessageEvent('message', Object.assign({ target: ws, currentTarget: ws }, eventInit || {}));
+    } else if (type === 'close') {
+      event = new CloseEvent('close', Object.assign({ target: ws, currentTarget: ws }, eventInit || {}));
+    } else {
+      event = Object.assign(new global.Event(type), { target: ws, currentTarget: ws }, eventInit || {});
+    }
+    const set = ws._listeners.get(type);
+    if (set) Array.from(set).forEach((fn) => { try { fn(event); } catch (e) { console.error(e); } });
+    const handler = ws['on' + type];
+    if (typeof handler === 'function') {
+      try { handler.call(ws, event); } catch (e) { console.error(e); }
+    }
+  }
+
+  global.__glide_ws_deliver = function (json) {
+    let ev;
+    try { ev = JSON.parse(String(json)); } catch (_) { return; }
+    const ws = wsRegistry.get(ev.id);
+    if (!ws) return;
+    const kind = ev.type;
+    if (kind === 'open') {
+      ws.readyState = WS_OPEN;
+      if (typeof ev.protocol === 'string') ws.protocol = ev.protocol;
+      dispatchWsEvent(ws, 'open');
+    } else if (kind === 'message') {
+      let data;
+      if (ev.binary) {
+        const bytes = base64ToBytes(ev.data);
+        data = ws.binaryType === 'arraybuffer'
+          ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+          : new Blob([bytes]);
+      } else {
+        data = String(ev.data || '');
+      }
+      dispatchWsEvent(ws, 'message', { data });
+    } else if (kind === 'error') {
+      dispatchWsEvent(ws, 'error');
+    } else if (kind === 'close') {
+      ws.readyState = WS_CLOSED;
+      wsRegistry.delete(ev.id);
+      dispatchWsEvent(ws, 'close', {
+        code: typeof ev.code === 'number' ? ev.code : 1006,
+        reason: String(ev.reason || ''),
+        wasClean: !!ev.was_clean,
+      });
+    }
+    runMicrotasks();
+  };
+
+  class WebSocket {
+    constructor(url, protocols) {
+      this.CONNECTING = WS_CONNECTING;
+      this.OPEN = WS_OPEN;
+      this.CLOSING = WS_CLOSING;
+      this.CLOSED = WS_CLOSED;
+      this.readyState = WS_CONNECTING;
+      this.url = String(url);
+      this.protocol = '';
+      this.extensions = '';
+      this.binaryType = 'blob';
+      this._bufferedAmount = 0;
+      this._id = nextWsId++;
+      this._listeners = new Map();
+      this.onopen = null;
+      this.onmessage = null;
+      this.onerror = null;
+      this.onclose = null;
+      Object.defineProperty(this, 'bufferedAmount', {
+        configurable: true,
+        enumerable: true,
+        get: () => {
+          if (this.readyState === WS_CLOSED) return 0;
+          const raw = __glide_dom_sync('wsBuffered', 0, String(this._id));
+          if (typeof raw === 'number' && Number.isFinite(raw)) this._bufferedAmount = raw;
+          return this._bufferedAmount;
+        },
+      });
+      wsRegistry.set(this._id, this);
+      let protocolsJson = '[]';
+      if (protocols != null) {
+        protocolsJson = JSON.stringify(Array.isArray(protocols) ? protocols : [String(protocols)]);
+      }
+      const raw = __glide_dom_sync('wsConnect', 0, String(this._id), this.url, protocolsJson);
+      if (raw && typeof raw === 'object' && raw.__error != null) {
+        wsRegistry.delete(this._id);
+        this.readyState = WS_CLOSED;
+        const msg = String(raw.__error);
+        let name = 'SyntaxError';
+        if (msg.includes('mixed content')) name = 'SecurityError';
+        throw wsDomError(name, msg);
+      }
+      if (typeof raw === 'string' && raw) this.url = raw;
+    }
+    addEventListener(type, listener) {
+      if (typeof listener !== 'function') return;
+      const set = this._listeners.get(type) || new Set();
+      set.add(listener);
+      this._listeners.set(type, set);
+    }
+    removeEventListener(type, listener) {
+      const set = this._listeners.get(type);
+      if (set) set.delete(listener);
+    }
+    dispatchEvent(event) {
+      if (!event || !event.type) return false;
+      dispatchWsEvent(this, event.type, event);
+      return true;
+    }
+    send(data) {
+      if (this.readyState === WS_CONNECTING || this.readyState === WS_CLOSING || this.readyState === WS_CLOSED) {
+        throw wsDomError('InvalidStateError', 'WebSocket is not open');
+      }
+      let payload;
+      let binary = false;
+      if (typeof data === 'string') {
+        payload = data;
+      } else if (data instanceof Blob) {
+        binary = true;
+        payload = bytesToBase64(data._bytes || new Uint8Array());
+      } else if (data instanceof ArrayBuffer) {
+        binary = true;
+        payload = bytesToBase64(new Uint8Array(data));
+      } else if (ArrayBuffer.isView(data)) {
+        binary = true;
+        const view = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        payload = bytesToBase64(view);
+      } else {
+        payload = String(data);
+      }
+      const raw = __glide_dom_sync('wsSend', 0, String(this._id), payload, binary ? '1' : '0');
+      if (raw && typeof raw === 'object' && raw.__error != null) {
+        throw new Error(String(raw.__error));
+      }
+      if (typeof raw === 'number') this._bufferedAmount = raw;
+    }
+    close(code, reason) {
+      if (this.readyState === WS_CLOSING || this.readyState === WS_CLOSED) return;
+      const c = code == null ? 1000 : Number(code);
+      const r = reason == null ? '' : String(reason);
+      if (code != null) validateCloseCode(c);
+      if (utf8ByteLength(r) > 123) {
+        throw wsDomError('SyntaxError', 'close reason is too long');
+      }
+      this.readyState = WS_CLOSING;
+      __glide_dom_sync('wsClose', 0, String(this._id), String(c), r);
+    }
+  }
+  WebSocket.CONNECTING = WS_CONNECTING;
+  WebSocket.OPEN = WS_OPEN;
+  WebSocket.CLOSING = WS_CLOSING;
+  WebSocket.CLOSED = WS_CLOSED;
+  global.WebSocket = WebSocket;
+
   function fireLoaded() {
     if (global.__glide_mark_document_loaded) global.__glide_mark_document_loaded();
     if (global.__glide_dispatch_dom_content_loaded) {

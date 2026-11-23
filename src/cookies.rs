@@ -40,6 +40,20 @@ pub enum CookieRequestKind {
     Subresource,
     /// Page `fetch()` / `XMLHttpRequest`.
     Fetch,
+    /// Page `WebSocket` handshake.
+    WebSocket,
+}
+
+/// Map a `ws:` / `wss:` URL to the `http:` / `https:` origin used for cookies.
+pub fn ws_to_http_url(ws: &Url) -> Option<Url> {
+    let scheme = match ws.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        _ => return None,
+    };
+    let mut http = ws.clone();
+    http.set_scheme(scheme).ok()?;
+    Some(http)
 }
 
 /// Fetch credentials mode for cookie attachment.
@@ -345,9 +359,9 @@ fn cookie_allowed_on_request(
             CookieRequestKind::Navigation => {
                 !(method == Method::POST && !same_site(request_url, document_url))
             }
-            CookieRequestKind::Subresource | CookieRequestKind::Fetch => {
-                same_site(request_url, document_url)
-            }
+            CookieRequestKind::Subresource
+            | CookieRequestKind::Fetch
+            | CookieRequestKind::WebSocket => same_site(request_url, document_url),
         },
     }
 }
@@ -377,6 +391,17 @@ mod tests {
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn ws_to_http_url_maps_schemes() {
+        let ws = url("ws://example.test/socket");
+        let http = ws_to_http_url(&ws).expect("http");
+        assert_eq!(http.scheme(), "http");
+        assert_eq!(http.path(), "/socket");
+        let wss = url("wss://example.test/socket");
+        let https = ws_to_http_url(&wss).expect("https");
+        assert_eq!(https.scheme(), "https");
     }
 
     #[test]

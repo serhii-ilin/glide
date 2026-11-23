@@ -728,16 +728,15 @@ pub fn apply_edit_action_to_doc(chrome: &mut BaseDocument, action: EditAction) -
     let text_focused = chrome
         .get_focussed_node_id()
         .is_some_and(|id| node_is_text_input(chrome, id));
-    if text_focused && apply_clipboard_shortcut(chrome, code, modifiers) {
-        return true;
-    }
+    let clipboard =
+        text_focused && apply_clipboard_shortcut(chrome, code, modifiers);
     #[cfg(target_os = "macos")]
     {
-        apply_macos_chrome_keybinding(chrome, code, modifiers)
+        return clipboard || apply_macos_chrome_keybinding(chrome, code, modifiers);
     }
     #[cfg(not(target_os = "macos"))]
     {
-        false
+        clipboard
     }
 }
 
@@ -1206,12 +1205,25 @@ mod tests {
                 Some(BrowserShortcut::ToggleBookmark),
                 Some(BrowserShortcut::ToggleBookmark),
             ));
-            cases.extend(both(
-                &format!("{tag}+Alt+B show bookmarks"),
+            cases.push(case(
+                format!("{tag}+Alt+B show bookmarks"),
                 KeyCode::KeyB,
                 prim | ModifiersState::ALT,
+                false,
+                false,
                 Some(BrowserShortcut::ShowBookmarks),
-                Some(BrowserShortcut::ShowBookmarks),
+            ));
+            cases.push(case(
+                format!("{tag}+Alt+B show bookmarks (text focused)"),
+                KeyCode::KeyB,
+                prim | ModifiersState::ALT,
+                true,
+                false,
+                if cfg!(target_os = "macos") {
+                    Some(BrowserShortcut::ShowBookmarks)
+                } else {
+                    None
+                },
             ));
             cases.extend(both(
                 &format!("{tag}+Shift+W close window"),
@@ -1220,12 +1232,25 @@ mod tests {
                 Some(BrowserShortcut::CloseWindow),
                 Some(BrowserShortcut::CloseWindow),
             ));
-            cases.extend(both(
-                &format!("{tag}+M minimize window"),
+            cases.push(case(
+                format!("{tag}+M minimize window"),
                 KeyCode::KeyM,
                 prim,
+                false,
+                false,
                 Some(BrowserShortcut::MinimizeWindow),
-                Some(BrowserShortcut::MinimizeWindow),
+            ));
+            cases.push(case(
+                format!("{tag}+M minimize window (text focused)"),
+                KeyCode::KeyM,
+                prim,
+                true,
+                false,
+                if cfg!(target_os = "macos") {
+                    Some(BrowserShortcut::MinimizeWindow)
+                } else {
+                    None
+                },
             ));
             cases.extend(both(
                 &format!("{tag}+. stop loading"),

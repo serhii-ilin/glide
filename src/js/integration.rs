@@ -1642,6 +1642,43 @@ fn json_eval_returns_json_text() {
 }
 
 #[test]
+fn input_value_round_trips_same_turn_without_stale_readback() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <input id="i" value="">
+      <p id="t">x</p>
+      <script>
+        var input = document.getElementById('i');
+        input.value = 'hello';
+        document.getElementById('t').textContent = input.value;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "hello");
+}
+
+#[test]
+fn request_submit_rejects_foreign_submitter() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <form id="f"></form>
+      <button id="b" type="submit"></button>
+      <p id="t">pending</p>
+      <script>
+        var err = '';
+        try {
+          document.getElementById('f').requestSubmit(document.getElementById('b'));
+        } catch (e) {
+          err = (e.name || 'Error') + ':' + (e.code != null ? e.code : '');
+        }
+        document.getElementById('t').textContent = err;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert!(
+        result.final_text.contains("NotFoundError") || result.final_text.contains("not owned"),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
 fn request_submit_fires_submit_event_and_navigates() {
     let html = r#"<!DOCTYPE html><html><body>
       <form action="/search" method="get">

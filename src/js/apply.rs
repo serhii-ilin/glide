@@ -275,6 +275,7 @@ pub fn start_fetch(
         page_url.as_ref(),
         crate::cookies::CookieRequestKind::Fetch,
         creds,
+        request.method.clone(),
         &mut request.headers,
     );
     let method_for_log = method.clone();
@@ -864,6 +865,130 @@ mod tests {
         assert_eq!(nav.len(), 1);
         assert_eq!(nav[0].0, Method::POST.to_string());
         assert_eq!(nav[0].1, "https://example.test/login");
+    }
+
+    #[test]
+    fn post_form_entry_list_includes_named_submit_button() {
+        use blitz_traits::net::{Body, FormData};
+        #[derive(Default)]
+        struct BodyRecorder(Mutex<Vec<FormData>>);
+        impl NavigationProvider for BodyRecorder {
+            fn navigate_to(&self, options: NavigationOptions) {
+                if let Body::Form(form) = options.document_resource {
+                    self.0.lock().expect("recorder").push(form);
+                }
+            }
+        }
+        let recorder = Arc::new(BodyRecorder::default());
+        let config = DocumentConfig {
+            base_url: Some("https://example.test/".into()),
+            navigation_provider: Some(recorder.clone()),
+            ..DocumentConfig::default()
+        };
+        let mut doc = crate::parse::document_from_html(
+            "<!DOCTYPE html><html><body><form action=\"/login\" method=\"post\">\
+         <input name=\"user\" value=\"a\"><input type=\"submit\" name=\"go\" value=\"1\"></form></body></html>",
+            config,
+            false,
+        );
+        let form = doc.query_selector("form").expect("selector").expect("form");
+        let submit = doc
+            .query_selector("input[type=submit]")
+            .expect("selector")
+            .expect("submit");
+        apply_request(
+            &mut doc,
+            "https://example.test/",
+            DomRequest::SubmitForm {
+                form: node_to_handle(form),
+                submitter: node_to_handle(submit),
+                reply: 1,
+            },
+        );
+        let bodies = recorder.0.lock().expect("recorder");
+        let names: Vec<_> = bodies[0].iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"go"));
+    }
+
+    #[test]
+    fn post_form_select_multiple_selected_options() {
+        use blitz_traits::net::{Body, FormData};
+        #[derive(Default)]
+        struct BodyRecorder(Mutex<Vec<FormData>>);
+        impl NavigationProvider for BodyRecorder {
+            fn navigate_to(&self, options: NavigationOptions) {
+                if let Body::Form(form) = options.document_resource {
+                    self.0.lock().expect("recorder").push(form);
+                }
+            }
+        }
+        let recorder = Arc::new(BodyRecorder::default());
+        let config = DocumentConfig {
+            base_url: Some("https://example.test/".into()),
+            navigation_provider: Some(recorder.clone()),
+            ..DocumentConfig::default()
+        };
+        let html = "<!DOCTYPE html><html><body><form action=\"/save\" method=\"post\">\
+            <select name=\"c\" multiple>\
+            <option value=\"a\" selected>a</option>\
+            <option value=\"b\" selected>b</option>\
+            </select>\
+            <input type=\"submit\" value=\"ok\">\
+            </form></body></html>";
+        let mut doc = crate::parse::document_from_html(html, config, false);
+        let form = doc.query_selector("form").expect("selector").expect("form");
+        let submit = doc
+            .query_selector("input[type=submit]")
+            .expect("selector")
+            .expect("submit");
+        apply_request(
+            &mut doc,
+            "https://example.test/",
+            DomRequest::SubmitForm {
+                form: node_to_handle(form),
+                submitter: node_to_handle(submit),
+                reply: 1,
+            },
+        );
+        let bodies = recorder.0.lock().expect("recorder");
+        let c_values: Vec<String> = bodies[0]
+            .iter()
+            .filter(|e| e.name == "c")
+            .map(|e| match &e.value {
+                blitz_traits::net::EntryValue::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(c_values, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn post_form_formaction_targets_other_url() {
+        use blitz_traits::net::http::Method;
+        let (mut doc, recorder) = page_with_recorder(
+            "<!DOCTYPE html><html><body><form action=\"/default\" method=\"post\">\
+            <input name=\"x\" value=\"1\">\
+            <input type=\"submit\" formaction=\"/other\" value=\"go\">\
+            </form></body></html>",
+        );
+        let form = doc.query_selector("form").expect("selector").expect("form");
+        let submit = doc
+            .query_selector("input[type=submit]")
+            .expect("selector")
+            .expect("submit");
+        apply_request(
+            &mut doc,
+            "https://example.test/",
+            DomRequest::SubmitForm {
+                form: node_to_handle(form),
+                submitter: node_to_handle(submit),
+                reply: 1,
+            },
+        );
+        let nav = recorded(&recorder);
+        assert_eq!(nav.len(), 1);
+        assert_eq!(nav[0].0, Method::POST.to_string());
+        assert_eq!(nav[0].1, "https://example.test/other");
     }
 
     #[test]

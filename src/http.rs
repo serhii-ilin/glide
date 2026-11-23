@@ -12,21 +12,76 @@ use blitz_traits::net::http::{self, HeaderMap, Method};
 use blitz_traits::net::{Body, Bytes, EntryValue, FormData, Request};
 use url::Url;
 
+fn normalize_form_field(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(current) = chars.next() {
+        match (current, chars.peek()) {
+            ('\r', Some('\n')) => {
+                result.push_str("\r\n");
+                chars.next();
+            }
+            ('\r' | '\n', _) => result.push_str("\r\n"),
+            _ => result.push(current),
+        }
+    }
+    result
+}
+
 /// Encode a form entry list as `application/x-www-form-urlencoded` bytes.
 pub fn encode_form_urlencoded(form: &FormData) -> Vec<u8> {
     let mut body = String::new();
     {
         let mut ser = url::form_urlencoded::Serializer::new(&mut body);
         for entry in form.iter() {
+            let name = normalize_form_field(&entry.name);
             let value = match &entry.value {
-                EntryValue::String(s) => s.as_str(),
-                EntryValue::File(p) => p.to_str().unwrap_or(""),
-                EntryValue::EmptyFile => "",
+                EntryValue::String(s) => normalize_form_field(s),
+                EntryValue::File(p) => normalize_form_field(p.to_str().unwrap_or("")),
+                EntryValue::EmptyFile => String::new(),
             };
-            ser.append_pair(&entry.name, value);
+            ser.append_pair(&name, &value);
         }
     }
     body.into_bytes()
+}
+
+/// `text/plain` form submission body (HTML encoding algorithm).
+pub fn encode_form_text_plain(form: &FormData) -> Result<Vec<u8>, String> {
+    let mut out = String::new();
+    for entry in form.iter() {
+        let name = normalize_form_field(&entry.name);
+        let value = match &entry.value {
+            EntryValue::String(s) => normalize_form_field(s),
+            EntryValue::File(p) => normalize_form_field(p.to_str().unwrap_or("")),
+            EntryValue::EmptyFile => String::new(),
+        };
+        out.push_str(&name);
+        out.push('=');
+        out.push_str(&value);
+        out.push_str("\r\n");
+    }
+    Ok(out.into_bytes())
+}
+
+fn origin_header_value(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    let mut origin = format!("{}://{}", url.scheme(), host);
+    if let Some(port) = url.port() {
+        let default = match url.scheme() {
+            "http" => 80,
+            "https" => 443,
+            _ => return Some(origin),
+        };
+        if port != default {
+            origin.push(':');
+            origin.push_str(&port.to_string());
+        }
+    }
+    Some(origin)
 }
 
 const MAX_REDIRECTS: usize = 20;
@@ -714,8 +769,15 @@ async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
         hop.cookie_document.as_ref(),
         hop.cookie_kind,
         hop.cookie_credentials,
+        hop.method.clone(),
         &mut headers,
     );
+    if hop.method == Method::POST
+        && let Some(origin) = origin_header_value(&hop.url)
+        && let Ok(value) = http::HeaderValue::from_str(&origin)
+    {
+        headers.insert(http::header::ORIGIN, value);
+    }
     let mut builder = client().request(hop.method.clone(), hop.url.clone());
     builder = builder.headers(headers);
     if !hop.headers.contains_key(http::header::USER_AGENT) {
@@ -733,12 +795,18 @@ async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
             if ct.starts_with("multipart/") {
                 return Err("multipart/form-data document navigation is not supported".to_string());
             }
-            let encoded = encode_form_urlencoded(form);
+            let (encoded, default_ct) = if ct.starts_with("text/plain") {
+                (encode_form_text_plain(form)?, "text/plain".to_string())
+            } else if ct.is_empty() || ct.starts_with("application/x-www-form-urlencoded") {
+                (
+                    encode_form_urlencoded(form),
+                    "application/x-www-form-urlencoded".into(),
+                )
+            } else {
+                return Err(format!("unsupported document form enctype: {ct}"));
+            };
             if !hop.headers.contains_key(http::header::CONTENT_TYPE) {
-                builder = builder.header(
-                    http::header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                );
+                builder = builder.header(http::header::CONTENT_TYPE, default_ct);
             }
             builder.body(encoded)
         }
@@ -778,6 +846,36 @@ mod tests {
             String::from_utf8(encode_form_urlencoded(&form)).expect("utf8"),
             "q=a%2Bb&empty="
         );
+    }
+
+    #[test]
+    fn encode_form_urlencoded_normalizes_newlines() {
+        use blitz_traits::net::{Entry, EntryValue, FormData};
+        let form = FormData(vec![Entry {
+            name: "n".into(),
+            value: EntryValue::String("a\nb".into()),
+        }]);
+        assert_eq!(
+            String::from_utf8(encode_form_urlencoded(&form)).expect("utf8"),
+            "n=a%0D%0Ab"
+        );
+    }
+
+    #[test]
+    fn encode_form_text_plain_uses_plain_algorithm() {
+        use blitz_traits::net::{Entry, EntryValue, FormData};
+        let form = FormData(vec![
+            Entry {
+                name: "a".into(),
+                value: EntryValue::String("1".into()),
+            },
+            Entry {
+                name: "b".into(),
+                value: EntryValue::String("2".into()),
+            },
+        ]);
+        let body = encode_form_text_plain(&form).expect("plain");
+        assert_eq!(body, b"a=1\r\nb=2\r\n");
     }
 
     #[test]
@@ -950,6 +1048,49 @@ mod tests {
             "/empty" => http_response("503 Service Unavailable", "", ""),
             _ => http_response("400 Bad Request", "", ""),
         }
+    }
+
+    #[test]
+    fn post_navigation_includes_origin_and_content_type() {
+        use blitz_traits::net::{Entry, EntryValue, FormData};
+        use std::sync::{Arc, Mutex};
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured2 = captured.clone();
+        let port = spawn_server(move |req| {
+            if req.starts_with("POST /submit") {
+                *captured2.lock().expect("lock") = req.to_string();
+                return http_response("200 OK", "Content-Type: text/html\r\n", "<p>ok</p>");
+            }
+            http_response("404 Not Found", "", "")
+        });
+        let rt = crate::runtime::tokio_runtime();
+        let _guard = rt.enter();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/submit")).unwrap();
+        let mut request = Request::get(url);
+        request.method = Method::POST;
+        request.content_type = Some("application/x-www-form-urlencoded".into());
+        request.body = Body::Form(FormData(vec![Entry {
+            name: "q".into(),
+            value: EntryValue::String("x".into()),
+        }]));
+        match rt.block_on(fetch_document(request, false)) {
+            DocumentFetch::Page { .. } => {}
+            DocumentFetch::Failed { reason, .. } => panic!("post failed: {reason}"),
+        }
+        let req = captured.lock().expect("lock").clone();
+        assert!(req.lines().any(|l| l.starts_with("POST ")));
+        let expect_origin = format!("origin: http://127.0.0.1:{port}");
+        assert!(
+            req.lines().any(|l| l.eq_ignore_ascii_case(&expect_origin)),
+            "missing Origin: {req}"
+        );
+        assert!(
+            req.lines().any(|l| {
+                l.to_ascii_lowercase()
+                    .starts_with("content-type: application/x-www-form-urlencoded")
+            }),
+            "missing content-type: {req}"
+        );
     }
 
     #[test]

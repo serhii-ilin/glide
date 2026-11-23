@@ -1774,13 +1774,15 @@
     return raw;
   }
 
+  const controlValueCache = new WeakMap();
+
   function syncFormControlsFromBlitz(form) {
     const formId = blitzId(form);
     if (formId == null) return;
     const rows = rpc('syncFormControls', String(formId));
     if (!Array.isArray(rows)) return;
     for (const row of rows) {
-      const node = blitzToNode.get(Number(row.id));
+      const node = blitzToNode.get(String(row.id));
       if (!node) continue;
       if (row.checked != null) {
         try { node.checked = Boolean(row.checked); } catch (_) { /* type */ }
@@ -1797,7 +1799,7 @@
     const TextArea = domino.impl.HTMLTextAreaElement;
     if (!Input || !Input.prototype) return;
     formControlMirrorInstalled = true;
-  const inputProto = Object.create(Input.prototype);
+    const inputProto = Object.create(Input.prototype);
     Object.defineProperty(Input, 'prototype', {
       value: inputProto,
       writable: true,
@@ -1807,10 +1809,13 @@
     Object.defineProperty(inputProto, 'value', {
       configurable: true,
       get() {
+        if (controlValueCache.has(this)) return controlValueCache.get(this);
         return mirrorControlField(this, 'value') ?? '';
       },
       set(v) {
-        this.setAttribute('value', String(v));
+        const text = String(v);
+        controlValueCache.set(this, text);
+        this.setAttribute('value', text);
       },
     });
     Object.defineProperty(inputProto, 'checked', {
@@ -1820,7 +1825,7 @@
         return raw === true || raw === 'true';
       },
       set(on) {
-        if (on) this.setAttribute('checked', 'checked');
+        if (on) this.setAttribute('checked', '');
         else this.removeAttribute('checked');
       },
     });
@@ -1835,10 +1840,13 @@
       Object.defineProperty(taProto, 'value', {
         configurable: true,
         get() {
+          if (controlValueCache.has(this)) return controlValueCache.get(this);
           return mirrorControlField(this, 'value') ?? '';
         },
         set(v) {
-          this.setAttribute('value', String(v));
+          const text = String(v);
+          controlValueCache.set(this, text);
+          this.setAttribute('value', text);
         },
       });
     }
@@ -1904,11 +1912,17 @@
       writable: true,
       value: function requestSubmit(submitter) {
         if (submitter != null && submitter.form !== this) {
-          throw new TypeError('requestSubmit: submitter is not owned by this form');
+          const DOMException = domino.impl.DOMException;
+          throw new DOMException(
+            'The submitter is not owned by this form element.',
+            DOMException.NOT_FOUND_ERR,
+          );
         }
         syncFormControlsFromBlitz(this);
         const evt = new domino.impl.Event('submit', { bubbles: true, cancelable: true });
         if (!this.dispatchEvent(evt)) return;
+        flushMutations();
+        syncFormControlsFromBlitz(this);
         submitFormElement(this, submitter || null);
       },
     });

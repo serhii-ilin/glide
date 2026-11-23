@@ -1378,6 +1378,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "stylo_dom",
  "tokio",
  "url",
  "v8",

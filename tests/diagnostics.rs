@@ -153,6 +153,17 @@ fn module_import_missing_dependency_is_logged() {
 }
 
 #[test]
+fn custom_element_is_extension_logs_unsupported() {
+    let (_stdout, stderr) = run_fixture("custom-element-is.html", "debug");
+    assert!(
+        stderr.contains("target=\"js.unsupported\"")
+            && stderr.contains("custom-elements")
+            && stderr.contains("is="),
+        "expected js.unsupported for customized built-ins: {stderr}"
+    );
+}
+
+#[test]
 fn bare_module_specifier_is_reported_as_unsupported() {
     let (stdout, stderr) = run_fixture("module-bare.html", "debug");
 

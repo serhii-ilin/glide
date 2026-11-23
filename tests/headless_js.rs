@@ -273,6 +273,18 @@ fn navigator_languages_work() {
 }
 
 #[test]
+fn custom_element_upgrade_fixture() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("custom-element-upgrade.html"), true).expect("load");
+    assert!(text.contains("connected"), "{text}");
+    assert!(text.contains("attr:msg:1"), "{text}");
+    assert!(text.contains(";visible"), "{text}");
+    assert!(text.contains("disconnected"), "{text}");
+    assert!(text.contains("hello"), "{text}");
+}
+
+#[test]
 fn observers_and_idle_work() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <my-widget id="w">pending</my-widget>
+  <script type="module">
+    class MyWidget extends HTMLElement {
+      connectedCallback() {
+        this.textContent = 'module-widget';
+      }
+    }
+    customElements.define('my-widget', MyWidget);
+  </script>
+</body>
+</html>

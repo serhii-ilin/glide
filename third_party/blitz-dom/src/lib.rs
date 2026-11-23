@@ -45,7 +45,8 @@ mod cssom;
 mod debug;
 mod events;
 mod font_metrics;
-mod form;
+// crates.io blitz-dom keeps `form` private; we export `construct_entry_list` for F-082 FormData(form).
+pub mod form;
 mod html;
 /// Loading of `<iframe>` elements into sub-documents.
 mod iframe;

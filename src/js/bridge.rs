@@ -63,6 +63,12 @@ pub enum DomRequest {
         json: String,
         reply: u64,
     },
+    /// Entry list for `new FormData(form)` (F-082).
+    FormDataEntries {
+        form: u64,
+        submitter: u64,
+        reply: u64,
+    },
     ListenTarget {
         node: u64,
         event_type: String,

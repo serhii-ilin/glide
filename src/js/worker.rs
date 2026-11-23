@@ -958,6 +958,11 @@ fn map_dom_op(
             json: arg_string(scope, args, 2)?,
             reply,
         },
+        "formDataEntries" => DomRequest::FormDataEntries {
+            form: arg_handle(scope, args, 2)?,
+            submitter: arg_handle(scope, args, 3)?,
+            reply,
+        },
         "randomBytes" => {
             let size = arg_string(scope, args, 2)?
                 .parse::<usize>()
@@ -1136,11 +1141,13 @@ fn fetch_options(
             }
         }
     }
-    let body = opts
-        .get("body")
-        .and_then(|b| b.as_str())
-        .unwrap_or("")
-        .to_string();
+    let body = match opts.get("body") {
+        None => String::new(),
+        Some(serde_json::Value::String(s)) => {
+            serde_json::json!({"kind": "text", "data": s}).to_string()
+        }
+        Some(v) => v.to_string(),
+    };
     let credentials = opts
         .get("credentials")
         .and_then(|b| b.as_str())

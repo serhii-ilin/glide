@@ -28,6 +28,129 @@ fn normalize_form_field(input: &str) -> String {
     result
 }
 
+/// Encode URLSearchParams pairs as `application/x-www-form-urlencoded` bytes (UTF-8).
+///
+/// Uses the URL Standard serializer (percent-encoding only; no HTML newline normalization).
+pub fn encode_url_search_params(pairs: &[(String, String)]) -> Vec<u8> {
+    let mut body = String::new();
+    {
+        let mut ser = url::form_urlencoded::Serializer::new(&mut body);
+        for (name, value) in pairs {
+            ser.append_pair(name, value);
+        }
+    }
+    body.into_bytes()
+}
+
+/// Multipart text field bodies use CRLF line endings per the HTML encoding algorithm.
+fn normalize_multipart_text_value(input: &str) -> String {
+    normalize_form_field(input)
+}
+
+/// One part of a `multipart/form-data` body from page script `FormData`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultipartField {
+    pub name: String,
+    pub value: MultipartValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultipartValue {
+    Text(String),
+    File {
+        bytes: Vec<u8>,
+        filename: String,
+        content_type: String,
+    },
+}
+
+/// Escape a multipart `Content-Disposition` parameter per the HTML algorithm.
+fn escape_multipart_param(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("%22"),
+            '\r' => out.push_str("%0D"),
+            '\n' => out.push_str("%0A"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn multipart_boundary() -> String {
+    let mut buf = [0u8; 16];
+    if getrandom::fill(&mut buf).is_err() {
+        return "----glideformboundary000000000000".to_string();
+    }
+    let mut boundary = String::from("----glideformboundary");
+    for byte in buf {
+        boundary.push_str(&format!("{byte:02x}"));
+    }
+    boundary
+}
+
+/// Encode script `FormData` for `multipart/form-data`.
+pub fn encode_multipart_form_data(entries: &[MultipartField]) -> Result<(String, Vec<u8>), String> {
+    encode_multipart_form_data_with_boundary(entries, None)
+}
+
+/// Same as [`encode_multipart_form_data`] but allows a fixed boundary (tests).
+pub fn encode_multipart_form_data_with_boundary(
+    entries: &[MultipartField],
+    boundary: Option<&str>,
+) -> Result<(String, Vec<u8>), String> {
+    let boundary = boundary
+        .map(str::to_string)
+        .unwrap_or_else(multipart_boundary);
+    if boundary.is_empty() || boundary.bytes().any(|b| !b.is_ascii() || b == b'"') {
+        return Err("invalid multipart boundary".to_string());
+    }
+    let mut body = Vec::new();
+    for entry in entries {
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(boundary.as_bytes());
+        body.extend_from_slice(b"\r\n");
+        let escaped_name = escape_multipart_param(&entry.name);
+        match &entry.value {
+            MultipartValue::Text(text) => {
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{escaped_name}\"\r\n\r\n")
+                        .as_bytes(),
+                );
+                let normalized = normalize_multipart_text_value(text);
+                body.extend_from_slice(normalized.as_bytes());
+                body.extend_from_slice(b"\r\n");
+            }
+            MultipartValue::File {
+                bytes,
+                filename,
+                content_type,
+            } => {
+                let escaped_filename = escape_multipart_param(filename);
+                body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{escaped_name}\"; filename=\"{escaped_filename}\"\r\n"
+                    )
+                    .as_bytes(),
+                );
+                let ct = if content_type.is_empty() {
+                    "application/octet-stream"
+                } else {
+                    content_type.as_str()
+                };
+                body.extend_from_slice(format!("Content-Type: {ct}\r\n\r\n").as_bytes());
+                body.extend_from_slice(bytes);
+                body.extend_from_slice(b"\r\n");
+            }
+        }
+    }
+    body.extend_from_slice(b"--");
+    body.extend_from_slice(boundary.as_bytes());
+    body.extend_from_slice(b"--\r\n");
+    Ok((boundary, body))
+}
+
 /// Encode a form entry list as `application/x-www-form-urlencoded` bytes.
 pub fn encode_form_urlencoded(form: &FormData) -> Vec<u8> {
     let mut body = String::new();
@@ -1087,6 +1210,59 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn encode_multipart_escapes_disposition_params() {
+        use super::{MultipartField, MultipartValue};
+        let fields = vec![MultipartField {
+            name: "a\"b\r\n".into(),
+            value: MultipartValue::Text("hello".into()),
+        }];
+        let (boundary, body) =
+            encode_multipart_form_data_with_boundary(&fields, Some("testboundary")).expect("enc");
+        assert_eq!(boundary, "testboundary");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.contains("name=\"a%22b%0D%0A\""));
+        assert!(text.contains("\r\nhello\r\n"));
+        assert!(text.ends_with("--testboundary--\r\n"));
+    }
+
+    #[test]
+    fn encode_multipart_text_value_normalizes_lf_to_crlf() {
+        use super::{MultipartField, MultipartValue};
+        let fields = vec![MultipartField {
+            name: "n".into(),
+            value: MultipartValue::Text("a\nb".into()),
+        }];
+        let (_, body) = encode_multipart_form_data_with_boundary(&fields, Some("b")).expect("enc");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.contains("\r\na\r\nb\r\n"));
+    }
+
+    #[test]
+    fn encode_url_search_params_uses_url_standard_not_html_newlines() {
+        let bytes =
+            encode_url_search_params(&[("q".into(), "a b".into()), ("n".into(), "a\nb".into())]);
+        assert_eq!(&bytes[..], b"q=a+b&n=a%0Ab");
+    }
+
+    #[test]
+    fn encode_multipart_file_part_includes_filename_and_content_type() {
+        use super::{MultipartField, MultipartValue};
+        let fields = vec![MultipartField {
+            name: "upload".into(),
+            value: MultipartValue::File {
+                bytes: b"bin".to_vec(),
+                filename: "x.txt".into(),
+                content_type: "text/plain".into(),
+            },
+        }];
+        let (_, body) = encode_multipart_form_data_with_boundary(&fields, Some("b")).expect("enc");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.contains("filename=\"x.txt\""));
+        assert!(text.contains("Content-Type: text/plain"));
+        assert!(text.contains("\r\nbin\r\n"));
+    }
 
     #[test]
     fn encode_form_urlencoded_pairs() {

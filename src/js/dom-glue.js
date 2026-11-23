@@ -1700,17 +1700,40 @@
     fillLocationFields(pageLocation, parsed, pageUrl);
   }
 
+  // Domino resolves reflected URL attributes (`script.src`, `link.href`, …) from
+  // `document._address`, not from the `document.URL` getter Glide overrides.
+  function syncDocumentAddress(href) {
+    if (!pageDocument) return;
+    const url = String(href || 'about:blank');
+    try {
+      pageDocument._address = url;
+    } catch (_) { /* domino may freeze _address in some builds */ }
+    try {
+      Object.defineProperty(pageDocument, 'URL', {
+        configurable: true,
+        get: () => currentPageUrl,
+      });
+      Object.defineProperty(pageDocument, 'documentURI', {
+        configurable: true,
+        get: () => currentPageUrl,
+      });
+    } catch (_) { /* domino defines these as readonly */ }
+  }
+
   function setPageUrl(href) {
     currentPageUrl = String(href);
+    syncDocumentAddress(currentPageUrl);
     syncLocationObject(parsedPageUrl(currentPageUrl), currentPageUrl);
   }
 
   function installGlobals(pageUrl) {
     currentPageUrl = pageUrl || 'about:blank';
+    syncDocumentAddress(currentPageUrl);
     global.document = pageDocument;
     if (global.navigator == null) global.navigator = { userAgent: 'Glide' };
     const impl = domino.impl;
     Object.keys(impl).forEach((k) => {
+      if (k === 'URL' || k === 'URLSearchParams') return;
       if (k !== 'Window' && typeof impl[k] === 'function') global[k] = impl[k];
     });
     global.Node = impl.Node;
@@ -1745,14 +1768,6 @@
     pageLocation = locationFrom(currentPageUrl);
     global.location = pageLocation;
     try {
-      Object.defineProperty(global.document, 'URL', {
-        configurable: true,
-        get: () => currentPageUrl,
-      });
-      Object.defineProperty(global.document, 'documentURI', {
-        configurable: true,
-        get: () => currentPageUrl,
-      });
       Object.defineProperty(global.document, 'location', {
         configurable: true,
         get: () => pageLocation,
@@ -1768,6 +1783,7 @@
         },
       });
     } catch (_) { /* domino defines these as readonly */ }
+    installUrlGlobal();
   }
 
   const EVENT_HANDLER_TYPES = [
@@ -2221,7 +2237,15 @@
 
   function installUrlGlobal() {
     global.URL = function URL(href, base) {
-      const parsed = __glide_url_parse(String(href), base != null ? String(base) : undefined);
+      if (arguments.length < 1) throw new TypeError('Invalid URL');
+      if (href === undefined) throw new TypeError('Invalid URL');
+      const hrefStr = String(href);
+      let parsed;
+      if (arguments.length > 1 && base !== undefined) {
+        parsed = __glide_url_parse(hrefStr, String(base));
+      } else {
+        parsed = __glide_url_parse(hrefStr);
+      }
       if (!parsed) throw new TypeError('Invalid URL');
       Object.assign(this, parsed);
     };

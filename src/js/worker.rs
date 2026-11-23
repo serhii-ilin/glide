@@ -375,9 +375,13 @@ fn worker_main(state: WorkerThreadState) {
                     call_global_fn(scope, "__glide_set_script_kind", &[kind_s.into()]);
                     let script_name = resource_name;
                     diagnostics::set_script(Some(&script_name), script_id, Some(script_kind));
-                    if let Some(id) = script_id {
-                        let sid = v8::String::new(scope, &id.to_string()).unwrap();
-                        call_global_fn(scope, "__glide_set_current_script", &[sid.into()]);
+                    if !module {
+                        if let Some(id) = script_id {
+                            let sid = v8::String::new(scope, &id.to_string()).unwrap();
+                            call_global_fn(scope, "__glide_set_current_script", &[sid.into()]);
+                        } else {
+                            call_global_fn(scope, "__glide_set_current_script", &[]);
+                        }
                     } else {
                         call_global_fn(scope, "__glide_set_current_script", &[]);
                     }

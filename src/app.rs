@@ -807,6 +807,7 @@ impl Glide {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn apply_menu_command(
         &mut self,
         event_loop: &dyn ActiveEventLoop,

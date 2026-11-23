@@ -2537,3 +2537,177 @@ fn websocket_rejects_mixed_content_and_bad_url() {
     assert!(text.contains("mixed:SecurityError"), "{text}");
     assert!(text.contains("bad:SyntaxError"), "{text}");
 }
+
+// DOM Standard — reflected URL attributes; meduza.io axios chunk (webpack spread of `origin`).
+#[test]
+fn location_origin_and_href_are_absolute_strings() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var ok = typeof location.href === 'string' && location.href.indexOf('https://') === 0 &&
+        typeof location.origin === 'string' && location.origin.indexOf('https://') === 0 &&
+        location.origin.length > 'https://'.length;
+      document.getElementById('t').textContent = ok ? 'yes' : JSON.stringify({
+        href: location.href, origin: location.origin
+      });
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "https://meduza.test/page",
+        Duration::from_millis(200),
+    );
+    assert_eq!(result.final_text, "yes");
+}
+
+#[test]
+fn document_url_and_base_uri_match_page_address() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var ok = document.URL === 'https://meduza.test/page' &&
+        document.documentURI === 'https://meduza.test/page' &&
+        document.baseURI === 'https://meduza.test/page';
+      document.getElementById('t').textContent = ok ? 'yes' : [
+        document.URL, document.documentURI, document.baseURI
+      ].join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "https://meduza.test/page",
+        Duration::from_millis(200),
+    );
+    assert_eq!(result.final_text, "yes");
+}
+
+#[test]
+fn parser_async_script_src_resolves_against_document() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script async src="/assets/app.js" id="app"></script>
+      <script>
+        (function check() {
+          var app = document.getElementById('app');
+          if (!app) return;
+          if (app.src.indexOf('https://meduza.test/') === 0) {
+            document.getElementById('t').textContent = 'src:' + app.src;
+          } else {
+            document.getElementById('t').textContent = 'bad:' + app.src;
+          }
+        })();
+      </script>
+    </body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "https://meduza.test/",
+        Duration::from_millis(300),
+    );
+    let text = result.final_text;
+    assert!(text.starts_with("src:https://meduza.test/"), "{text}");
+}
+
+#[test]
+fn link_href_and_anchor_href_resolve_against_document() {
+    let html = r#"<!DOCTYPE html><html><head>
+      <link id="l" rel="stylesheet" href="/style.css">
+    </head><body><a id="a" href="/path">x</a><p id="t">pending</p>
+    <script>
+      var l = document.getElementById('l').href;
+      var a = document.getElementById('a').href;
+      var ok = l === 'https://meduza.test/style.css' && a === 'https://meduza.test/path';
+      document.getElementById('t').textContent = ok ? 'yes' : (l + '|' + a);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "https://meduza.test/",
+        Duration::from_millis(200),
+    );
+    assert_eq!(result.final_text, "yes");
+}
+
+#[test]
+fn url_constructor_parses_location_href() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      try {
+        document.getElementById('t').textContent = new URL(location.href).href;
+      } catch (e) {
+        document.getElementById('t').textContent = 'err:' + e.message;
+      }
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "https://meduza.test/",
+        Duration::from_millis(200),
+    );
+    assert!(
+        result.final_text.starts_with("https://meduza.test"),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn glide_url_parse_accepts_document_href() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var p = __glide_url_parse(location.href);
+      document.getElementById('t').textContent = p && p.href ? 'ok' : 'bad';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "https://meduza.test/",
+        Duration::from_millis(200),
+    );
+    assert_eq!(result.final_text, "ok");
+}
+
+#[test]
+fn url_constructor_matches_relative_base_and_throws_on_undefined_href() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var out = [];
+      try { new URL(undefined); } catch (e) { out.push('undef:' + e.name); }
+      try {
+        var u = new URL('/z', 'https://meduza.test/');
+        out.push('rel:' + u.pathname);
+      } catch (e) { out.push('rel-err'); }
+      try {
+        var r = {};
+        Object.defineProperty(r, 'origin', { enumerable: true, get: function() {
+          return window.location.href;
+        }});
+        var Me = Object.assign({}, r);
+        new URL(Me.origin);
+        var rel2 = new URL('/api', Me.origin);
+        out.push('axios:' + rel2.pathname);
+      } catch (e) { out.push('axios-err:' + e.message); }
+      document.getElementById('t').textContent = out.join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "https://meduza.test/",
+        Duration::from_millis(200),
+    );
+    let text = result.final_text;
+    assert!(text.contains("undef:TypeError"), "{text}");
+    assert!(text.contains("rel:/z"), "{text}");
+    assert!(text.contains("axios:/api"), "{text}");
+}
+
+#[test]
+fn document_current_script_null_for_module_and_set_for_async_classic() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script type="module">
+        window.__mod_cur = document.currentScript;
+      </script>
+      <script async id="a" src="data:text/javascript,window.__async_cur=document.currentScript;"></script>
+      <script>
+        setTimeout(function () {
+          var parts = ['mod:' + (window.__mod_cur === null)];
+          var s = document.getElementById('a');
+          parts.push('has:' + (s != null));
+          document.getElementById('t').textContent = parts.join(',');
+        }, 50);
+      </script>
+    </body></html>"#;
+    let result = super::harness::run_inline_page_on_base(
+        html,
+        "https://meduza.test/",
+        Duration::from_millis(400),
+    );
+    let text = result.final_text;
+    assert!(text.contains("mod:true"), "{text}");
+    assert!(text.contains("has:true"), "{text}");
+}

@@ -175,3 +175,21 @@ fn bare_module_specifier_is_reported_as_unsupported() {
     assert!(stdout.contains("before"), "dump: {stdout}");
     assert!(!stdout.contains("bare ran"), "dump: {stdout}");
 }
+
+#[test]
+fn invalid_import_map_logs_loader_error() {
+    let (_stdout, stderr) = run_fixture("importmap-invalid.html", "debug");
+    assert!(
+        stderr.contains("import map registration failed"),
+        "expected import map error log: {stderr}"
+    );
+}
+
+#[test]
+fn unmapped_bare_specifier_with_import_map_logs_hint() {
+    let (_stdout, stderr) = run_fixture("importmap-bare-unmapped.html", "debug");
+    assert!(
+        stderr.contains("no import map entry for bare specifier"),
+        "expected unmapped bare log: {stderr}"
+    );
+}

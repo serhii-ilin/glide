@@ -373,26 +373,40 @@ impl JsHost {
         };
         let specs = self.script_specs.clone();
         let base = self.base_url.clone();
-        let pick = |idxs: &[usize]| -> Vec<(String, Option<u64>, bool, String)> {
-            idxs.iter()
-                .filter_map(|&i| {
-                    let spec = specs.get(i)?;
-                    source_body(&sources[i]).map(|body| {
-                        (
-                            body,
-                            spec.element,
-                            spec.module,
-                            script_resource_name(spec, &base, i),
-                        )
-                    })
-                })
-                .collect()
+        let run_indices = |idxs: &[usize], kind: &str| {
+            for &i in idxs {
+                let Some(spec) = specs.get(i) else {
+                    continue;
+                };
+                if spec.import_map {
+                    let Some(body) = source_body(&sources[i]) else {
+                        continue;
+                    };
+                    let resource = script_resource_name(spec, &base, i);
+                    worker.register_import_map(
+                        body,
+                        resource.clone(),
+                        base.clone(),
+                        resource,
+                        spec.element,
+                    );
+                    continue;
+                }
+                let Some(body) = source_body(&sources[i]) else {
+                    continue;
+                };
+                let resource = script_resource_name(spec, &base, i);
+                worker.run_scripts(vec![(body, spec.element, spec.module, resource)], kind);
+            }
         };
         let failed_elements = || {
             specs
                 .iter()
                 .zip(sources.iter())
                 .filter_map(|(spec, src)| {
+                    if spec.import_map {
+                        return None;
+                    }
                     if matches!(src, super::scripts::ScriptSource::Failed) {
                         spec.element.map(|id| (id, false))
                     } else {
@@ -401,27 +415,10 @@ impl JsHost {
                 })
                 .collect::<Vec<_>>()
         };
-        let classic_bodies = pick(&classic);
-        if !classic_bodies.is_empty() {
-            worker.run_scripts(classic_bodies, "classic");
-        }
-        let defer_bodies = pick(&defer);
-        if !defer_bodies.is_empty() {
-            worker.run_scripts(defer_bodies, "defer");
-        }
+        run_indices(&classic, "classic");
+        run_indices(&defer, "defer");
         worker.fire_dom_content_loaded();
-        for idx in async_scripts {
-            if let Some(body) = source_body(&sources[idx]) {
-                let spec = specs.get(idx);
-                let script_id = spec.and_then(|s| s.element);
-                let module = spec.is_some_and(|s| s.module);
-                let resource = specs
-                    .get(idx)
-                    .map(|spec| script_resource_name(spec, &self.base_url, idx))
-                    .unwrap_or_else(|| format!("script-{idx}"));
-                worker.run_scripts(vec![(body, script_id, module, resource)], "async");
-            }
-        }
+        run_indices(&async_scripts, "async");
         let failed = failed_elements();
         if !failed.is_empty() {
             worker.notify_script_elements(failed);

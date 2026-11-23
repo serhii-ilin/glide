@@ -9,6 +9,7 @@ mod fetch_body;
 mod form_controls;
 mod form_data;
 mod host;
+pub mod import_map;
 mod modules;
 mod paint_prune;
 mod promise_console;

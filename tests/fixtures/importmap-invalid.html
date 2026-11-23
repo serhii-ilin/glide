@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script type="importmap">{not json</script>
+  <script type="importmap">
+  {"imports":{"good":"./importmap-dep.js"}}
+  </script>
+  <script type="module">
+    import { value } from 'good';
+    document.getElementById('t').textContent = 'after ' + value;
+  </script>
+</body>
+</html>

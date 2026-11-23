@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t"></p>
+  <script>
+    window.order = [];
+    var asyncScript = document.querySelector('script[src]');
+    asyncScript.addEventListener('error', function () {
+      window.order.push('error');
+    });
+    window.addEventListener('load', function () {
+      window.order.push('load');
+      document.getElementById('t').textContent = window.order.join(',');
+    });
+  </script>
+  <script async src="missing-parser-async.js"></script>
+</body>
+</html>

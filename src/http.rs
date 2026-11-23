@@ -960,6 +960,7 @@ mod tests {
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 
+        let _jar_guard = crate::cookies::CookieJar::lock_global_for_test();
         crate::cookies::CookieJar::reset_global();
         crate::cookies::CookieJar::ensure_process_global(None);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");

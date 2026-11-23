@@ -94,6 +94,7 @@ enum WorkerMessage {
         kind: String,
     },
     FireDomContentLoaded,
+    FirePageLoad,
     /// All scripts queued for this load have run; emit the per-page summary.
     PageSettled,
     NotifyScriptElements(Vec<(u64, bool)>),
@@ -178,6 +179,10 @@ impl JsWorker {
 
     pub fn fire_dom_content_loaded(&self) {
         let _ = self.tx.send(WorkerMessage::FireDomContentLoaded);
+    }
+
+    pub fn fire_page_load(&self) {
+        let _ = self.tx.send(WorkerMessage::FirePageLoad);
     }
 
     pub fn page_settled(&self) {
@@ -389,6 +394,14 @@ fn worker_main(state: WorkerThreadState) {
                 let ctx = v8::Local::new(hs, &global_context);
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 call_global_fn(scope, "__glide_fire_dom_content_loaded", &[]);
+                settle_task(scope);
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
+            }
+            WorkerMessage::FirePageLoad => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
+                call_global_fn(scope, "__glide_fire_page_load", &[]);
                 settle_task(scope);
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
             }

@@ -167,10 +167,8 @@ fn apply_cookie_set(base_url: &str, assignment: &str, reply: u64) -> DomResponse
     let Ok(page_url) = Url::parse(base_url) else {
         return DomResponse::err(reply, "invalid document url");
     };
-    match crate::cookies::CookieJar::global().set_document_cookie(&page_url, assignment) {
-        Ok(()) => DomResponse::ok(reply, DomValue::Null),
-        Err(err) => DomResponse::err(reply, err),
-    }
+    crate::cookies::CookieJar::global().set_document_cookie(&page_url, assignment);
+    DomResponse::ok(reply, DomValue::Null)
 }
 
 fn apply_random_bytes(size: usize, reply: u64) -> DomResponse {
@@ -863,6 +861,7 @@ mod tests {
     #[test]
     fn cookie_rpc_get_hides_httponly() {
         use std::sync::Arc;
+        let _jar_guard = crate::cookies::CookieJar::lock_global_for_test();
         crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
         let page = url::Url::parse("http://example.test/").unwrap();
         crate::cookies::CookieJar::global().store_response_headers(

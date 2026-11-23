@@ -1867,11 +1867,10 @@
 
   function fireLoaded() {
     if (global.__glide_mark_document_loaded) global.__glide_mark_document_loaded();
-    if (global.__glide_fire_page_load) {
-      global.__glide_fire_page_load();
+    if (global.__glide_dispatch_dom_content_loaded) {
+      global.__glide_dispatch_dom_content_loaded();
     } else {
       document.dispatchEvent(new Event('DOMContentLoaded'));
-      global.dispatchEvent(new Event('load'));
     }
     runMicrotasks();
   }

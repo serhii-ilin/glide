@@ -54,6 +54,11 @@ pub enum BrowserShortcut {
     DevToolsInspectToggle,
     DevToolsInspectCancel,
     MenuClose,
+    ShowBookmarks,
+    ShowHelp,
+    CloseWindow,
+    DuplicateTab,
+    MinimizeWindow,
     Scroll(ScrollAction),
 }
 
@@ -97,7 +102,9 @@ pub fn browser_shortcut(
         KeyCode::KeyL if primary && !shift => return Some(BrowserShortcut::FocusAddressBar),
         KeyCode::KeyR if primary && !shift => return Some(BrowserShortcut::Reload),
         KeyCode::KeyT if primary && !shift => return Some(BrowserShortcut::NewTab),
+        KeyCode::KeyW if primary && shift => return Some(BrowserShortcut::CloseWindow),
         KeyCode::KeyW if primary && !shift => return Some(BrowserShortcut::CloseTab),
+        KeyCode::Slash if primary && shift => return Some(BrowserShortcut::ShowHelp),
         KeyCode::KeyQ if primary && !shift => return Some(BrowserShortcut::Quit),
         KeyCode::Tab if primary && !shift => return Some(BrowserShortcut::NextTab),
         KeyCode::Tab if primary && shift => return Some(BrowserShortcut::PreviousTab),
@@ -119,6 +126,11 @@ pub fn browser_shortcut(
             return Some(BrowserShortcut::DevToolsInspectToggle);
         }
         KeyCode::KeyD if primary && !shift => return Some(BrowserShortcut::ToggleBookmark),
+        KeyCode::KeyB if primary && alt && !shift => return Some(BrowserShortcut::ShowBookmarks),
+        KeyCode::KeyM if primary && !shift && !alt => return Some(BrowserShortcut::MinimizeWindow),
+        KeyCode::Period if primary && !shift && !alt => {
+            return Some(BrowserShortcut::Stop);
+        }
         KeyCode::F12 if !primary && !alt && !shift => return Some(BrowserShortcut::ToggleDevTools),
         KeyCode::KeyI
             if (modifiers.meta_key() && modifiers.alt_key())
@@ -630,8 +642,144 @@ pub fn nav_from_shortcut(shortcut: BrowserShortcut) -> Option<NavCommand> {
         | BrowserShortcut::DevToolsElementsExpand
         | BrowserShortcut::DevToolsElementsCollapse
         | BrowserShortcut::DevToolsInspectToggle
-        | BrowserShortcut::DevToolsInspectCancel => None,
+        |         BrowserShortcut::DevToolsInspectCancel => None,
         BrowserShortcut::Scroll(_) => None,
+        BrowserShortcut::MinimizeWindow
+        | BrowserShortcut::ShowHelp
+        | BrowserShortcut::ShowBookmarks
+        | BrowserShortcut::CloseWindow
+        | BrowserShortcut::DuplicateTab => None,
+    }
+}
+
+/// Text-editing actions shared by keyboard and native menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditAction {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl EditAction {
+    pub fn from_menu(command: &crate::menu::MenuCommand) -> Option<Self> {
+        match command {
+            crate::menu::MenuCommand::EditUndo => Some(Self::Undo),
+            crate::menu::MenuCommand::EditRedo => Some(Self::Redo),
+            crate::menu::MenuCommand::EditCut => Some(Self::Cut),
+            crate::menu::MenuCommand::EditCopy => Some(Self::Copy),
+            crate::menu::MenuCommand::EditPaste => Some(Self::Paste),
+            crate::menu::MenuCommand::EditSelectAll => Some(Self::SelectAll),
+            _ => None,
+        }
+    }
+}
+
+fn edit_key_code(action: EditAction) -> KeyCode {
+    match action {
+        EditAction::Undo | EditAction::Redo => KeyCode::KeyZ,
+        EditAction::Cut => KeyCode::KeyX,
+        EditAction::Copy => KeyCode::KeyC,
+        EditAction::Paste => KeyCode::KeyV,
+        EditAction::SelectAll => KeyCode::KeyA,
+    }
+}
+
+fn edit_modifiers(action: EditAction) -> ModifiersState {
+    let primary = primary_modifiers();
+    match action {
+        EditAction::Redo => primary | ModifiersState::SHIFT,
+        EditAction::Undo => primary,
+        EditAction::Cut | EditAction::Copy | EditAction::Paste | EditAction::SelectAll => primary,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn primary_modifiers() -> ModifiersState {
+    ModifiersState::META
+}
+
+#[cfg(not(target_os = "macos"))]
+fn primary_modifiers() -> ModifiersState {
+    ModifiersState::CONTROL
+}
+
+/// Run a text-editing command on the focused chrome or page field (same as the key path).
+pub fn apply_edit_action<Rend: WindowRenderer>(
+    view: &mut View<Rend>,
+    action: EditAction,
+) -> bool {
+    let code = edit_key_code(action);
+    let modifiers = edit_modifiers(action);
+    match action {
+        EditAction::Undo | EditAction::Redo => false,
+        EditAction::Cut | EditAction::Copy | EditAction::Paste => {
+            let mut guard = view.doc.inner_mut();
+            let chrome = &mut *guard;
+            if chrome
+                .get_focussed_node_id()
+                .is_some_and(|id| node_is_text_input(chrome, id))
+            {
+                return apply_clipboard_shortcut(chrome, code, modifiers);
+            }
+            if page_iframe_accepts_keys(chrome)
+                && let Some(true) = forward_page_iframe_key(
+                    chrome,
+                    &synthetic_char_key_event(code, action),
+                    modifiers,
+                )
+            {
+                return true;
+            }
+            false
+        }
+        EditAction::SelectAll => {
+            let mut guard = view.doc.inner_mut();
+            let chrome = &mut *guard;
+            #[cfg(target_os = "macos")]
+            {
+                if apply_macos_chrome_keybinding(chrome, code, modifiers) {
+                    return true;
+                }
+                if page_iframe_accepts_keys(chrome) {
+                    let page_id = page_iframe_id(chrome).expect("iframe");
+                    if let Some(sub) = chrome.get_node_mut(page_id).and_then(|n| n.subdoc_mut()) {
+                        sub.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(
+                            "selectAll:",
+                        )));
+                        return true;
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (view, code, modifiers);
+            }
+            false
+        }
+    }
+}
+
+fn synthetic_char_key_event(code: KeyCode, action: EditAction) -> KeyEvent {
+    let ch = match action {
+        EditAction::Copy => 'c',
+        EditAction::Cut => 'x',
+        EditAction::Paste => 'v',
+        _ => 'c',
+    };
+    KeyEvent {
+        location: winit::keyboard::KeyLocation::Standard,
+        logical_key: winit::keyboard::Key::Character(ch.to_string().into()),
+        physical_key: PhysicalKey::Code(code),
+        repeat: false,
+        text: None,
+        state: ElementState::Pressed,
+        key_without_modifiers: winit::keyboard::Key::Unidentified(
+            winit::keyboard::NativeKey::Unidentified,
+        ),
+        text_with_all_modifiers: None,
     }
 }
 
@@ -1055,6 +1203,41 @@ mod tests {
                 prim,
                 Some(BrowserShortcut::ToggleBookmark),
                 Some(BrowserShortcut::ToggleBookmark),
+            ));
+            cases.extend(both(
+                &format!("{tag}+Alt+B show bookmarks"),
+                KeyCode::KeyB,
+                prim | ModifiersState::ALT,
+                Some(BrowserShortcut::ShowBookmarks),
+                Some(BrowserShortcut::ShowBookmarks),
+            ));
+            cases.extend(both(
+                &format!("{tag}+Shift+W close window"),
+                KeyCode::KeyW,
+                prim | ModifiersState::SHIFT,
+                Some(BrowserShortcut::CloseWindow),
+                Some(BrowserShortcut::CloseWindow),
+            ));
+            cases.extend(both(
+                &format!("{tag}+M minimize window"),
+                KeyCode::KeyM,
+                prim,
+                Some(BrowserShortcut::MinimizeWindow),
+                Some(BrowserShortcut::MinimizeWindow),
+            ));
+            cases.extend(both(
+                &format!("{tag}+. stop loading"),
+                KeyCode::Period,
+                prim,
+                Some(BrowserShortcut::Stop),
+                Some(BrowserShortcut::Stop),
+            ));
+            cases.extend(both(
+                &format!("{tag}+Shift+/ keyboard shortcuts help"),
+                KeyCode::Slash,
+                prim | ModifiersState::SHIFT,
+                Some(BrowserShortcut::ShowHelp),
+                Some(BrowserShortcut::ShowHelp),
             ));
             cases.extend(both(
                 "Shift+J not intercepted",
@@ -1728,6 +1911,29 @@ mod tests {
     }
 
     #[test]
+    fn menu_edit_copy_matches_shortcut() {
+        let clip = std::sync::Arc::new(MemoryClipboard::default());
+        let mut doc = chrome_test_document();
+        doc.set_shell_provider(clip.clone());
+        let url_id = doc.get_element_by_id("url").expect("url");
+        doc.with_text_input(url_id, |mut driver| {
+            driver.editor.set_text("selected text");
+            driver.refresh_layout();
+        });
+        focus_address_field(&mut doc);
+        assert_eq!(
+            EditAction::from_menu(&crate::menu::MenuCommand::EditCopy),
+            Some(EditAction::Copy)
+        );
+        clip.set("");
+        assert!(apply_clipboard_shortcut(
+            &mut doc,
+            KeyCode::KeyC,
+            primary_mods()
+        ));
+        assert_eq!(clip.text(), "selected text");
+    }
+
     fn headless_address_bar_copy_and_paste() {
         let clip = std::sync::Arc::new(MemoryClipboard::default());
         let mut doc = chrome_test_document();

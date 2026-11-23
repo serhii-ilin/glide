@@ -79,6 +79,10 @@ cookie_store = { version = "0.22.1", default-features = false, features = [
 # F-058: registrable-domain checks for Set-Cookie Domain= (via cookie_store's public_suffix feature).
 publicsuffix = "2.3"
 
+# F-049: native macOS menu bar (NSApp main menu via muda).
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21.2", default-features = false }
+
 [dev-dependencies]
 # Constructs Blitz pointer events in wheel/hover tests (same crate blitz-traits uses).
 atomic_refcell = "0.1.14"

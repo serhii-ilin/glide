@@ -1767,3 +1767,16 @@ fn url_search_params_iterates_and_mutates() {
     let result = super::harness::run_inline_page(html, Duration::from_millis(60));
     assert_eq!(result.final_text, "a=1,b=two|a:1,b:two|2|false|b,c");
 }
+
+#[test]
+fn document_cookie_get_set_visible_to_scripts() {
+    use std::sync::Arc;
+    crate::cookies::CookieJar::replace_global(Arc::new(crate::cookies::CookieJar::empty()));
+    let html = r#"<!DOCTYPE html><html><body><p id="t">pending</p>
+      <script>
+        document.cookie = 'a=1; path=/';
+        document.getElementById('t').textContent = document.cookie;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(80));
+    assert_eq!(result.final_text, "a=1");
+}

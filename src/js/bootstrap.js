@@ -968,7 +968,7 @@
     };
   }
 
-  function toRpcOptions(method, headers, body) {
+  function toRpcOptions(method, headers, body, credentials) {
     const headerObj = {};
     if (headers) {
       headers.forEach((v, k) => {
@@ -977,6 +977,7 @@
     }
     const opt = { method: method || 'GET', headers: headerObj };
     if (body != null && body !== '') opt.body = String(body);
+    if (credentials) opt.credentials = String(credentials);
     return JSON.stringify(opt);
   }
 
@@ -1002,6 +1003,8 @@
       if (init.body !== undefined) this._body = init.body == null ? null : String(init.body);
       else if (req) this._body = req._body;
       else this._body = null;
+      const cred = init.credentials != null ? init.credentials : (req && req.credentials) || 'same-origin';
+      this.credentials = String(cred);
       this._signal = init.signal !== undefined ? init.signal : (req && req._signal) || null;
     }
     get body() { return this._body; }
@@ -1011,6 +1014,7 @@
         method: this.method,
         headers: cloneHeaders(this.headers),
         body: this._body,
+        credentials: this.credentials,
         signal: this._signal,
       });
     }
@@ -1105,7 +1109,7 @@
             reject(err);
             return;
           }
-          const raw = hostFetch('fetch', req.url, toRpcOptions(req.method, req.headers, req._body));
+          const raw = hostFetch('fetch', req.url, toRpcOptions(req.method, req.headers, req._body, req.credentials));
           const payload = normalizeHostPayload(raw, req.url);
           resolve(new Response(payload.body, payload));
         } catch (e) {
@@ -1151,6 +1155,7 @@
       this.responseType = '';
       this.responseURL = '';
       this.timeout = 0;
+      this.withCredentials = false;
       this._method = '';
       this._url = '';
       this._async = true;
@@ -1295,7 +1300,8 @@
       dispatchXhrEvent(this, 'loadstart');
       const started = performance.now();
       try {
-        const raw = hostFetch('xhr', this._url, toRpcOptions(this._method, this._headers, body));
+        const creds = this.withCredentials ? 'include' : 'same-origin';
+        const raw = hostFetch('xhr', this._url, toRpcOptions(this._method, this._headers, body, creds));
         if (this._aborted) return;
         if (this.timeout > 0 && (performance.now() - started) > this.timeout) {
           this._onTimeout();

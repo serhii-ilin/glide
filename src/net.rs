@@ -20,6 +20,7 @@ use crate::network_feed::{self, NetworkCompleted, NetworkRoute, NetworkStamp};
 #[derive(Default)]
 pub struct LoadState {
     chrome_doc_id: AtomicUsize,
+    document_url: std::sync::Mutex<Option<url::Url>>,
     page_in_flight: AtomicU32,
     subresource_in_flight: AtomicU32,
     load_generation: AtomicU64,
@@ -310,6 +311,7 @@ impl GlideNet {
             return;
         }
 
+        *self.state.document_url.lock().unwrap() = Some(request.url.clone());
         let original_url = request.url.to_string();
         let blitz_abort = request.signal.clone();
         let token = self.state.begin_page_load();
@@ -415,8 +417,16 @@ impl GlideNet {
             started,
             initiator: NetworkInitiator::Subresource,
         });
+        let document_url = self.state.document_url.lock().ok().and_then(|g| g.clone());
         tokio::spawn(async move {
-            match crate::http::fetch_followed(request).await {
+            match crate::http::fetch_followed_with_cookie_context(
+                request,
+                document_url,
+                crate::cookies::CookieRequestKind::Subresource,
+                crate::cookies::FetchCredentials::Include,
+            )
+            .await
+            {
                 Ok(resp) if (200..300).contains(&resp.status) => {
                     wrapped.deliver_http_success(resp);
                 }
@@ -638,20 +648,33 @@ async fn page_fetch(
     if test_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(test_delay_ms as u64)).await;
     }
-    if crate::http::is_navigable_http(&request) {
-        return match crate::http::fetch_document(request, scripting_enabled).await {
-            crate::http::DocumentFetch::Page {
-                url,
-                body,
-                status,
-                headers,
-            } => Ok(PageLoadSuccess {
-                url,
-                bytes: body,
-                status,
-                headers,
+    if matches!(request.url.scheme(), "http" | "https")
+        && !matches!(request.body, blitz_traits::net::Body::Form(_))
+    {
+        if crate::http::is_navigable_http(&request) {
+            return match crate::http::fetch_document(request, scripting_enabled).await {
+                crate::http::DocumentFetch::Page {
+                    url,
+                    body,
+                    status,
+                    headers,
+                } => Ok(PageLoadSuccess {
+                    url,
+                    bytes: body,
+                    status,
+                    headers,
+                }),
+                crate::http::DocumentFetch::Failed { reason, .. } => Err(LoadFail::Failed(reason)),
+            };
+        }
+        return match crate::http::fetch_followed(request).await {
+            Ok(resp) => Ok(PageLoadSuccess {
+                url: resp.url,
+                bytes: resp.body,
+                status: resp.status,
+                headers: resp.headers,
             }),
-            crate::http::DocumentFetch::Failed { reason, .. } => Err(LoadFail::Failed(reason)),
+            Err(reason) => Err(LoadFail::Failed(reason)),
         };
     }
     match provider.fetch_async(request).await {

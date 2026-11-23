@@ -48,6 +48,9 @@ struct Hop {
     method: Method,
     headers: HeaderMap,
     body: Body,
+    cookie_document: Option<Url>,
+    cookie_kind: crate::cookies::CookieRequestKind,
+    cookie_credentials: crate::cookies::FetchCredentials,
 }
 
 /// `http` and `https` requests this module can send. Form bodies stay on blitz-net.
@@ -139,7 +142,6 @@ fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
-            .cookie_store(true)
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client builds with the process TLS backend")
@@ -148,11 +150,31 @@ fn client() -> &'static reqwest::Client {
 
 /// Follow redirects, then return the last status and body.
 pub async fn fetch_followed(request: Request) -> Result<Followed, String> {
+    let document = request.url.clone();
+    fetch_followed_with_cookie_context(
+        request,
+        Some(document),
+        crate::cookies::CookieRequestKind::Navigation,
+        crate::cookies::FetchCredentials::Include,
+    )
+    .await
+}
+
+/// Same as [`fetch_followed`] with an explicit document URL and credentials mode.
+pub async fn fetch_followed_with_cookie_context(
+    request: Request,
+    cookie_document: Option<Url>,
+    cookie_kind: crate::cookies::CookieRequestKind,
+    cookie_credentials: crate::cookies::FetchCredentials,
+) -> Result<Followed, String> {
     let mut hop = Hop {
         url: request.url,
         method: request.method,
         headers: request.headers,
         body: request.body,
+        cookie_document,
+        cookie_kind,
+        cookie_credentials,
     };
     hop.url.set_fragment(None);
     let mut redirected = false;
@@ -168,6 +190,7 @@ pub async fn fetch_followed(request: Request) -> Result<Followed, String> {
         let status = response.status().as_u16();
         let headers = response.headers().clone();
         let final_url = response.url().clone();
+        crate::cookies::CookieJar::global().store_response_header_map(&final_url, &headers);
         if let Some(next) = next_hop(status, &headers, &hop) {
             redirects += 1;
             if redirects > MAX_REDIRECTS as u16 {
@@ -646,6 +669,9 @@ fn next_hop(status: u16, headers: &HeaderMap, hop: &Hop) -> Option<Hop> {
         method,
         headers,
         body,
+        cookie_document: hop.cookie_document.clone(),
+        cookie_kind: hop.cookie_kind,
+        cookie_credentials: hop.cookie_credentials,
     })
 }
 
@@ -656,8 +682,16 @@ fn same_origin(a: &Url, b: &Url) -> bool {
 }
 
 async fn send(hop: &Hop) -> Result<reqwest::Response, String> {
+    let mut headers = hop.headers.clone();
+    crate::cookies::CookieJar::global().append_request_cookies(
+        &hop.url,
+        hop.cookie_document.as_ref(),
+        hop.cookie_kind,
+        hop.cookie_credentials,
+        &mut headers,
+    );
     let mut builder = client().request(hop.method.clone(), hop.url.clone());
-    builder = builder.headers(hop.headers.clone());
+    builder = builder.headers(headers);
     if !hop.headers.contains_key(http::header::USER_AGENT) {
         builder = builder.header(http::header::USER_AGENT, USER_AGENT);
     }
@@ -919,5 +953,66 @@ mod tests {
             }
             DocumentFetch::Page { .. } => panic!("empty 503 should be an error page"),
         }
+    }
+
+    #[test]
+    fn set_cookie_echoes_on_follow_up_request() {
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+
+        crate::cookies::CookieJar::reset_global();
+        crate::cookies::CookieJar::ensure_process_global(None);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let seen_cookie: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let seen2 = seen_cookie.clone();
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).expect("read");
+                let req = String::from_utf8_lossy(&buf[..n]);
+                ready_tx.send(()).expect("ready");
+                if req.contains("/set") {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: sid=alpha; Path=/\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                    )
+                    .expect("write");
+                } else {
+                    let cookie = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("cookie:"))
+                        .and_then(|l| l.split_once(':').map(|(_, v)| v.trim().to_string()));
+                    *seen2.lock().expect("lock") = cookie;
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                    )
+                    .expect("write");
+                }
+            }
+        });
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let set = Url::parse(&format!("http://127.0.0.1:{port}/set")).unwrap();
+        rt.block_on(fetch_followed(Request::get(set))).expect("set");
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first");
+        let next = Url::parse(&format!("http://127.0.0.1:{port}/next")).unwrap();
+        rt.block_on(fetch_followed(Request::get(next)))
+            .expect("next");
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second");
+        server.join().expect("join");
+        assert_eq!(
+            seen_cookie.lock().expect("lock").as_deref(),
+            Some("sid=alpha")
+        );
     }
 }

@@ -50,9 +50,11 @@ const KNOWN_HOST_APIS: &[&str] = &[
     "EventSource",
     "Blob",
     "crypto",
+    "crypto.subtle",
     "CSS",
     "history",
     "performance",
+    "performance.now",
     "navigator",
     "queueMicrotask",
     "requestIdleCallback",
@@ -63,7 +65,6 @@ const KNOWN_HOST_APIS: &[&str] = &[
     "structuredClone",
     "indexedDB",
     "FormData",
-    "Notification",
 ];
 
 fn missing_api_identifier(message: &str) -> Option<String> {
@@ -78,6 +79,10 @@ fn missing_api_identifier(message: &str) -> Option<String> {
     }
     if let Some(idx) = lower.find(" is not a function") {
         let head = &message[..idx];
+        let token = head.split_whitespace().last().unwrap_or(head).trim();
+        if is_known_host_api(token) {
+            return Some(token.to_string());
+        }
         let tail = head.rsplit(['.', ' ']).next().unwrap_or(head).trim();
         if !tail.is_empty() {
             return Some(tail.to_string());
@@ -85,6 +90,10 @@ fn missing_api_identifier(message: &str) -> Option<String> {
     }
     if let Some(idx) = lower.find(" is not a constructor") {
         let head = &message[..idx];
+        let token = head.split_whitespace().last().unwrap_or(head).trim();
+        if is_known_host_api(token) {
+            return Some(token.to_string());
+        }
         let tail = head.rsplit(['.', ' ']).next().unwrap_or(head).trim();
         if !tail.is_empty() {
             return Some(tail.to_string());
@@ -110,9 +119,10 @@ fn missing_api_identifier(message: &str) -> Option<String> {
 
 fn is_known_host_api(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    KNOWN_HOST_APIS
-        .iter()
-        .any(|api| lower == api.to_ascii_lowercase() || lower.starts_with(&format!("{api}.")))
+    KNOWN_HOST_APIS.iter().any(|api| {
+        let api = api.to_ascii_lowercase();
+        lower == api || lower.starts_with(&format!("{api}."))
+    })
 }
 
 /// Best-effort root-cause classification for a V8 or console error message.
@@ -527,6 +537,22 @@ mod tests {
     fn classify_known_fetch_missing_is_missing_api() {
         assert_eq!(
             classify("ReferenceError: fetch is not defined"),
+            ErrorKind::MissingApi
+        );
+    }
+
+    #[test]
+    fn classify_crypto_subtle_missing_is_missing_api() {
+        assert_eq!(
+            classify("TypeError: Cannot read properties of undefined (reading 'digest')"),
+            ErrorKind::Other
+        );
+        assert_eq!(
+            classify("ReferenceError: crypto is not defined"),
+            ErrorKind::MissingApi
+        );
+        assert_eq!(
+            classify("TypeError: crypto.subtle is not a function"),
             ErrorKind::MissingApi
         );
     }

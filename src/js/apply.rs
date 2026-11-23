@@ -333,8 +333,10 @@ pub fn start_fetch(
     );
     let method_for_log = method.clone();
     let url_for_log = url.clone();
+    let fetch_mode = crate::http::fetch_api_sec_mode(&request.url, page_url.as_ref(), creds);
+    let fetch_metadata = crate::http::FetchMetadata::fetch_api(page_url.clone(), fetch_mode);
     handle.spawn(async move {
-        let response = fetch_response(net, request, reply).await;
+        let response = fetch_response(net, request, reply, page_url, creds, fetch_metadata).await;
         record_js_network(
             stamp,
             &method_for_log,
@@ -403,7 +405,14 @@ fn record_js_network(
     );
 }
 
-async fn fetch_response(net: Option<Arc<Provider>>, request: Request, reply: u64) -> DomResponse {
+async fn fetch_response(
+    net: Option<Arc<Provider>>,
+    request: Request,
+    reply: u64,
+    page_url: Option<Url>,
+    creds: crate::cookies::FetchCredentials,
+    fetch_metadata: crate::http::FetchMetadata,
+) -> DomResponse {
     if request.url.scheme() == "about" {
         if let Some(html) = crate::about::about_document(&request.url) {
             return DomResponse::ok(
@@ -421,8 +430,14 @@ async fn fetch_response(net: Option<Arc<Provider>>, request: Request, reply: u64
         return DomResponse::err(reply, "fetch failed: A local network error occurred");
     }
     if request.url.scheme() == "http" || request.url.scheme() == "https" {
-        return match tokio::time::timeout(FETCH_TIMEOUT, crate::http::fetch_followed(request)).await
-        {
+        let fetch = crate::http::fetch_followed_with_cookie_context(
+            request,
+            page_url,
+            crate::cookies::CookieRequestKind::Fetch,
+            creds,
+            fetch_metadata,
+        );
+        return match tokio::time::timeout(FETCH_TIMEOUT, fetch).await {
             Ok(Ok(resp)) => DomResponse::ok(reply, fetch_json(&resp)),
             Ok(Err(err)) => DomResponse::err(reply, format!("fetch failed: {err}")),
             Err(_) => DomResponse::err(reply, "fetch timed out"),
@@ -1132,7 +1147,16 @@ mod tests {
     #[tokio::test]
     async fn fetch_about_blank_returns_local_html_without_provider() {
         let request = Request::get(url::Url::parse("about:blank").expect("url"));
-        let response = fetch_response(None, request, 1).await;
+        let meta = crate::http::FetchMetadata::fetch_api(None, crate::http::SecFetchMode::Cors);
+        let response = fetch_response(
+            None,
+            request,
+            1,
+            None,
+            crate::cookies::FetchCredentials::Include,
+            meta,
+        )
+        .await;
         match response.value {
             DomValue::Json(value) => {
                 assert_eq!(value["status"], 200);

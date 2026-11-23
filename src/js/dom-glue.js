@@ -1522,9 +1522,7 @@
     if (ranScripts.has(scriptEl)) return;
     ranScripts.add(scriptEl);
     if (scriptEl.getAttribute && scriptEl.getAttribute('src')) {
-      if (!documentLoaded) {
-        runDynamicScript(scriptEl);
-      }
+      runDynamicScript(scriptEl);
       return;
     }
     const code = scriptEl.textContent || '';
@@ -2012,7 +2010,7 @@
       configurable: true,
       writable: true,
       value: function submit() {
-        submitFormElement(this, null);
+        submitFormElement(this, null, true);
       },
     });
 

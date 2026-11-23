@@ -18,7 +18,8 @@ use http_cache_reqwest::{
     CACacheManager, Cache, CacheMode, CacheOptions, HttpCache, HttpCacheOptions,
 };
 
-fn user_agent() -> &'static str {
+/// Glide user agent string shared with `src/http.rs` navigations.
+pub fn user_agent() -> &'static str {
     #[cfg(target_os = "macos")]
     {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Glide/0.1 Safari/537.36"

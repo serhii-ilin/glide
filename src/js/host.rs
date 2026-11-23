@@ -1,7 +1,7 @@
 //! JS host on the UI thread: DOM RPC drain, script scheduling, frame pump.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use blitz_dom::BaseDocument;
@@ -12,6 +12,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounde
 use super::apply::apply_request;
 use super::bridge::{DomRequest, DomResponse, bubble_handles};
 use super::console_feed::{self, ConsoleWireEvent};
+use super::history_rpc;
 use super::paint_prune::prune_stale_paint_children;
 use super::scripts::{
     ScriptSource, ScriptSpec, collect_scripts_for_page, execution_plan, source_body,
@@ -20,6 +21,7 @@ use super::scripts::{
 use super::snapshot;
 use super::tap::JsTap;
 use super::worker::{EvalReply, JsWorker, WAKE_NONE};
+use crate::history::{History, HistoryRpcSnapshot};
 use crate::logging;
 use crate::tabs::TabId;
 use url::Url;
@@ -91,6 +93,7 @@ pub struct JsHost {
     console_tab_id: TabId,
     console_page_epoch: u64,
     host_wake: Arc<HostWake>,
+    session_history: Arc<Mutex<History>>,
 }
 
 impl JsHost {
@@ -114,7 +117,16 @@ impl JsHost {
             console_tab_id: 1,
             console_page_epoch: 1,
             host_wake: Arc::new(HostWake::new()),
+            session_history: Arc::new(Mutex::new(History::new(String::new()))),
         }
+    }
+
+    pub fn bind_session_history(&mut self, history: Arc<Mutex<History>>) {
+        self.session_history = history;
+    }
+
+    pub fn session_history(&self) -> Arc<Mutex<History>> {
+        Arc::clone(&self.session_history)
     }
 
     pub fn set_waker(&self, waker: JsWaker) {
@@ -607,6 +619,33 @@ impl JsHost {
                 let _ = rpc.reply.send(response);
                 false
             }
+            DomRequest::HistorySnapshot { reply } => {
+                let response = history_rpc::apply_history_snapshot(&self.session_history, reply);
+                let _ = rpc.reply.send(response);
+                false
+            }
+            DomRequest::HistoryPush { json, reply } => {
+                let response = history_rpc::apply_history_push(&self.session_history, &json, reply);
+                let _ = rpc.reply.send(response);
+                false
+            }
+            DomRequest::HistoryReplace { json, reply } => {
+                let response =
+                    history_rpc::apply_history_replace(&self.session_history, &json, reply);
+                let _ = rpc.reply.send(response);
+                false
+            }
+            DomRequest::HistoryGo { delta, reply } => {
+                let response = history_rpc::apply_history_go(&self.session_history, delta, reply);
+                let _ = rpc.reply.send(response);
+                false
+            }
+            DomRequest::HistoryGoTo { target, reply } => {
+                let response =
+                    history_rpc::apply_history_go_to_index(&self.session_history, target, reply);
+                let _ = rpc.reply.send(response);
+                false
+            }
             request => {
                 let response = self.apply_dom_rpc(chrome, request);
                 let _ = rpc.reply.send(response);
@@ -618,6 +657,16 @@ impl JsHost {
     pub fn on_navigation(&mut self, chrome: &BaseDocument, _url: &str) {
         self.mark_stale_page(chrome);
         self.reset_page_js_state();
+    }
+
+    pub fn apply_history_step(&mut self, chrome: &mut BaseDocument, snap: &HistoryRpcSnapshot) {
+        let Some(worker) = &self.worker else {
+            return;
+        };
+        let json = serde_json::to_string(snap).unwrap_or_else(|_| "{}".into());
+        worker.apply_history_step(json);
+        self.pump(chrome, Instant::now());
+        let _ = self.flush_dom_rpc(chrome, Duration::from_millis(100));
     }
 
     #[cfg(test)]

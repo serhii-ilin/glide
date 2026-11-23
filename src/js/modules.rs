@@ -1,4 +1,4 @@
-//! ES module specifier resolution helpers (F-074, F-080 import maps).
+//! ES module specifier resolution helpers (F-074, F-084 import maps).
 
 use super::import_map::ImportMapRegistry;
 use url::Url;

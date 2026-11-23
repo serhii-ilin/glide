@@ -732,8 +732,16 @@ mod tests {
         let mut tabs = TabManager::new();
         tabs.add("https://a/");
         let tab = tabs.active_mut().expect("active tab");
-        tab.nav.history_mut().push("glide://bookmarks".into());
-        tab.nav.history_mut().push("https://b/".into());
+        tab.nav
+            .history_arc()
+            .lock()
+            .expect("history lock")
+            .push_document("glide://bookmarks".into());
+        tab.nav
+            .history_arc()
+            .lock()
+            .expect("history lock")
+            .push_document("https://b/".into());
         let mut failed = HashSet::new();
         failed.insert("https://b/".into());
         let session = Session::from_tabs(&tabs, &failed);

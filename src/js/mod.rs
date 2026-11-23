@@ -8,6 +8,7 @@ pub mod diagnostics;
 mod fetch_body;
 mod form_controls;
 mod form_data;
+mod history_rpc;
 mod host;
 pub mod import_map;
 mod modules;

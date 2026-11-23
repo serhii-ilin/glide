@@ -60,6 +60,11 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::WebSocketSend { reply, .. }
         | DomRequest::WebSocketClose { reply, .. }
         | DomRequest::WebSocketBuffered { reply, .. }
+        | DomRequest::HistorySnapshot { reply }
+        | DomRequest::HistoryPush { reply, .. }
+        | DomRequest::HistoryReplace { reply, .. }
+        | DomRequest::HistoryGo { reply, .. }
+        | DomRequest::HistoryGoTo { reply, .. }
         | DomRequest::NodeCount { reply }
         | DomRequest::LoadImage { reply, .. }
         | DomRequest::ScrollViewport { reply, .. } => *reply,
@@ -86,6 +91,13 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
         }
         DomRequest::PageUrl { reply } => {
             DomResponse::ok(reply, DomValue::String(base_url.to_string()))
+        }
+        DomRequest::HistorySnapshot { reply }
+        | DomRequest::HistoryPush { reply, .. }
+        | DomRequest::HistoryReplace { reply, .. }
+        | DomRequest::HistoryGo { reply, .. }
+        | DomRequest::HistoryGoTo { reply, .. } => {
+            DomResponse::err(reply, "history handled on host")
         }
         DomRequest::Navigate { url, reply } => {
             navigate(doc, base_url, &url);

@@ -1,4 +1,4 @@
-Feature: F-080 Reddit compatibility
+Feature: F-085 Reddit compatibility
   Reddit's bundle expects DOM tree APIs and polyfill loaders that behave like a browser.
 
   Background:

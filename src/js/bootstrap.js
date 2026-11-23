@@ -1598,21 +1598,33 @@
     return resolvePageUrl(url);
   }
 
-  const HISTORY_ENTRY_MAX = 100;
-  const historyEntries = [];
-  let historyIndex = 0;
+  let historyCache = {
+    index: 0,
+    length: 1,
+    state: null,
+    url: pageHref(),
+  };
 
-  function activeHistoryUrl() {
-    const entry = historyEntries[historyIndex];
-    return (entry && entry.url) || pageHref();
+  function historySync(op, ...args) {
+    const raw = typeof global.__glide_dom_sync === 'function'
+      ? global.__glide_dom_sync(op, 0, ...args)
+      : null;
+    if (raw && raw.__error) {
+      const err = new Error(String(raw.__error));
+      if (String(raw.__error).includes('insecure')) err.name = 'SecurityError';
+      if (String(raw.__error).includes('pattern')) err.name = 'SyntaxError';
+      if (String(raw.__error).includes('cloned')) err.name = 'DataCloneError';
+      throw err;
+    }
+    return raw || null;
   }
 
-  function trimHistoryEntries() {
-    while (historyEntries.length > HISTORY_ENTRY_MAX) {
-      historyEntries.shift();
-      historyIndex -= 1;
-    }
-    if (historyIndex < 0) historyIndex = 0;
+  function applyHistorySnapshot(snap) {
+    if (!snap || typeof snap !== 'object') return;
+    historyCache.index = Number(snap.index) || 0;
+    historyCache.length = Math.max(1, Number(snap.length) || 1);
+    historyCache.state = cloneHistoryState(snap.state == null ? null : snap.state);
+    if (snap.url) historyCache.url = String(snap.url);
   }
 
   function applyHistoryUrl(href) {
@@ -1624,7 +1636,7 @@
   function firePopState(state) {
     const EventCtor = global.Event || function () {};
     const ev = new EventCtor('popstate');
-    ev.state = state;
+    ev.state = cloneHistoryState(state);
     global.dispatchEvent(ev);
     if (typeof global.onpopstate === 'function') {
       try {
@@ -1635,56 +1647,106 @@
     }
   }
 
-  function historyGo(target) {
-    if (!Number.isInteger(target) || target < 0 || target >= historyEntries.length) return;
-    historyIndex = target;
-    const entry = historyEntries[historyIndex];
-    applyHistoryUrl(entry.url);
-    firePopState(cloneHistoryState(entry.state));
+  function fireHashChange() {
+    const EventCtor = global.Event || function () {};
+    global.dispatchEvent(new EventCtor('hashchange'));
+  }
+
+  function finishHistoryStep(snap, previousUrl) {
+    applyHistorySnapshot(snap);
+    const nextUrl = snap && snap.url ? String(snap.url) : historyCache.url;
+    const prev = previousUrl || pageHref();
+    if (snap && snap.navigate) {
+      if (typeof rpc === 'function') {
+        rpc('navigate', String(snap.navigate));
+      }
+      return;
+    }
+    applyHistoryUrl(nextUrl);
+    firePopState(historyCache.state);
+    if (snap && snap.hash_changed) {
+      fireHashChange();
+    } else if (prev.split('#')[0] === nextUrl.split('#')[0]
+      && (prev.split('#')[1] || '') !== (nextUrl.split('#')[1] || '')) {
+      fireHashChange();
+    }
+  }
+
+  function historyGoToIndex(target) {
+    if (!Number.isInteger(target) || target < 0) return;
+    const prev = pageHref();
+    const snap = historySync('historyGoTo', String(target));
+    if (!snap) return;
+    finishHistoryStep(snap, prev);
   }
 
   global.__glide_reset_page_history = function () {
-    historyEntries.length = 0;
-    historyEntries.push({ url: pageHref(), state: null });
-    historyIndex = 0;
+    historyCache = {
+      index: 0,
+      length: 1,
+      state: null,
+      url: pageHref(),
+    };
+  };
+
+  global.__glide_apply_history_step = function (payloadJson) {
+    try {
+      const snap = JSON.parse(payloadJson);
+      finishHistoryStep(snap, pageHref());
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   global.history = {
     get state() {
-      const entry = historyEntries[historyIndex];
-      return cloneHistoryState(entry ? entry.state : null);
+      return cloneHistoryState(historyCache.state);
     },
     get length() {
-      return Math.max(1, historyEntries.length);
+      return historyCache.length;
     },
     scrollRestoration: 'auto',
     pushState(state, _unused, url) {
-      const resolved = coerceHistoryUrl(url);
-      const clone = cloneHistoryState(state);
-      historyEntries.length = historyIndex + 1;
-      const href = resolved || activeHistoryUrl();
-      historyEntries.push({ url: href, state: clone });
-      historyIndex = historyEntries.length - 1;
-      trimHistoryEntries();
-      if (resolved) applyHistoryUrl(href);
+      if (url != null && url !== '' && !String(pageHref()).startsWith('file:')) {
+        coerceHistoryUrl(url);
+      }
+      const body = JSON.stringify({
+        base_url: pageHref(),
+        state: cloneHistoryState(state),
+        url: url == null ? '' : String(url),
+      });
+      const snap = historySync('historyPush', body);
+      const prev = pageHref();
+      if (snap) {
+        applyHistorySnapshot(snap);
+        applyHistoryUrl(snap.url || prev);
+      }
     },
     replaceState(state, _unused, url) {
-      const resolved = coerceHistoryUrl(url);
-      const clone = cloneHistoryState(state);
-      const entry = historyEntries[historyIndex];
-      if (resolved) {
-        entry.url = resolved;
-        applyHistoryUrl(resolved);
+      if (url != null && url !== '' && !String(pageHref()).startsWith('file:')) {
+        coerceHistoryUrl(url);
       }
-      entry.state = clone;
+      const body = JSON.stringify({
+        base_url: pageHref(),
+        state: cloneHistoryState(state),
+        url: url == null ? null : String(url),
+      });
+      const snap = historySync('historyReplace', body);
+      const prev = pageHref();
+      if (snap) {
+        applyHistorySnapshot(snap);
+        if (snap.url && snap.url !== prev) applyHistoryUrl(snap.url);
+      }
     },
-    back() { historyGo(historyIndex - 1); },
-    forward() { historyGo(historyIndex + 1); },
+    back() { historyGoToIndex(historyCache.index - 1); },
+    forward() { historyGoToIndex(historyCache.index + 1); },
     go(delta) {
       const n = Number(delta);
       const step = Number.isFinite(n) ? Math.trunc(n) : 0;
       if (step === 0) return;
-      historyGo(historyIndex + step);
+      const prev = pageHref();
+      const snap = historySync('historyGo', String(step));
+      if (snap) finishHistoryStep(snap, prev);
     },
   };
 

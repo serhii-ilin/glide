@@ -1,4 +1,4 @@
-//! Parse, merge, and resolve HTML `<script type="importmap">` JSON (F-080).
+//! Parse, merge, and resolve HTML `<script type="importmap">` JSON (F-084).
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -273,7 +273,7 @@ fn log_integrity_ignored(specifier: &str, integrity: String) {
             ("detail", format!("integrity={integrity}")),
             (
                 "hint",
-                "Subresource integrity on import maps is not enforced (F-080).".into(),
+                "Subresource integrity on import maps is not enforced (F-084).".into(),
             ),
         ],
     );

@@ -123,6 +123,30 @@ pub enum DomRequest {
         socket_id: u64,
         reply: u64,
     },
+    /// Current session history snapshot (`history.state`, `history.length`).
+    HistorySnapshot {
+        reply: u64,
+    },
+    /// `history.pushState` on the rust-owned stack (F-086).
+    HistoryPush {
+        json: String,
+        reply: u64,
+    },
+    /// `history.replaceState` on the rust-owned stack (F-086).
+    HistoryReplace {
+        json: String,
+        reply: u64,
+    },
+    /// `history.go(delta)` on the rust-owned stack (F-086).
+    HistoryGo {
+        delta: i32,
+        reply: u64,
+    },
+    /// `history.go(n)` by absolute index (F-086).
+    HistoryGoTo {
+        target: usize,
+        reply: u64,
+    },
     /// Test hook: number of live Blitz nodes. Dispatched only from debug builds.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     NodeCount {

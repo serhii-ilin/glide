@@ -255,6 +255,14 @@ fn network_apis_work() {
 }
 
 #[test]
+fn unified_history_fixture_works() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("unified-history.html"), true).expect("load");
+    assert!(text.contains("UNIFIED-OK"), "{text}");
+}
+
+#[test]
 fn timing_history_crypto_work() {
     let rt = tokio_runtime();
     let _guard = rt.enter();

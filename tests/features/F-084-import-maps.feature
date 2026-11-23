@@ -1,11 +1,11 @@
 # Source / basis: HTML Living Standard (import maps, module script resolution); ECMA-262 (modules)
-# Registry: docs/features.md -> F-080
+# Registry: docs/features.md -> F-084
 # Tests: js::import_map::tests::*, js::scripts::tests::collects_import_map_scripts_in_document_order,
 #        headless_js::import_map_*, diagnostics::invalid_import_map_logs_loader_error,
 #        diagnostics::unmapped_bare_specifier_with_import_map_logs_hint
 # MCP: n/a (engine behavior; observable through glide_eval and glide_snapshot_text)
 
-Feature: F-080 Import maps
+Feature: F-084 Import maps
   As a page author using ES modules
   I want import maps to remap bare specifiers
   So that bundled apps can load without bare-import failures

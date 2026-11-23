@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Unified history</title></head>
+<body>
+<p id="t">UNIFIED-FAIL</p>
+<script>
+  var base = location.href.split('#')[0];
+  history.pushState({ route: 'b' }, '', base + '#b');
+  history.back();
+  var ok = history.state === null && history.length === 2;
+  document.getElementById('t').textContent = ok ? 'UNIFIED-OK' : 'UNIFIED-FAIL';
+</script>
+</body>
+</html>

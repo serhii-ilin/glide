@@ -925,6 +925,19 @@ fn map_dom_op(
             node: arg_handle(scope, args, 2)?,
             reply,
         },
+        "loadImage" => DomRequest::LoadImage {
+            node: arg_handle(scope, args, 2)?,
+            reply,
+        },
+        "scrollViewport" => {
+            let x = arg_string(scope, args, 2)?
+                .parse::<f64>()
+                .map_err(|_| "scrollViewport x must be a number".to_string())?;
+            let y = arg_string(scope, args, 3)?
+                .parse::<f64>()
+                .map_err(|_| "scrollViewport y must be a number".to_string())?;
+            DomRequest::ScrollViewport { x, y, reply }
+        }
         "computedStyle" => DomRequest::ComputedStyle {
             node: arg_handle(scope, args, 2)?,
             prop: arg_string(scope, args, 3)?,

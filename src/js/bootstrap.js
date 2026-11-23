@@ -458,68 +458,224 @@
   const ioObservers = new Set();
   let ioCheckScheduled = false;
   let ioResizeHooked = false;
+  let ioScrollHooked = false;
+  let ioDeliveryScheduled = false;
+  const ioPendingDelivery = new Set();
+  const ioScrollRootListeners = new WeakMap();
+
+  function parseRootMarginSide(side, refSize) {
+    const raw = String(side || '0px').trim();
+    const m = raw.match(/^(-?\d+(?:\.\d+)?)(px|%)$/);
+    if (!m) return 0;
+    const n = Number(m[1]);
+    if (!Number.isFinite(n)) return 0;
+    if (m[2] === '%') return n * refSize / 100;
+    return n;
+  }
+
+  function parseRootMargin(marginStr) {
+    const parts = String(marginStr == null ? '0px' : marginStr).trim().split(/\s+/).filter(Boolean);
+  let top;
+  let right;
+  let bottom;
+  let left;
+    if (!parts.length) {
+      top = right = bottom = left = '0px';
+    } else if (parts.length === 1) {
+      top = right = bottom = left = parts[0];
+    } else if (parts.length === 2) {
+      top = bottom = parts[0];
+      right = left = parts[1];
+    } else if (parts.length === 3) {
+      top = parts[0];
+      right = left = parts[1];
+      bottom = parts[2];
+    } else {
+      top = parts[0];
+      right = parts[1];
+      bottom = parts[2];
+      left = parts[3];
+    }
+    return { top, right, bottom, left };
+  }
+
+  function applyRootMargin(bounds, marginStr) {
+    const sides = parseRootMargin(marginStr);
+    const top = parseRootMarginSide(sides.top, bounds.height);
+    const right = parseRootMarginSide(sides.right, bounds.width);
+    const bottom = parseRootMarginSide(sides.bottom, bounds.height);
+    const left = parseRootMarginSide(sides.left, bounds.width);
+    const w = bounds.width + left + right;
+    const h = bounds.height + top + bottom;
+    const x = bounds.left - left;
+    const y = bounds.top - top;
+    return {
+      x, y, top: y, left: x, width: w, height: h, right: x + w, bottom: y + h,
+    };
+  }
+
+  function rootBoundsForObserver(obs) {
+    const root = obs.root;
+    if (root && root.nodeType === 1) {
+      const rect = root.getBoundingClientRect();
+      return applyRootMargin({
+        x: rect.x, y: rect.y, top: rect.top, left: rect.left,
+        width: rect.width, height: rect.height, right: rect.right, bottom: rect.bottom,
+      }, obs.rootMargin);
+    }
+    const viewport = viewportRootBounds();
+    return applyRootMargin(viewport, obs.rootMargin);
+  }
+
+  function elementIsHidden(el) {
+    if (!el || el.nodeType !== 1) return true;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      let inline = String((el.getAttribute && el.getAttribute('style')) || '');
+      if (!inline && el.attributes) {
+        for (let ai = 0; ai < el.attributes.length; ai += 1) {
+          const a = el.attributes[ai];
+          const name = String(a.name || a.localName || '').toLowerCase();
+          if (name === 'style') {
+            inline = String(a.value || '');
+            break;
+          }
+        }
+      }
+      if (/display\s*:\s*none/i.test(inline)) return true;
+    }
+    if (el.style && String(el.style.display).toLowerCase() === 'none') return true;
+    if (typeof global.getComputedStyle === 'function') {
+      try {
+        if (global.getComputedStyle(el).display === 'none') return true;
+      } catch (_) { /* layout may be unavailable */ }
+    }
+    return false;
+  }
+
+  function thresholdsCrossed(prevRatio, ratio, thresholds) {
+    if (prevRatio == null) return true;
+    const was = prevRatio > 0;
+    const now = ratio > 0;
+    if (was !== now) return true;
+    for (let i = 0; i < thresholds.length; i += 1) {
+      const t = thresholds[i];
+      if ((prevRatio < t && ratio >= t) || (prevRatio >= t && ratio < t)) return true;
+    }
+    return false;
+  }
+
+  let nativeLazyObserver = null;
+
+  function maybeLoadLazyImage(el, rootBounds) {
+    if (!el || String(el.localName || '').toLowerCase() !== 'img') return;
+    const loading = String((el.getAttribute && el.getAttribute('loading')) || '').toLowerCase();
+    if (loading !== 'lazy' || el.__glide_lazy_loaded) return;
+    const rect = el.getBoundingClientRect();
+    if (!rectsOverlap(rect, rootBounds)) return;
+    el.__glide_lazy_loaded = true;
+    if (typeof global.__glide_load_lazy_image === 'function') {
+      global.__glide_load_lazy_image(el);
+    }
+  }
 
   function scheduleIntersectionChecks() {
     if (ioCheckScheduled) return;
     ioCheckScheduled = true;
-    setTimeout(function () {
+    requestAnimationFrame(function () {
       ioCheckScheduled = false;
       runIntersectionChecks();
-    }, 0);
+    });
+  }
+
+  function deliverIntersectionObservers() {
+    if (ioDeliveryScheduled) return;
+    ioDeliveryScheduled = true;
+    queueMicrotask(function () {
+      ioDeliveryScheduled = false;
+      const pending = Array.from(ioPendingDelivery);
+      ioPendingDelivery.clear();
+      for (let i = 0; i < pending.length; i += 1) {
+        const obs = pending[i];
+        const entries = obs._drainPendingEntries();
+        if (!entries.length) continue;
+        for (let j = 0; j < entries.length; j += 1) {
+          obs._records.push(entries[j]);
+        }
+        try { obs._callback(entries, obs); } catch (e) { console.error(e); }
+      }
+    });
   }
 
   function runIntersectionChecks() {
-  if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
-    const rootBounds = viewportRootBounds();
+    if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
     const time = performance.now();
+    observeNativeLazyImages();
     for (const obs of ioObservers) {
       if (!obs._targets.size) continue;
-      const entries = [];
+      const rootBounds = rootBoundsForObserver(obs);
+      const pending = [];
       for (const [el, state] of obs._targets) {
         if (!el || el.nodeType !== 1) continue;
+        const hidden = elementIsHidden(el);
         const rect = el.getBoundingClientRect();
-        let hidden = rect.width === 0 && rect.height === 0;
-        if (!hidden) {
-          let inline = String((el.getAttribute && el.getAttribute('style')) || '');
-          if (!inline && el.attributes) {
-            for (let ai = 0; ai < el.attributes.length; ai += 1) {
-              const a = el.attributes[ai];
-              const name = String(a.name || a.localName || '').toLowerCase();
-              if (name === 'style') {
-                inline = String(a.value || '');
-                break;
-              }
-            }
-          }
-          if (/display\s*:\s*none/i.test(inline)) hidden = true;
-        }
-        if (!hidden && el.style && String(el.style.display).toLowerCase() === 'none') {
-          hidden = true;
-        }
-        if (!hidden && typeof global.getComputedStyle === 'function') {
-          try {
-            if (global.getComputedStyle(el).display === 'none') hidden = true;
-          } catch (_) { /* layout may be unavailable */ }
-        }
         const ratio = hidden ? 0 : overlapRatio(rect, rootBounds);
         const isect = !hidden && ratio > 0;
-        const prev = state || { isIntersecting: null, ratio: null };
-        if (prev.isIntersecting === isect && prev.ratio === ratio) continue;
+        const prevRatio = state == null ? null : state.ratio;
+        if (!thresholdsCrossed(prevRatio, ratio, obs.thresholds)) continue;
         obs._targets.set(el, { isIntersecting: isect, ratio });
-        entries.push({
+        const intersectionRect = hidden
+          ? { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }
+          : intersectRect(rect, rootBounds);
+        pending.push({
           target: el,
           isIntersecting: isect,
           intersectionRatio: isect ? Math.min(1, ratio) : 0,
-          boundingClientRect: { ...rect },
+          boundingClientRect: {
+            x: rect.x, y: rect.y, top: rect.top, left: rect.left,
+            right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height,
+          },
           rootBounds: { ...rootBounds },
-          intersectionRect: intersectRect(rect, rootBounds),
+          intersectionRect,
           time,
         });
       }
-      if (entries.length) {
-        try { obs._callback(entries, obs); } catch (e) { console.error(e); }
+      if (pending.length) {
+        if (!obs._pendingEntries) obs._pendingEntries = [];
+        obs._pendingEntries.push.apply(obs._pendingEntries, pending);
+        ioPendingDelivery.add(obs);
+        deliverIntersectionObservers();
       }
     }
+  }
+
+  function ioScrollTarget(node) {
+    let el = node;
+    while (el && el.nodeType === 1) {
+      let overflowY = '';
+      let overflowX = '';
+      try {
+        if (typeof global.getComputedStyle === 'function') {
+          const cs = global.getComputedStyle(el);
+          overflowY = String(cs.overflowY || cs.overflow || '');
+          overflowX = String(cs.overflowX || cs.overflow || '');
+        }
+      } catch (_) { /* layout may be unavailable */ }
+      const scrollable = /auto|scroll|overlay/i.test(overflowY) || /auto|scroll|overlay/i.test(overflowX);
+      if (scrollable && !ioScrollRootListeners.has(el)) {
+        const handler = scheduleIntersectionChecks;
+        el.addEventListener('scroll', handler, { passive: true });
+        ioScrollRootListeners.set(el, handler);
+      }
+      if (el === document.documentElement || el === document.body) break;
+      el = el.parentNode;
+    }
+  }
+
+  function trackIoScrollRoots(target) {
+    ioScrollTarget(target);
+    const root = document.documentElement;
+    if (root && root !== target) ioScrollTarget(root);
   }
 
   function ensureIoResizeListener() {
@@ -528,25 +684,58 @@
     global.addEventListener('resize', scheduleIntersectionChecks);
   }
 
+  function ensureIoScrollListener() {
+    if (ioScrollHooked) return;
+    ioScrollHooked = true;
+    global.addEventListener('scroll', scheduleIntersectionChecks, true);
+    const root = document.documentElement;
+    if (root) root.addEventListener('scroll', scheduleIntersectionChecks, { passive: true });
+  }
+
   global.IntersectionObserver = class IntersectionObserver {
     constructor(callback, options) {
       if (typeof callback !== 'function') throw new TypeError('Callback must be a function');
       options = options || {};
       this._callback = callback;
-      this.root = options.root || null;
+      const root = options.root;
+      if (root != null && root.nodeType !== 1) {
+        throw new TypeError('Root must be an Element or null');
+      }
+      this.root = root || null;
       this.rootMargin = options.rootMargin == null ? '0px' : String(options.rootMargin);
       const raw = options.threshold;
-      if (raw == null) this.thresholds = [0];
-      else if (Array.isArray(raw)) this.thresholds = raw.map(Number);
-      else this.thresholds = [Number(raw)];
+      let thresholds;
+      if (raw == null) thresholds = [0];
+      else if (Array.isArray(raw)) thresholds = raw.map(Number);
+      else thresholds = [Number(raw)];
+      thresholds = thresholds.filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
+      if (!thresholds.length) thresholds = [0];
+      this.thresholds = thresholds;
       this._targets = new Map();
       this._records = [];
+      this._pendingEntries = [];
       ioObservers.add(this);
       ensureIoResizeListener();
+      ensureIoScrollListener();
     }
     observe(target) {
       if (!target || target.nodeType !== 1) throw new TypeError('Target must be an Element');
+      if (this.root && this.root !== target) {
+        let parent = target.parentNode;
+        let inRoot = false;
+        while (parent) {
+          if (parent === this.root) {
+            inRoot = true;
+            break;
+          }
+          parent = parent.parentNode;
+        }
+        if (!inRoot) {
+          throw new TypeError('Target must be a descendant of the observer root');
+        }
+      }
       this._targets.set(target, null);
+      trackIoScrollRoots(target);
       scheduleIntersectionChecks();
     }
     unobserve(target) {
@@ -555,13 +744,99 @@
     disconnect() {
       this._targets.clear();
       this._records.length = 0;
+      this._pendingEntries.length = 0;
     }
     takeRecords() {
+      runIntersectionChecks();
+      const pending = this._drainPendingEntries();
+      if (pending.length) {
+        for (let i = 0; i < pending.length; i += 1) this._records.push(pending[i]);
+        ioPendingDelivery.delete(this);
+      }
       const batch = this._records.slice();
       this._records.length = 0;
       return batch;
     }
+    _drainPendingEntries() {
+      const batch = this._pendingEntries.slice();
+      this._pendingEntries.length = 0;
+      return batch;
+    }
   };
+
+  function ensureNativeLazyObserver() {
+    if (nativeLazyObserver) return nativeLazyObserver;
+    nativeLazyObserver = new IntersectionObserver(function (entries) {
+      const rootBounds = rootBoundsForObserver({ root: null, rootMargin: '0px' });
+      for (let i = 0; i < entries.length; i += 1) {
+        maybeLoadLazyImage(entries[i].target, rootBounds);
+      }
+    }, { root: null, rootMargin: '200px' });
+    return nativeLazyObserver;
+  }
+
+  function observeNativeLazyImages() {
+    if (!document || !document.getElementsByTagName) return;
+    const obs = ensureNativeLazyObserver();
+    const imgs = document.getElementsByTagName('img');
+    for (let i = 0; i < imgs.length; i += 1) {
+      const img = imgs[i];
+      const loading = String((img.getAttribute && img.getAttribute('loading')) || '').toLowerCase();
+      if (loading !== 'lazy' || img.__glide_lazy_observed) continue;
+      img.__glide_lazy_observed = true;
+      obs.observe(img);
+    }
+  }
+
+  function scrollViewportTo(x, y) {
+    if (typeof global.__glide_begin_task === 'function') global.__glide_begin_task();
+    if (typeof global.__glide_dom_sync === 'function') {
+      try {
+        global.__glide_dom_sync('scrollViewport', 0, String(Number(x) || 0), String(Number(y) || 0));
+      } catch (_) { /* scroll may be unavailable in this build */ }
+    }
+    if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
+    scheduleIntersectionChecks();
+    const root = document && document.documentElement;
+    if (root) {
+      try {
+        root.dispatchEvent(new Event('scroll', { bubbles: false }));
+      } catch (_) {
+        const evt = document.createEvent('Event');
+        evt.initEvent('scroll', false, false);
+        root.dispatchEvent(evt);
+      }
+    }
+    global.dispatchEvent(new Event('scroll', { bubbles: false }));
+  }
+
+  global.scrollTo = function scrollTo(x, y) {
+    const nx = typeof x === 'object' && x != null ? Number(x.left) || 0 : Number(x) || 0;
+    const ny = typeof x === 'object' && x != null ? Number(x.top) || 0 : Number(y) || 0;
+    scrollViewportTo(nx, ny);
+  };
+  global.scroll = global.scrollTo;
+
+  function observersOrLazyImagesPending() {
+    if (ioObservers.size) return true;
+    if (!document || !document.querySelector) return false;
+    return !!document.querySelector('img[loading="lazy"]');
+  }
+
+  if (typeof global.__glide_flush_dom === 'function') {
+    const origFlushDom = global.__glide_flush_dom;
+    global.__glide_flush_dom = function glideFlushDomForObservers() {
+      origFlushDom();
+      if (observersOrLazyImagesPending()) scheduleIntersectionChecks();
+    };
+  }
+  if (typeof global.__glide_flush_raf === 'function') {
+    const origFlushRaf = global.__glide_flush_raf;
+    global.__glide_flush_raf = function glideFlushRafForObservers() {
+      origFlushRaf();
+      if (observersOrLazyImagesPending()) scheduleIntersectionChecks();
+    };
+  }
 
   const roObservers = new Set();
   let roCheckScheduled = false;

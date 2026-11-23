@@ -3115,3 +3115,125 @@ fn xhr_url_search_params_sends_urlencoded() {
         "{req}"
     );
 }
+
+#[test]
+fn intersection_observer_fires_after_dom_moves_target_into_view() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div id="target" style="width:40px;height:40px;margin-top:1200px"></div>
+      <p id="t">pending</p>
+      <script>
+        var sawAfterMove = false;
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (e.target.id === 'target' && e.isIntersecting) sawAfterMove = true;
+          });
+        });
+        io.observe(document.getElementById('target'));
+        setTimeout(function () {
+          document.getElementById('target').style.marginTop = '0px';
+        }, 120);
+        setTimeout(function () {
+          document.getElementById('t').textContent = sawAfterMove ? 'intersected' : 'pending';
+        }, 700);
+      </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(1000));
+    assert_eq!(result.final_text, "intersected", "{}", result.final_text);
+}
+
+#[test]
+fn intersection_observer_threshold_crossing_fires() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div id="half" style="width:100px;height:100px;margin-top:200px"></div>
+      <p id="t">pending</p>
+      <script>
+        var ratios = [];
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) { ratios.push(e.intersectionRatio.toFixed(2)); });
+        }, { threshold: [0, 0.5, 1] });
+        io.observe(document.getElementById('half'));
+        setTimeout(function () {
+          document.getElementById('t').textContent = ratios.join(',');
+        }, 80);
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert!(
+        !result.final_text.is_empty() && result.final_text != "pending",
+        "expected threshold callback, got {}",
+        result.final_text
+    );
+}
+
+#[test]
+fn intersection_observer_take_records_buffers_entries() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div id="box" style="width:10px;height:10px"></div>
+      <p id="t">pending</p>
+      <script>
+        var delivered = 0;
+        var io = new IntersectionObserver(function () { delivered += 1; });
+        io.observe(document.getElementById('box'));
+        var rec = io.takeRecords();
+        document.getElementById('t').textContent =
+          rec.length + '|' + (rec[0] && rec[0].target.id) + '|' + delivered;
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "1|box|0", "{}", result.final_text);
+}
+
+#[test]
+fn lazy_img_fetches_only_after_near_viewport_layout_change() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let requests2 = requests.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for _ in 0..16 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 4096];
+            let Ok(n) = stream.read(&mut buf) else {
+                continue;
+            };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+            requests2.lock().expect("lock").push(path.clone());
+            let (status, body, extra) = if path.ends_with(".png") {
+                (
+                    "200 OK",
+                    vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+                    "Content-Type: image/png\r\n",
+                )
+            } else {
+                ("404 Not Found", Vec::new(), "")
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+
+    let html_move = format!(
+        r#"<!DOCTYPE html><html><body>
+<img id="lz" width="32" height="32" loading="lazy" style="margin-top:1200px" src="http://127.0.0.1:{port}/pixel.png" alt="">
+<p id="t">pending</p>
+<script>
+setTimeout(function() {{ document.getElementById('lz').style.marginTop = '0px'; }}, 120);
+</script>
+</body></html>"#
+    );
+    super::harness::run_inline_page_in_viewport(&html_move, 400, 300, Duration::from_millis(1600));
+    let paths = requests.lock().expect("lock").clone();
+    assert!(
+        paths.iter().any(|p| p.contains("pixel.png")),
+        "lazy image should load after moving near viewport: {paths:?}"
+    );
+}

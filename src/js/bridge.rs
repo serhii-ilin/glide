@@ -136,6 +136,17 @@ pub enum DomRequest {
         height: u32,
         reply: u64,
     },
+    /// Start an `<img>` fetch that was deferred because of `loading="lazy"`.
+    LoadImage {
+        node: u64,
+        reply: u64,
+    },
+    /// Set the viewport scroll offset (`window.scrollTo` x/y in CSS pixels).
+    ScrollViewport {
+        x: f64,
+        y: f64,
+        reply: u64,
+    },
 }
 
 /// A page `fetch()` / dynamic script source as the JS worker sends it.

@@ -43,6 +43,66 @@ pub fn run_inline_page(html: &str, pump_for: Duration) -> JsRunResult {
     run_inline_page_on_base(html, "https://example.test/", pump_for)
 }
 
+pub fn run_inline_page_in_viewport(
+    html: &str,
+    width: u32,
+    height: u32,
+    pump_for: Duration,
+) -> JsRunResult {
+    let rt = harness_tokio_runtime();
+    let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
+    let _ = crate::js::console_feed::drain_pending();
+    let _rt_enter = rt.enter();
+
+    let net = Arc::new(Provider::new(None));
+    let tap = JsTap::new_enabled();
+    let provider = GlideHtmlProvider {
+        scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        js_tap: tap.clone(),
+    };
+    let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.set_console_route(0, 1);
+    js_host.set_network_route(0, 1);
+    let config = DocumentConfig {
+        base_url: Some("https://example.test/".into()),
+        net_provider: Some(net.clone()),
+        html_parser_provider: Some(Arc::new(provider)),
+        ..Default::default()
+    };
+    let mut document = HtmlPageDocument(parse::document_from_html(html, config, true));
+    document.0.viewport_mut().window_size = (width, height);
+    js_host.maybe_start_page(&document.0, "https://example.test/", rt.handle());
+    js_host.finish_script_resolution_sync(
+        rt.handle(),
+        &crate::js::scripts::collect_scripts(&document.0),
+    );
+
+    let start = Instant::now();
+    while start.elapsed() < pump_for {
+        document.0.resolve(0.0);
+        js_host.pump(&mut document.0, Instant::now());
+        thread::sleep(Duration::from_millis(5));
+    }
+    js_host.flush_dom_rpc(&mut document.0, Duration::from_millis(200));
+    document.0.resolve(0.0);
+    for _ in 0..20 {
+        js_host.pump(&mut document.0, Instant::now());
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let final_text = document
+        .0
+        .get_element_by_id("t")
+        .and_then(|id| document.0.get_node(id))
+        .map(|n| n.text_content())
+        .unwrap_or_default();
+
+    JsRunResult {
+        final_text,
+        console_wire: js_host.drain_console_wire(),
+    }
+}
+
 pub fn run_inline_page_on_base(html: &str, page_base: &str, pump_for: Duration) -> JsRunResult {
     let rt = harness_tokio_runtime();
     run_inline_page_with_runtime_on_base(html, pump_for, rt.handle(), 0, page_base)
@@ -91,6 +151,73 @@ pub(crate) fn run_inline_page_with_runtime_on_base(
     page_base: &str,
 ) -> JsRunResult {
     run_inline_page_full(html, pump_for, rt, extra_settle, false, page_base).0
+}
+
+/// Pump, scroll the page viewport on the UI thread, then pump again.
+#[allow(dead_code)]
+pub fn run_inline_page_with_viewport_scroll(
+    html: &str,
+    pump_before: Duration,
+    scroll_y: f64,
+    pump_after: Duration,
+) -> JsRunResult {
+    let rt = harness_tokio_runtime();
+    let _console_test_lock = crate::js::console_feed::test_console_serial_lock();
+    let _ = crate::js::console_feed::drain_pending();
+    let _rt_enter = rt.enter();
+
+    let net = Arc::new(Provider::new(None));
+    let tap = JsTap::new_enabled();
+    let provider = GlideHtmlProvider {
+        scripting_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        js_tap: tap.clone(),
+    };
+    let mut js_host = JsHost::new(true, tap, Some(net.clone()));
+    js_host.set_console_route(0, 1);
+    js_host.set_network_route(0, 1);
+    let config = DocumentConfig {
+        base_url: Some("https://example.test/".into()),
+        net_provider: Some(net.clone()),
+        html_parser_provider: Some(Arc::new(provider)),
+        ..Default::default()
+    };
+    let mut document = HtmlPageDocument(parse::document_from_html(html, config, true));
+    document.0.viewport_mut().window_size = (400, 300);
+    js_host.maybe_start_page(&document.0, "https://example.test/", rt.handle());
+    js_host.finish_script_resolution_sync(
+        rt.handle(),
+        &crate::js::scripts::collect_scripts(&document.0),
+    );
+
+    let start = Instant::now();
+    while start.elapsed() < pump_before {
+        document.0.resolve(0.0);
+        js_host.pump(&mut document.0, Instant::now());
+        thread::sleep(Duration::from_millis(5));
+    }
+    document.0.scroll_viewport_by(0.0, scroll_y);
+    document.0.resolve(0.0);
+    let scroll_start = Instant::now();
+    while scroll_start.elapsed() < pump_after {
+        document.0.resolve(0.0);
+        js_host.pump(&mut document.0, Instant::now());
+        thread::sleep(Duration::from_millis(10));
+    }
+    js_host.flush_dom_rpc(&mut document.0, Duration::from_millis(400));
+    document.0.resolve(0.0);
+    js_host.pump(&mut document.0, Instant::now());
+
+    let final_text = document
+        .0
+        .get_element_by_id("t")
+        .and_then(|id| document.0.get_node(id))
+        .map(|n| n.text_content())
+        .unwrap_or_default();
+
+    JsRunResult {
+        final_text,
+        console_wire: js_host.drain_console_wire(),
+    }
 }
 
 fn run_inline_page_full(

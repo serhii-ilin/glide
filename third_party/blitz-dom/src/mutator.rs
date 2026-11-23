@@ -23,6 +23,11 @@ macro_rules! tag_and_attr {
     };
 }
 
+fn img_loading_is_lazy(node: &Node) -> bool {
+    node.attr(local_name!("loading"))
+        .is_some_and(|v| v.eq_ignore_ascii_case("lazy"))
+}
+
 #[derive(Debug, Clone)]
 pub enum AppendTextErr {
     /// The node is not a text node
@@ -385,7 +390,9 @@ impl DocumentMutator<'_> {
         if (tag, attr) == tag_and_attr!("input", "checked") {
             set_input_checked_state(element, value.to_string());
         } else if (tag, attr) == tag_and_attr!("img", "src") {
-            self.load_image(node_id);
+            if !img_loading_is_lazy(&self.doc.nodes[node_id]) {
+                self.load_image(node_id);
+            }
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.load_custom_paint_src(node_id);
         } else if (tag, attr) == tag_and_attr!("link", "href")
@@ -962,7 +969,15 @@ impl<'doc> DocumentMutator<'doc> {
                 }
                 _ if has_custom_widget => {}
                 "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
-                "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
+                "img" => {
+                    let node = &doc.nodes[node_id];
+                    if img_loading_is_lazy(node) {
+                        // Native lazy images load when Glide's IntersectionObserver
+                        // decides they are near the viewport (F-083).
+                    } else {
+                        self.eager_op_queue.push(SpecialOp::LoadImage(node_id));
+                    }
+                }
                 "iframe" => self.eager_op_queue.push(SpecialOp::LoadIframe(node_id)),
                 "canvas" => self
                     .eager_op_queue
@@ -1152,7 +1167,7 @@ impl<'doc> DocumentMutator<'doc> {
         self.doc.stylesheet_generation += 1;
     }
 
-    fn load_image(&mut self, target_id: NodeId) {
+    pub fn load_image(&mut self, target_id: NodeId) {
         let node = &self.doc.nodes[target_id];
         if let Some(raw_src) = node.attr(local_name!("src")) {
             if !raw_src.is_empty() {

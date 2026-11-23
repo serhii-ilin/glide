@@ -1096,6 +1096,7 @@ fn failed_external_script_does_not_panic() {
         defer: false,
         r#async: false,
         module: false,
+        crossorigin: None,
         element: None,
     }];
     let sources =

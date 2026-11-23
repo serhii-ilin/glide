@@ -6,6 +6,7 @@ mod bridge;
 pub mod console_feed;
 pub mod diagnostics;
 mod host;
+mod modules;
 mod paint_prune;
 mod promise_console;
 mod repl_eval;

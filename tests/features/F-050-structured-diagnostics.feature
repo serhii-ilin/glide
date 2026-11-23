@@ -11,7 +11,8 @@ Feature: F-050 Structured diagnostics
   #        diagnostics::dynamically_inserted_script_runs,
   #        diagnostics::dynamic_script_fetch_failure_is_reported,
   #        diagnostics::module_script_runs,
-  #        diagnostics::module_import_is_reported_as_unsupported,
+  #        diagnostics::module_import_missing_dependency_is_logged,
+  #        diagnostics::bare_module_specifier_is_reported_as_unsupported,
   #        compat::subprocess::tests::first_uncaught_from_structured_log, manual M-037
 
   Background:

@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p id="t">before</p>
+  <script>
+    import('react').catch(function () {});
+    document.getElementById('t').textContent = 'after';
+  </script>
+</body>
+</html>

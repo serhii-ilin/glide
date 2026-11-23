@@ -129,6 +129,10 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         network_route.clone(),
     );
     let bus = NavBus::default();
+    #[cfg(target_os = "macos")]
+    let menu_commands = crate::menu::MenuCommandQueue::default();
+    #[cfg(target_os = "macos")]
+    let native_menu = crate::native_menu::NativeMenu::new(menu_commands.clone());
 
     let js_tap = if js_enabled {
         JsTap::new_enabled()
@@ -155,7 +159,15 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         ..Default::default()
     };
 
-    let view = chrome_view_state(&tabs, js_enabled, &bookmarks_state, None);
+    let in_window_menu = !cfg!(target_os = "macos");
+    let view = chrome_view_state(
+        &tabs,
+        js_enabled,
+        &bookmarks_state,
+        None,
+        in_window_menu,
+        false,
+    );
     let devtools = DevToolsSession::from_settings(&saved_settings);
     let mut doc = build_chrome_page_document(&view, js_enabled, &load_state, chrome_config);
     {
@@ -194,6 +206,11 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         history_log,
         devtools,
         network_route,
+        in_window_menu,
+        #[cfg(target_os = "macos")]
+        menu_commands,
+        #[cfg(target_os = "macos")]
+        native_menu,
     });
     app.inner.add_window(window);
     event_loop
@@ -257,6 +274,11 @@ struct GlideBootstrap {
     history_log: HistoryLogState,
     devtools: DevToolsSession,
     network_route: Arc<NetworkRoute>,
+    in_window_menu: bool,
+    #[cfg(target_os = "macos")]
+    menu_commands: crate::menu::MenuCommandQueue,
+    #[cfg(target_os = "macos")]
+    native_menu: crate::native_menu::NativeMenu,
 }
 
 struct DevToolsSplitDrag {
@@ -476,6 +498,11 @@ struct Glide {
     network_route: Arc<NetworkRoute>,
     ime_composing: bool,
     js_wake_armed_until: Option<std::time::Instant>,
+    in_window_menu: bool,
+    #[cfg(target_os = "macos")]
+    menu_commands: crate::menu::MenuCommandQueue,
+    #[cfg(target_os = "macos")]
+    native_menu: crate::native_menu::NativeMenu,
 }
 
 /// How long the event loop may block before waking for a JS timer pump (`None` = wait indefinitely).
@@ -489,6 +516,8 @@ fn chrome_view_state(
     js_enabled: bool,
     bookmarks: &BookmarksState,
     open_menu: Option<MenuId>,
+    in_window_menu: bool,
+    devtools_open: bool,
 ) -> ChromeViewState {
     let active = tabs.active();
     let url = active.map(Tab::url).unwrap_or("about:blank").to_string();
@@ -521,6 +550,9 @@ fn chrome_view_state(
             .collect(),
         active_index: tabs.active_index(),
         open_menu,
+        in_window_menu,
+        devtools_open,
+        find_bar_open: tabs.active().map(|t| t.find.open).unwrap_or(false),
     }
 }
 
@@ -755,6 +787,39 @@ impl Glide {
             network_route: init.network_route,
             ime_composing: false,
             js_wake_armed_until: None,
+            in_window_menu: init.in_window_menu,
+            #[cfg(target_os = "macos")]
+            menu_commands: init.menu_commands,
+            #[cfg(target_os = "macos")]
+            native_menu: init.native_menu,
+        }
+    }
+
+    fn apply_menu_command(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        command: crate::menu::MenuCommand,
+    ) {
+        if let Some(action) = keyboard::EditAction::from_menu(&command) {
+            let Some(view) = self.inner.windows.get_mut(&window_id) else {
+                return;
+            };
+            if keyboard::apply_edit_action(view, action) {
+                view.request_redraw();
+                self.sync();
+            } else {
+                let previous = view.keyboard_modifiers.state();
+                for event in keyboard::edit_fallback_events(action, previous) {
+                    self.inner.window_event(event_loop, window_id, event);
+                }
+                self.sync();
+            }
+        } else if let Some(shortcut) = command.to_browser_shortcut() {
+            self.handle_browser_shortcut_value(event_loop, window_id, shortcut);
+        } else if let Some(nav) = command.to_nav_command() {
+            self.bus.push(nav);
+            self.sync();
         }
     }
 
@@ -1260,8 +1325,19 @@ impl Glide {
             }
 
             if structure_changed {
-                let view =
-                    chrome_view_state(&self.tabs, js_enabled, &self.bookmarks, self.open_menu);
+                let open_menu = if self.in_window_menu {
+                    self.open_menu
+                } else {
+                    None
+                };
+                let view = chrome_view_state(
+                    &self.tabs,
+                    js_enabled,
+                    &self.bookmarks,
+                    open_menu,
+                    self.in_window_menu,
+                    self.devtools.state.open,
+                );
                 render_tab_strip(&mut doc, &view);
                 render_menu_bar(&mut doc, &view);
             }
@@ -1313,6 +1389,19 @@ impl Glide {
             let chrome = view.doc.inner();
             page_url(&chrome)
         };
+        #[cfg(target_os = "macos")]
+        {
+            let js_enabled = self.html_provider.scripting_enabled.load(Ordering::Relaxed);
+            let view = chrome_view_state(
+                &self.tabs,
+                js_enabled,
+                &self.bookmarks,
+                None,
+                self.in_window_menu,
+                self.devtools.state.open,
+            );
+            self.native_menu.sync(&view);
+        }
         sync_tab_network_epoch_from_route(&mut self.tabs, &self.network_route);
         if let Some(tab) = self.tabs.active() {
             self.js.set_console_route(tab.id, tab.console_epoch);
@@ -1589,6 +1678,26 @@ impl Glide {
                     view.request_redraw();
                     true
                 }
+                keyboard::BrowserShortcut::ShowBookmarks => {
+                    self.bus.push(NavCommand::Go("glide://bookmarks".into()));
+                    true
+                }
+                keyboard::BrowserShortcut::ShowHelp => {
+                    self.bus.push(NavCommand::Go("glide://help".into()));
+                    true
+                }
+                keyboard::BrowserShortcut::CloseWindow => {
+                    self.bus.push(NavCommand::CloseWindow);
+                    true
+                }
+                keyboard::BrowserShortcut::DuplicateTab => {
+                    self.bus.push(NavCommand::DuplicateTab);
+                    true
+                }
+                keyboard::BrowserShortcut::MinimizeWindow => {
+                    view.window.set_minimized(true);
+                    true
+                }
                 keyboard::BrowserShortcut::DevToolsConsoleHistoryPrev
                 | keyboard::BrowserShortcut::DevToolsConsoleHistoryNext => {
                     let older = matches!(
@@ -1720,6 +1829,21 @@ impl Glide {
 impl ApplicationHandler for Glide {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.inner.can_create_surfaces(event_loop);
+        #[cfg(target_os = "macos")]
+        {
+            let wake = self.inner.proxy.clone();
+            let js_enabled = self.html_provider.scripting_enabled.load(Ordering::Relaxed);
+            let view = chrome_view_state(
+                &self.tabs,
+                js_enabled,
+                &self.bookmarks,
+                None,
+                self.in_window_menu,
+                self.devtools.state.open,
+            );
+            self.native_menu
+                .ensure_installed(&view, move || wake.wake_up());
+        }
         self.sync();
     }
 
@@ -1907,6 +2031,12 @@ impl ApplicationHandler for Glide {
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.inner.proxy_wake_up(event_loop);
+        #[cfg(target_os = "macos")]
+        if let Some(window_id) = self.inner.windows.keys().next().copied() {
+            for command in self.menu_commands.take() {
+                self.apply_menu_command(event_loop, window_id, command);
+            }
+        }
         self.sync();
         self.arm_js_pump(event_loop);
     }

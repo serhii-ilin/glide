@@ -17,6 +17,8 @@ src/custom_elements.rs  fallbacks for unupgraded custom elements (visibility, st
 src/net.rs            loading state, stop, and error pages for failed loads
 src/http.rs           HTTP redirects, Refresh, and non-2xx document bodies
 src/nav.rs            navigation pending vs. iframe URL observations
+src/menu.rs           platform-neutral menu model shared by the native and in-window menu bars
+src/native_menu.rs    macOS native menu bar (muda) built from the menu model, cfg(macos) only
 src/keyboard.rs       shortcuts, macOS keybindings, iframe key forward
 src/find.rs           find-in-page text search and chrome find UI state
 src/zoom.rs           page zoom level and chrome toolbar counter-scale

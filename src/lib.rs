@@ -24,6 +24,9 @@ pub mod keyboard;
 pub mod location;
 pub mod logging;
 pub mod mcp;
+pub mod menu;
+#[cfg(target_os = "macos")]
+mod native_menu;
 pub mod nav;
 pub mod net;
 pub mod network_feed;

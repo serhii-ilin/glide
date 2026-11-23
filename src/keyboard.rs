@@ -717,6 +717,24 @@ fn primary_modifiers() -> ModifiersState {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_chrome_edit_fallback(
+    chrome: &mut BaseDocument,
+    code: KeyCode,
+    modifiers: ModifiersState,
+) -> bool {
+    apply_macos_chrome_keybinding(chrome, code, modifiers)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_chrome_edit_fallback(
+    _chrome: &mut BaseDocument,
+    _code: KeyCode,
+    _modifiers: ModifiersState,
+) -> bool {
+    false
+}
+
 /// Run a menu edit command on whatever has focus, exactly as its key press would
 /// (page iframe first, then a focused chrome text field), see [`dispatch_text_keys`].
 pub fn apply_edit_action_to_doc(chrome: &mut BaseDocument, action: EditAction) -> bool {
@@ -728,17 +746,8 @@ pub fn apply_edit_action_to_doc(chrome: &mut BaseDocument, action: EditAction) -
     let text_focused = chrome
         .get_focussed_node_id()
         .is_some_and(|id| node_is_text_input(chrome, id));
-    if text_focused && apply_clipboard_shortcut(chrome, code, modifiers) {
-        return true;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        apply_macos_chrome_keybinding(chrome, code, modifiers)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
+    text_focused && apply_clipboard_shortcut(chrome, code, modifiers)
+        || macos_chrome_edit_fallback(chrome, code, modifiers)
 }
 
 /// [`apply_edit_action_to_doc`] on a window's chrome document.
@@ -1211,7 +1220,11 @@ mod tests {
                 KeyCode::KeyB,
                 prim | ModifiersState::ALT,
                 Some(BrowserShortcut::ShowBookmarks),
-                Some(BrowserShortcut::ShowBookmarks),
+                if cfg!(target_os = "macos") {
+                    Some(BrowserShortcut::ShowBookmarks)
+                } else {
+                    None
+                },
             ));
             cases.extend(both(
                 &format!("{tag}+Shift+W close window"),
@@ -1225,7 +1238,11 @@ mod tests {
                 KeyCode::KeyM,
                 prim,
                 Some(BrowserShortcut::MinimizeWindow),
-                Some(BrowserShortcut::MinimizeWindow),
+                if cfg!(target_os = "macos") {
+                    Some(BrowserShortcut::MinimizeWindow)
+                } else {
+                    None
+                },
             ));
             cases.extend(both(
                 &format!("{tag}+. stop loading"),

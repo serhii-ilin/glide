@@ -2293,6 +2293,130 @@
       }
     };
   }
+  function installFormDataGlobal() {
+    function entryFromValue(name, value, filename) {
+      const n = String(name);
+      if (value instanceof Blob) {
+        const bytes = value._bytes;
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+        const dataBase64 = btoa(bin);
+        let fname = filename != null ? String(filename) : '';
+        if (!fname && typeof File !== 'undefined' && value instanceof File) fname = value.name;
+        if (!fname) fname = 'blob';
+        return {
+          name: n,
+          valueKind: 'file',
+          dataBase64,
+          filename: fname,
+          type: value.type || 'application/octet-stream',
+        };
+      }
+      return { name: n, valueKind: 'text', data: String(value) };
+    }
+
+    global.FormData = class FormData {
+      constructor(form, submitter) {
+        this._entries = [];
+        if (arguments.length === 0 || form == null) return;
+        const formProto = global.HTMLFormElement && global.HTMLFormElement.prototype;
+        if (!formProto || !(form instanceof global.HTMLFormElement)) {
+          throw new TypeError("Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.");
+        }
+        if (submitter != null && submitter.form !== form) {
+          const DOMException = domino.impl.DOMException;
+          throw new DOMException('The submitter is not owned by this form.', 'NotFoundError');
+        }
+        const formId = blitzId(form);
+        if (formId == null) return;
+        syncFormControlsFromBlitz(form);
+        pushFormControlsToBlitz(form);
+        flushMutations();
+        const submitterId = submitter ? blitzId(submitter) : formId;
+        try {
+          const entries = rpc('formDataEntries', String(formId), String(submitterId));
+          if (Array.isArray(entries)) {
+            entries.forEach((e) => this._entries.push(Object.assign({}, e)));
+          }
+        } catch (_) { /* empty form snapshot */ }
+      }
+      append(name, value, filename) {
+        this._entries.push(entryFromValue(name, value, filename));
+      }
+      set(name, value, filename) {
+        const key = String(name);
+        this._entries = this._entries.filter((e) => e.name !== key);
+        this.append(key, value, filename);
+      }
+      get(name) {
+        const key = String(name);
+        for (let i = this._entries.length - 1; i >= 0; i -= 1) {
+          if (this._entries[i].name === key) {
+            const e = this._entries[i];
+            if (e.valueKind === 'file') {
+              const bytes = base64ToBytes(e.dataBase64 || '');
+              return new File([bytes], e.filename || 'blob', { type: e.type || 'application/octet-stream' });
+            }
+            return e.data || '';
+          }
+        }
+        return null;
+      }
+      getAll(name) {
+        const key = String(name);
+        const out = [];
+        this._entries.forEach((e) => {
+          if (e.name !== key) return;
+          if (e.valueKind === 'file') {
+            const bytes = base64ToBytes(e.dataBase64 || '');
+            out.push(new File([bytes], e.filename || 'blob', { type: e.type || 'application/octet-stream' }));
+          } else {
+            out.push(e.data || '');
+          }
+        });
+        return out;
+      }
+      has(name) {
+        const key = String(name);
+        return this._entries.some((e) => e.name === key);
+      }
+      delete(name) {
+        const key = String(name);
+        this._entries = this._entries.filter((e) => e.name !== key);
+      }
+      forEach(callback, thisArg) {
+        this._entries.slice().forEach((e) => {
+          const value = e.valueKind === 'file'
+            ? new File([base64ToBytes(e.dataBase64 || '')], e.filename || 'blob', { type: e.type || 'application/octet-stream' })
+            : (e.data || '');
+          callback.call(thisArg, value, e.name, this);
+        });
+      }
+      *entries() {
+        for (const e of this._entries) {
+          const value = e.valueKind === 'file'
+            ? new File([base64ToBytes(e.dataBase64 || '')], e.filename || 'blob', { type: e.type || 'application/octet-stream' })
+            : (e.data || '');
+          yield [e.name, value];
+        }
+      }
+      *keys() { yield* this._entries.map((e) => e.name); }
+      *values() {
+        for (const [, value] of this.entries()) yield value;
+      }
+      [Symbol.iterator]() { return this.entries(); }
+      toJSON() { return { kind: 'formData', entries: this._entries }; }
+    };
+  }
+
+  function base64ToBytes(b64) {
+    const bin = atob(String(b64 || ''));
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
   installCustomElementsRegistry();
   installUrlGlobal();
+  installFormDataGlobal();
 })(globalThis);

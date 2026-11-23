@@ -181,7 +181,8 @@ impl BaseDocument {
 /// Returns an EntryList containing all valid form control entries
 ///
 /// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-the-form-data-set
-fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeId) -> FormData {
+/// Form entry list for [`BaseDocument::submit_form`] and page `FormData(form)`.
+pub fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeId) -> FormData {
     let mut entry_list = FormData::new();
 
     let mut create_entry = |name: &str, value: EntryValue| {

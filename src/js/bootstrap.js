@@ -910,6 +910,37 @@
     };
   }
 
+  function serializeFetchBody(body) {
+    if (body == null || body === '') return undefined;
+    if (typeof FormData !== 'undefined' && body instanceof FormData) return body.toJSON();
+    if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+      return { kind: 'urlSearchParams', pairs: body._pairs };
+    }
+    if (body instanceof Blob) {
+      return {
+        kind: 'blob',
+        type: body.type || '',
+        data: base64FromBytes(body._bytes),
+      };
+    }
+    if (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) {
+      return {
+        kind: 'blob',
+        type: 'application/octet-stream',
+        data: base64FromBytes(new Uint8Array(body)),
+      };
+    }
+    if (ArrayBuffer.isView(body)) {
+      const view = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+      return {
+        kind: 'blob',
+        type: 'application/octet-stream',
+        data: base64FromBytes(view),
+      };
+    }
+    return { kind: 'text', data: String(body) };
+  }
+
   function toRpcOptions(method, headers, body, credentials) {
     const headerObj = {};
     if (headers) {
@@ -918,7 +949,8 @@
       });
     }
     const opt = { method: method || 'GET', headers: headerObj };
-    if (body != null && body !== '') opt.body = String(body);
+    const serialized = serializeFetchBody(body);
+    if (serialized !== undefined) opt.body = serialized;
     if (credentials) opt.credentials = String(credentials);
     return JSON.stringify(opt);
   }
@@ -942,7 +974,7 @@
       } else {
         Headers.appendAll(this.headers, init.headers || null);
       }
-      if (init.body !== undefined) this._body = init.body == null ? null : String(init.body);
+      if (init.body !== undefined) this._body = init.body;
       else if (req) this._body = req._body;
       else this._body = null;
       const cred = init.credentials != null ? init.credentials : (req && req.credentials) || 'same-origin';
@@ -1182,7 +1214,7 @@
         err.name = 'InvalidAccessError';
         throw err;
       }
-      const payload = body == null ? '' : String(body);
+      const payload = body == null ? null : body;
       this._sent = true;
       this._dispatched = false;
       if (!this._async) {
@@ -1562,12 +1594,14 @@
   }
   global.Blob = Blob;
 
-  global.File = function File(parts, name, options) {
-    const blob = new Blob(parts, options || {});
-    blob.name = String(name);
-    blob.lastModified = (options && options.lastModified) || Date.now();
-    return blob;
-  };
+  class File extends Blob {
+    constructor(parts, name, options) {
+      super(parts, options || {});
+      this.name = String(name);
+      this.lastModified = (options && options.lastModified) || Date.now();
+    }
+  }
+  global.File = File;
 
   const FR_EMPTY = 0;
   const FR_LOADING = 1;

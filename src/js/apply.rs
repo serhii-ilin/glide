@@ -50,6 +50,7 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::ControlField { reply, .. }
         | DomRequest::SyncFormControls { reply, .. }
         | DomRequest::PushFormValues { reply, .. }
+        | DomRequest::FormDataEntries { reply, .. }
         | DomRequest::ListenTarget { reply, .. }
         | DomRequest::RandomBytes { reply, .. }
         | DomRequest::CookieGet { reply }
@@ -127,6 +128,17 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
             let pairs: Vec<(u64, String)> = serde_json::from_str(&json).unwrap_or_default();
             super::form_controls::push_form_values(doc, &pairs);
             DomResponse::ok(reply, DomValue::Null)
+        }
+        DomRequest::FormDataEntries {
+            form,
+            submitter,
+            reply,
+        } => {
+            let Some(form_id) = super::bridge::resolve_handle(doc, form) else {
+                return DomResponse::err(reply, "invalid form");
+            };
+            let submitter_id = super::bridge::resolve_handle(doc, submitter).unwrap_or(form_id);
+            super::form_data::reply_form_data_entries(doc, form_id, submitter_id, reply)
         }
         DomRequest::RandomBytes { size, reply } => apply_random_bytes(size, reply),
         DomRequest::CookieGet { reply } => apply_cookie_get(base_url, reply),
@@ -525,16 +537,12 @@ fn build_fetch_request(
             http::header::HeaderValue::from_str(value).map_err(|_| "invalid header".to_string())?;
         headers.append(header_name, header_value);
     }
-    let body = if body.is_empty() {
-        Body::Empty
-    } else {
-        Body::Bytes(Bytes::from(body.as_bytes().to_vec()))
-    };
     let mut request = Request::get(url);
     request.method = method;
     request.content_type = content_type;
     request.headers = headers;
-    request.body = body;
+    request.body = Body::Empty;
+    super::fetch_body::apply_fetch_body(&mut request, body)?;
     Ok(request)
 }
 
@@ -821,7 +829,7 @@ mod tests {
             url,
             "POST",
             &[("content-type".into(), "text/plain".into())],
-            "payload",
+            r#"{"kind":"text","data":"payload"}"#,
         )
         .unwrap();
         assert_eq!(req.method, Method::POST);
@@ -843,6 +851,119 @@ mod tests {
         .unwrap();
         assert!(!req.headers.contains_key(http::header::COOKIE));
         assert!(req.headers.contains_key("x-ok"));
+    }
+
+    #[test]
+    fn build_fetch_request_formdata_multipart_posts_to_loopback() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Captured {
+            content_type: String,
+            body: Vec<u8>,
+        }
+
+        let captured = Arc::new(Mutex::new(Captured::default()));
+        let captured2 = captured.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = vec![0u8; 65536];
+            let n = stream.read(&mut buf).expect("read");
+            let req = &buf[..n];
+            let header_end = req
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|i| i + 4)
+                .unwrap_or(0);
+            let headers = String::from_utf8_lossy(&req[..header_end]);
+            let mut cap = captured2.lock().expect("lock");
+            for line in headers.lines() {
+                let lower = line.to_ascii_lowercase();
+                if let Some(ct) = lower.strip_prefix("content-type: ") {
+                    cap.content_type = ct.trim().to_string();
+                }
+            }
+            cap.body = req[header_end..].to_vec();
+            let body = "ok";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write");
+        });
+
+        let body_json = serde_json::json!({
+            "kind": "formData",
+            "entries": [
+                {"name": "q", "valueKind": "text", "data": "a\r\nb"},
+                {
+                    "name": "f",
+                    "valueKind": "file",
+                    "dataBase64": "aGVsbG8=",
+                    "filename": "x\"y.txt",
+                    "type": "text/plain"
+                }
+            ]
+        })
+        .to_string();
+        let url = Url::parse(&format!("http://{addr}/post")).unwrap();
+        let req = build_fetch_request(url, "POST", &[], &body_json).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        let followed = rt
+            .block_on(crate::http::fetch_followed(req))
+            .expect("fetch");
+        assert_eq!(followed.status, 200);
+        server.join().expect("join");
+        let cap = captured.lock().expect("lock");
+        assert!(
+            cap.content_type
+                .starts_with("multipart/form-data; boundary=")
+        );
+        let boundary = cap
+            .content_type
+            .split("boundary=")
+            .nth(1)
+            .expect("boundary")
+            .trim()
+            .trim_matches('"');
+        let body_text = String::from_utf8_lossy(&cap.body);
+        assert!(body_text.contains(&format!("--{boundary}")));
+        assert!(body_text.contains("name=\"q\""));
+        assert!(body_text.contains("a\r\nb"));
+        assert!(body_text.contains("filename=\"x%22y.txt\""));
+        assert!(body_text.contains("hello"));
+        assert!(body_text.contains(&format!("--{boundary}--")));
+    }
+
+    #[test]
+    fn build_fetch_request_url_search_params_sets_urlencoded() {
+        let url = Url::parse("http://127.0.0.1/").unwrap();
+        let req = build_fetch_request(
+            url,
+            "POST",
+            &[],
+            r#"{"kind":"urlSearchParams","pairs":[["a","1"]]}"#,
+        )
+        .unwrap();
+        let Body::Bytes(bytes) = req.body else {
+            panic!("bytes");
+        };
+        assert_eq!(&bytes[..], b"a=1");
+        let ct = req
+            .headers
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.starts_with("application/x-www-form-urlencoded"));
     }
 
     #[test]

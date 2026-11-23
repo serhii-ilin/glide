@@ -2537,3 +2537,133 @@ fn websocket_rejects_mixed_content_and_bad_url() {
     assert!(text.contains("mixed:SecurityError"), "{text}");
     assert!(text.contains("bad:SyntaxError"), "{text}");
 }
+
+#[test]
+fn form_data_append_set_and_iterate() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var fd = new FormData();
+      fd.append('a', '1');
+      fd.append('a', '2');
+      fd.set('a', 'only');
+      fd.append('b', new Blob(['hi'], { type: 'text/plain' }), 'blob.txt');
+      var parts = [];
+      fd.forEach(function (v, k) {
+        var val = (v instanceof Blob) ? 'blob:' + v.size : String(v);
+        parts.push(k + '=' + val);
+      });
+      document.getElementById('t').textContent =
+        fd.get('a') + '|' + fd.getAll('a').length + '|' + fd.has('missing') + '|' + parts.join(';');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "only|1|false|a=only;b=blob:2");
+}
+
+#[test]
+fn fetch_formdata_posts_multipart_to_loopback() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen2 = seen.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = vec![0u8; 65536];
+        let n = stream.read(&mut buf).expect("read");
+        *seen2.lock().expect("lock") = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let body = "ok";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write");
+    });
+
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p><script>
+      var fd = new FormData();
+      fd.append('q', 'line\r\nbreak');
+      fd.append('up', new File(['file-bytes'], 'a.txt', {{ type: 'text/plain' }}));
+      fetch('http://127.0.0.1:{port}/echo', {{ method: 'POST', body: fd }})
+        .then(function (r) {{ return r.text(); }})
+        .then(function (t) {{
+          document.getElementById('t').textContent = t;
+        }});
+    </script></body></html>"#
+    );
+    let result = super::harness::run_inline_page_on_base(
+        &html,
+        &format!("http://127.0.0.1:{port}/"),
+        Duration::from_millis(800),
+    );
+    assert_eq!(result.final_text, "ok");
+    let body = seen.lock().expect("lock");
+    assert!(
+        body.to_ascii_lowercase().contains("multipart/form-data"),
+        "{body}"
+    );
+    assert!(body.contains("name=\"q\""), "{body}");
+    assert!(body.contains("line\r\nbreak"), "{body}");
+    assert!(body.contains("filename=\"a.txt\""), "{body}");
+    assert!(body.contains("file-bytes"), "{body}");
+}
+
+#[test]
+fn xhr_url_search_params_sends_urlencoded() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let posted = Arc::new(Mutex::new(String::new()));
+    let posted2 = posted.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = vec![0u8; 8192];
+        let n = stream.read(&mut buf).expect("read");
+        *posted2.lock().expect("lock") = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let body = "ok";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write");
+    });
+
+    let html = format!(
+        r#"<!DOCTYPE html><html><body><p id="t">pending</p><script>
+      var x = new XMLHttpRequest();
+      x.open('POST', 'http://127.0.0.1:{port}/', true);
+      x.onload = function () {{
+        document.getElementById('t').textContent = x.responseText;
+      }};
+      var p = new URLSearchParams();
+      p.append('a', '1');
+      p.append('b', 'two');
+      x.send(p);
+    </script></body></html>"#
+    );
+    let result = super::harness::run_inline_page_on_base(
+        &html,
+        &format!("http://127.0.0.1:{port}/"),
+        Duration::from_millis(800),
+    );
+    assert_eq!(result.final_text, "ok");
+    let req = posted.lock().expect("lock");
+    assert!(
+        req.to_ascii_lowercase()
+            .contains("application/x-www-form-urlencoded"),
+        "{req}"
+    );
+    assert!(
+        req.contains("a=1&b=two") || req.contains("a=1&b=two\r\n"),
+        "{req}"
+    );
+}

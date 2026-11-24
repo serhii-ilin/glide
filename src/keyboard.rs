@@ -17,6 +17,7 @@ use winit::keyboard::ModifiersState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::chrome::NavCommand;
+use crate::js::viewport;
 use anyrender::WindowRenderer;
 
 /// High-level browser shortcuts Glide handles before Blitz sees the key event.
@@ -588,45 +589,36 @@ pub fn scroll_page<Rend: WindowRenderer>(view: &mut View<Rend>, action: ScrollAc
     };
     let mut inner = sub.inner_mut();
     let doc = &mut *inner;
-    let page_h = doc.viewport().window_size.1 as f64;
-    let step = (page_h * 0.9).max(120.0);
-    let sy = match action {
-        ScrollAction::Up => -step,
-        ScrollAction::Down => step,
-        ScrollAction::PageUp => -step,
-        ScrollAction::PageDown => step,
-        ScrollAction::Home | ScrollAction::End => 0.0,
-    };
-    if matches!(action, ScrollAction::Home) {
-        doc.scroll_viewport_by(0.0, -doc.viewport_scroll().y);
-    } else if matches!(action, ScrollAction::End) {
-        doc.scroll_viewport_by(0.0, 10_000_000.0);
-    } else {
-        doc.scroll_viewport_by(0.0, sy);
-    }
+    apply_scroll_action(doc, action);
     true
 }
 
 fn scroll_chrome_viewport(chrome: &mut BaseDocument, action: ScrollAction) -> bool {
-    let page_h = chrome.viewport().window_size.1 as f64;
-    let step = (page_h * 0.9).max(120.0);
-    if matches!(action, ScrollAction::Home) {
-        chrome.scroll_viewport_by(0.0, -chrome.viewport_scroll().y);
-        return true;
-    }
-    if matches!(action, ScrollAction::End) {
-        chrome.scroll_viewport_by(0.0, 10_000_000.0);
-        return true;
-    }
-    let sy = match action {
-        ScrollAction::Up => -step,
-        ScrollAction::Down => step,
-        ScrollAction::PageUp => -step,
-        ScrollAction::PageDown => step,
-        ScrollAction::Home | ScrollAction::End => 0.0,
-    };
-    chrome.scroll_viewport_by(0.0, sy);
+    apply_scroll_action(chrome, action);
     true
+}
+
+/// Scroll a document's viewport for a scroll key: a line or page step down or up, or to the
+/// top or bottom. Uses the `js::viewport` helpers (positive is down), which clamp to the
+/// document; Blitz's `scroll_viewport_by` is wheel-signed and would invert the direction.
+fn apply_scroll_action(doc: &mut BaseDocument, action: ScrollAction) {
+    let page_h = f64::from(doc.viewport().window_size.1);
+    let step = (page_h * 0.9).max(120.0);
+    match action {
+        ScrollAction::Up | ScrollAction::PageUp => {
+            viewport::scroll_by(doc, 0.0, -step);
+        }
+        ScrollAction::Down | ScrollAction::PageDown => {
+            viewport::scroll_by(doc, 0.0, step);
+        }
+        ScrollAction::Home => {
+            viewport::scroll_to(doc, 0.0, 0.0);
+        }
+        ScrollAction::End => {
+            let bottom = viewport::state(doc).scroll_height;
+            viewport::scroll_to(doc, 0.0, bottom);
+        }
+    }
 }
 
 /// Whether Glide should consume a Stop shortcut (Esc / toolbar) instead of forwarding it.
@@ -1740,6 +1732,59 @@ mod tests {
 
     fn layout_doc(doc: &mut BaseDocument) {
         doc.resolve(0.0);
+    }
+
+    fn tall_document() -> BaseDocument {
+        let html =
+            "<!doctype html><body style=\"margin:0\"><div style=\"height:3000px\"></div></body>";
+        let mut doc = parse::document_from_html(html, test_document_config(), false);
+        layout_doc(&mut doc);
+        doc
+    }
+
+    fn scroll_y(doc: &mut BaseDocument) -> f64 {
+        viewport::state(doc).scroll_y
+    }
+
+    #[test]
+    fn scroll_down_keys_move_the_page_down_by_a_page_step() {
+        for action in [ScrollAction::Down, ScrollAction::PageDown] {
+            let mut doc = tall_document();
+            apply_scroll_action(&mut doc, action);
+            let y = scroll_y(&mut doc);
+            assert!(y > 0.0 && y <= 600.0, "{action:?} scrolled to {y}");
+        }
+    }
+
+    #[test]
+    fn scroll_up_keys_move_the_page_up_and_clamp_at_the_top() {
+        let mut doc = tall_document();
+        viewport::scroll_to(&mut doc, 0.0, 1000.0);
+        apply_scroll_action(&mut doc, ScrollAction::PageUp);
+        let y = scroll_y(&mut doc);
+        assert!(y > 0.0 && y < 1000.0, "PageUp scrolled to {y}");
+        viewport::scroll_to(&mut doc, 0.0, 10.0);
+        apply_scroll_action(&mut doc, ScrollAction::Up);
+        assert_eq!(scroll_y(&mut doc), 0.0);
+    }
+
+    #[test]
+    fn scroll_home_goes_to_top_and_end_to_the_clamped_bottom() {
+        let mut doc = tall_document();
+        apply_scroll_action(&mut doc, ScrollAction::End);
+        let state = viewport::state(&mut doc);
+        assert_eq!(state.scroll_y, state.scroll_height - state.height);
+        assert!(state.scroll_y > 1000.0);
+        apply_scroll_action(&mut doc, ScrollAction::Down);
+        assert_eq!(
+            scroll_y(&mut doc),
+            state.scroll_y,
+            "Down clamps at the bottom"
+        );
+        apply_scroll_action(&mut doc, ScrollAction::Home);
+        assert_eq!(scroll_y(&mut doc), 0.0);
+        apply_scroll_action(&mut doc, ScrollAction::Home);
+        assert_eq!(scroll_y(&mut doc), 0.0);
     }
 
     fn chrome_test_document() -> BaseDocument {

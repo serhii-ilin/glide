@@ -15,6 +15,7 @@ gherkin: "backfill pending"
 tests:
   [
     "`keyboard::tests::readme_shortcut_table`",
+    "`keyboard::tests::{scroll_down_keys_move_the_page_down_by_a_page_step,scroll_up_keys_move_the_page_up_and_clamp_at_the_top,scroll_home_goes_to_top_and_end_to_the_clamped_bottom}`",
     "manual browser-shortcuts-cmd-ctrl-l#1–browser-shortcuts-cmd-ctrl-l#10"
   ]
 mcp: "n/a (chrome UI)"

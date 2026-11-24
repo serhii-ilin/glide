@@ -623,3 +623,26 @@ fn js_disabled_session_reads_static_text() {
     assert!(text.contains("MCP Page A"));
     assert!(!text.contains("script ran"));
 }
+
+// Source: product decision (fail-safe rendering, F-087).
+#[test]
+fn blank_scripted_page_falls_back_to_static_text() {
+    let backend = session_js_on();
+    call(
+        &backend,
+        ControlRequest::Navigate(NavigateParams {
+            url: fixture_url("failsafe/blank-body.html"),
+            timeout_ms: None,
+        }),
+    )
+    .expect("navigate");
+    let ControlResult::Text { text, .. } = call(
+        &backend,
+        ControlRequest::SnapshotText(TextParams { max_chars: None }),
+    )
+    .expect("snapshot") else {
+        panic!("expected text");
+    };
+    assert!(text.contains("FAILSAFE-SERVER-TEXT"), "{text}");
+    assert!(text.contains("FAILSAFE-NOSCRIPT-TEXT"), "{text}");
+}

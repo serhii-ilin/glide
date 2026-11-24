@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html><head><title>Fail-safe hidden then throw</title></head>
+<body>
+  <h1>FAILSAFE-HIDDEN-HEADLINE</h1>
+  <p>FAILSAFE-HIDDEN-TEXT</p>
+  <script>
+    // Hides the shell until hydration, then hydration throws.
+    var s = document.createElement('style');
+    s.textContent = 'body > * { display: none !important }';
+    document.head.appendChild(s);
+    throw new Error('hydration failed');
+  </script>
+</body></html>

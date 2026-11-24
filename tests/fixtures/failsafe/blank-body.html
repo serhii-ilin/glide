@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html><head><title>Fail-safe blank body</title></head>
+<body>
+  <h1>FAILSAFE-HEADLINE</h1>
+  <p>FAILSAFE-SERVER-TEXT</p>
+  <noscript><p>FAILSAFE-NOSCRIPT-TEXT</p></noscript>
+  <script>
+    // An app that wipes its server-rendered shell and then never renders.
+    document.body.innerHTML = '';
+  </script>
+</body></html>

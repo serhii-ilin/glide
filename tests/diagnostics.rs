@@ -126,6 +126,21 @@ fn blank_script_shell_is_reported_after_load() {
 }
 
 #[test]
+fn failsafe_fallback_is_logged() {
+    let (stdout, stderr) = run_fixture("failsafe/blank-body.html", "warn");
+
+    assert!(
+        stderr.contains("target=\"js.page\"")
+            && stderr.contains("msg=\"scripted render was blank; showing static content\"")
+            && stderr.contains("status=\"fallback\"")
+            && stderr.contains("page_url=\"")
+            && stderr.contains("hint=\""),
+        "expected a fallback record: {stderr}"
+    );
+    assert!(stdout.contains("FAILSAFE-SERVER-TEXT"), "dump: {stdout}");
+}
+
+#[test]
 fn module_script_runs() {
     let (stdout, stderr) = run_fixture("module-script.html", "warn");
 

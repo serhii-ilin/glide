@@ -526,6 +526,17 @@ impl HeadlessSession {
             }
         }
 
+        let (document, js_host) = if self.opts.js_enabled
+            && !html.trim().is_empty()
+            && !headless::has_visible_content(&document.0)
+            && let Some((fallback, static_host)) =
+                headless::static_fallback(&html, &final_url, &net, &navigation)
+        {
+            headless::log_static_fallback(&final_url);
+            (fallback, static_host)
+        } else {
+            (document, js_host)
+        };
         self.document = Some(document);
         self.js_host = Some(js_host);
         self.epoch = new_epoch;

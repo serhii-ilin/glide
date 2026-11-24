@@ -237,6 +237,86 @@ pub fn load(url: &str, js_enabled: bool) -> Result<HtmlPageDocument, String> {
     }
 }
 
+/// Parse `html` into a document wired to `net`, with scripting on or off.
+fn page_document(
+    html: &str,
+    final_url: &str,
+    net_impl: &Arc<Provider>,
+    navigation: &Arc<JsNavigation>,
+    scripting: bool,
+) -> (HtmlPageDocument, JsTap) {
+    let net_provider: Arc<dyn NetProvider> = net_impl.clone();
+    let tap = if scripting {
+        JsTap::new_enabled()
+    } else {
+        JsTap::new_disabled()
+    };
+    let html_provider = GlideHtmlProvider {
+        scripting_enabled: Arc::new(AtomicBool::new(scripting)),
+        js_tap: tap.clone(),
+    };
+    let config = DocumentConfig {
+        base_url: Some(final_url.to_string()),
+        net_provider: Some(net_provider),
+        navigation_provider: Some(navigation.clone()),
+        html_parser_provider: Some(Arc::new(html_provider)),
+        viewport: Some(Viewport::new(
+            VIEWPORT_WIDTH,
+            VIEWPORT_HEIGHT,
+            1.0,
+            ColorScheme::Light,
+        )),
+        ..Default::default()
+    };
+    (
+        HtmlPageDocument(parse::document_from_html(html, config, scripting)),
+        tap,
+    )
+}
+
+/// Re-render `html` with scripting off after the scripted render came out blank.
+///
+/// Returns the static document only when it shows something, so a page that is
+/// blank either way keeps its scripted document and its blank-page record.
+pub fn static_fallback(
+    html: &str,
+    final_url: &str,
+    net_impl: &Arc<Provider>,
+    navigation: &Arc<JsNavigation>,
+) -> Option<(HtmlPageDocument, JsHost)> {
+    let (mut document, tap) = page_document(html, final_url, net_impl, navigation, false);
+    let mut js_host = JsHost::new(false, tap, Some(net_impl.clone()));
+    let handle = tokio::runtime::Handle::current();
+    js_host.maybe_start_page(&document.0, final_url, &handle);
+    let _outcome = settle(
+        &mut document.0,
+        &mut js_host,
+        net_impl,
+        false,
+        SettleOptions::default(),
+        || {},
+    );
+    document.0.resolve(0.0);
+    has_visible_content(&document.0).then_some((document, js_host))
+}
+
+/// Record that a blank scripted render was replaced by the static document (F-087).
+pub fn log_static_fallback(final_url: &str) {
+    logging::warn(
+        "js.page",
+        "scripted render was blank; showing static content",
+        &[
+            ("page_url", final_url.to_string()),
+            ("status", "fallback".into()),
+            (
+                "hint",
+                "Showing the server-rendered HTML parsed with scripting off (noscript content included); the page's own scripts failed to render it (F-087)."
+                    .into(),
+            ),
+        ],
+    );
+}
+
 fn load_once(
     url: &str,
     js_enabled: bool,
@@ -252,33 +332,9 @@ fn load_once(
     };
     let html = String::from_utf8_lossy(&bytes);
 
-    let net_provider: Arc<dyn NetProvider> = net_impl.clone();
-    let tap = if js_enabled {
-        JsTap::new_enabled()
-    } else {
-        JsTap::new_disabled()
-    };
-    let html_provider = GlideHtmlProvider {
-        scripting_enabled: Arc::new(AtomicBool::new(js_enabled)),
-        js_tap: tap.clone(),
-    };
-    let mut js_host = JsHost::new(js_enabled, tap, Some(net_impl.clone()));
     let navigation = Arc::new(JsNavigation::default());
-
-    let config = DocumentConfig {
-        base_url: Some(final_url.clone()),
-        net_provider: Some(net_provider),
-        navigation_provider: Some(navigation.clone()),
-        html_parser_provider: Some(Arc::new(html_provider)),
-        viewport: Some(Viewport::new(
-            VIEWPORT_WIDTH,
-            VIEWPORT_HEIGHT,
-            1.0,
-            ColorScheme::Light,
-        )),
-        ..Default::default()
-    };
-    let mut document = HtmlPageDocument(parse::document_from_html(&html, config, js_enabled));
+    let (mut document, tap) = page_document(&html, &final_url, &net_impl, &navigation, js_enabled);
+    let mut js_host = JsHost::new(js_enabled, tap, Some(net_impl.clone()));
 
     js_host.set_console_route(0, 1);
     js_host.maybe_start_page(&document.0, &final_url, &handle);
@@ -313,6 +369,11 @@ fn load_once(
                     ),
                 ],
             );
+            if let Some((fallback, _)) = static_fallback(&html, &final_url, &net_impl, &navigation)
+            {
+                log_static_fallback(&final_url);
+                document = fallback;
+            }
         }
     }
 
@@ -359,6 +420,12 @@ fn visible_in_subtree(doc: &BaseDocument, id: NodeId, parent_laid_out: bool) -> 
         }
         _ => false,
     }
+}
+
+fn has_element_child(doc: &BaseDocument, node: &blitz_dom::Node) -> bool {
+    node.children
+        .iter()
+        .any(|id| doc.get_node(*id).is_some_and(|child| child.is_element()))
 }
 
 /// Collapse whitespace in each line, drop blank lines, and append a trailing newline.
@@ -437,10 +504,13 @@ fn append_visible_text(
             {
                 return;
             }
+            // A scripting-on parse keeps `<noscript>` content as raw text; a
+            // scripting-off parse (the F-087 static fallback) yields elements, which show.
             if scripting_enabled
                 && node_ref
                     .data
                     .is_element_with_tag_name(&local_name!("noscript"))
+                && !has_element_child(doc, node_ref)
             {
                 return;
             }
@@ -509,6 +579,15 @@ mod tests {
             r#"<!DOCTYPE html><html><body><img width="10" height="10"></body></html>"#,
         );
         assert!(has_visible_content(&doc));
+    }
+
+    #[test]
+    fn noscript_text_hidden_when_scripting_parse_but_shown_for_static_parse() {
+        let html = "<!DOCTYPE html><html><body><noscript><p>NS-TEXT</p></noscript></body></html>";
+        let scripted = doc_from_html(html, true);
+        assert!(!format_dump_text(&scripted, true).contains("NS-TEXT"));
+        let static_doc = doc_from_html(html, false);
+        assert!(format_dump_text(&static_doc, true).contains("NS-TEXT"));
     }
 
     #[test]

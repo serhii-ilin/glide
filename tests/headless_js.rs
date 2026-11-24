@@ -1270,3 +1270,37 @@ fn reddit_dom_api_smoke_fixture() {
     assert!(text.contains("sib:|b||a|"), "{text}");
     assert!(text.contains("ap:pr-rc-ap"), "{text}");
 }
+
+// Source: product decision (fail-safe rendering); HTML Living Standard (scripting-disabled parse).
+#[test]
+fn failsafe_blank_body_falls_back_to_static_content() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("failsafe/blank-body.html"), true).expect("load");
+    assert!(text.contains("FAILSAFE-HEADLINE"), "{text}");
+    assert!(text.contains("FAILSAFE-SERVER-TEXT"), "{text}");
+    assert!(text.contains("FAILSAFE-NOSCRIPT-TEXT"), "{text}");
+}
+
+#[test]
+fn failsafe_hidden_then_throw_falls_back_to_static_content() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let mut page = load(&fixture_url("failsafe/hidden-then-throw.html"), true).expect("load");
+    page.0.resolve(0.0);
+    assert!(
+        glide::headless::has_visible_content(&page.0),
+        "the hidden shell must be replaced by visible static content"
+    );
+    let text = glide::headless::format_dump_text(&page.0, false);
+    assert!(text.contains("FAILSAFE-HIDDEN-TEXT"), "{text}");
+}
+
+#[test]
+fn failsafe_keeps_scripted_content_when_it_renders() {
+    let rt = tokio_runtime();
+    let _guard = rt.enter();
+    let text = dump_text(&fixture_url("failsafe/dynamic-ok.html"), true).expect("load");
+    assert!(text.contains("FAILSAFE-DYNAMIC-OK"), "{text}");
+    assert!(!text.contains("FAILSAFE-STATIC-ONLY"), "{text}");
+}

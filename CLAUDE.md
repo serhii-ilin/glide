@@ -14,8 +14,9 @@ failed escalation.
   tasks, `opus` for L tasks (cross-module, JS/V8 runtime, threading, Blitz internals).
 - **Merge:** local `git merge --no-ff feat/<task>` into `main`, no PR, then delete the
   branch. Commit or merge only after the gates pass.
-- **Registry and specs:** before merging, check that `docs/features.md` reflects the change,
-  including the structured requirement source, feature description, Gherkin path and
-  TDD-derived tests. New or changed behavior must add or update its `.feature` script.
+- **Registry and specs:** before merging, run `node scripts/registry.mjs --check` and check that the slug files in
+  `docs/requirements/` and `docs/features/` reflect the change (choose a slug, never a
+  number), including the structured requirement source, feature description, Gherkin path
+  and TDD-derived tests. `docs/features.md` is generated and git-ignored. New or changed behavior must add or update its `.feature` script.
 - **Compatibility findings:** fix only super-critical issues (crash, hang, panic, data
   loss, broken keyboard or JS toggle); log everything else as `deferred`.

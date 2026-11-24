@@ -68,7 +68,7 @@ fn icon_warning_fields(error_kind: &str, detail: String) -> Vec<(&'static str, S
         ("detail", detail),
         (
             "hint",
-            "The window keeps the default icon; see F-079 in docs/features.md.".into(),
+            "The window keeps the default icon; see docs/features/app-identity.md.".into(),
         ),
     ]
 }

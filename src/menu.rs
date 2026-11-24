@@ -38,7 +38,7 @@ pub fn native_menu_warning_fields(error_kind: &str, detail: String) -> Vec<(&'st
         ("detail", detail),
         (
             "hint",
-            "Commands remain available through keyboard shortcuts; see F-049 in docs/features.md."
+            "Commands remain available through keyboard shortcuts; see docs/features/native-menu-bar.md."
                 .into(),
         ),
     ]

@@ -43,6 +43,11 @@ Feature: mcp-scroll Headless scrolling, scroll events and infinite scroll
     When the viewport moves, from the agent or from page scrollTo and scrollBy
     Then each listener runs for the move, with scrollY already updated
 
+  Scenario: A page scrollTo to the offset the host just set fires exactly one scroll event
+    Given a page with a scroll listener whose viewport the host moved without the page knowing
+    When the page calls scrollTo with that same offset in the same task
+    Then exactly one scroll event fires
+
   Scenario: An IntersectionObserver sentinel loads more content after a scroll
     Given an infinite-scroll page observing a sentinel at the bottom
     When the agent scrolls to the bottom

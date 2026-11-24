@@ -1674,7 +1674,10 @@
             layoutCache.clear();
             return;
           }
-          const cur = global.__glide_viewport_state();
+          let cur = { scrollX: 0, scrollY: 0 };
+          try {
+            cur = global.__glide_viewport_state() || cur;
+          } catch (_) { /* viewport state unavailable: scroll from the origin */ }
           const x = axis === 0 ? next : cur.scrollX;
           const y = axis === 1 ? next : cur.scrollY;
           if (typeof global.scrollTo === 'function') global.scrollTo(x, y);
@@ -1699,7 +1702,7 @@
       } catch (_) { /* detached or unknown node: nothing to scroll */ }
       layoutCache.clear();
       if (typeof global.__glide_after_viewport_scroll === 'function') {
-        global.__glide_after_viewport_scroll(before, after);
+        global.__glide_after_viewport_scroll(after);
       }
     };
   }

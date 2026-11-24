@@ -841,18 +841,16 @@
     requestAnimationFrame(fireScrollEvents);
   }
 
-  function viewportMoved(before, after) {
-    return !!after && !!before
-      && (after.scrollX !== before.scrollX || after.scrollY !== before.scrollY);
-  }
-
-  // Offset the page last knew about (updated by page-initiated scrolls and host notices), so a
-  // host notice for a move the page made itself does not fire a second `scroll` event.
+  // Offset the page runtime last saw (updated by page-initiated scrolls and host notices), so a
+  // move is reported once however it reaches the page: a `scroll` event is queued only when
+  // the new offset differs from this one, never from a possibly stale "before" snapshot.
   let knownScroll = { scrollX: 0, scrollY: 0 };
 
-  function noteScroll(before, after) {
+  function noteScroll(after) {
+    if (!after) return;
+    if (after.scrollX === knownScroll.scrollX && after.scrollY === knownScroll.scrollY) return;
     knownScroll = { scrollX: after.scrollX, scrollY: after.scrollY };
-    if (viewportMoved(before, after)) queueScrollEvent();
+    queueScrollEvent();
   }
 
   global.__glide_after_viewport_scroll = noteScroll;
@@ -861,7 +859,7 @@
   // and run the scroll steps unless the page already knows this offset.
   global.__glide_viewport_scrolled = function () {
     if (typeof global.__glide_begin_task === 'function') global.__glide_begin_task();
-    noteScroll(knownScroll, viewportState());
+    noteScroll(viewportState());
   };
 
   function scrollViewportTo(x, y) {
@@ -875,7 +873,7 @@
     }
     if (typeof global.__glide_begin_task === 'function') global.__glide_begin_task();
     if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
-    noteScroll(before, after);
+    noteScroll(after);
   }
 
   // scrollTo/scroll/scrollBy take (x, y) or an options dictionary {left, top, behavior}.

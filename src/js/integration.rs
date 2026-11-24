@@ -3673,12 +3673,12 @@ fn page_scroll_to_and_by_move_viewport_and_fire_scroll_events() {
       scrollBy({ top: 25, behavior: 'auto' });
       setTimeout(function () {
         document.getElementById('t').textContent =
-          [afterTo, afterBy, window.scrollY, events >= 1].join('|');
+          [afterTo, afterBy, window.scrollY, events].join('|');
       }, 200);
     </script></body></html>"#;
     let result =
         super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(700));
-    assert_eq!(result.final_text, "100|150|175|true");
+    assert_eq!(result.final_text, "100|150|175|1");
 }
 
 // Source: CSSOM View Module (Element.scrollTop/scrollLeft setters scroll the element, clamped).
@@ -3713,6 +3713,28 @@ fn element_scroll_top_and_left_setters_scroll_overflow_container_and_clamp() {
     let result =
         super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(400));
     assert_eq!(result.final_text, "40|900|0|70:0|200|500/5");
+}
+
+// Source: CSSOM View Module (scroll steps: one scroll event per scroll position change).
+#[test]
+fn page_scroll_to_the_offset_the_host_just_set_fires_exactly_one_scroll_event() {
+    let html = r#"<!DOCTYPE html><html><head><style>body { margin: 0; height: 1500px; }</style>
+    </head><body><p id="t">pending</p>
+    <script>
+      var events = 0;
+      window.addEventListener('scroll', function () { events += 1; });
+      setTimeout(function () {
+        // The host moved the viewport (wheel or agent) and the page has not heard yet.
+        __glide_dom_sync('scrollViewport', 0, '0', '200');
+        scrollTo(0, 200);
+      }, 20);
+      setTimeout(function () {
+        document.getElementById('t').textContent = window.scrollY + '|' + events;
+      }, 400);
+    </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(700));
+    assert_eq!(result.final_text, "200|1");
 }
 
 // Source: DOM Standard (the document element can be removed); product decision (no panic).

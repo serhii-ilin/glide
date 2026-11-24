@@ -3202,6 +3202,48 @@ fn intersection_observer_threshold_crossing_fires() {
     );
 }
 
+// Source: Intersection Observer spec (zero-area targets); Reddit's next-page sentinel is 0x0.
+#[test]
+fn intersection_observer_reports_zero_size_target_inside_viewport() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div style="height:50px"></div>
+      <div id="s" style="width:0;height:0"></div>
+      <p id="t">pending</p>
+      <script>
+        var io = new IntersectionObserver(function (entries) {
+          var e = entries[0];
+          document.getElementById('t').textContent = e.isIntersecting + '|' + e.intersectionRatio;
+        });
+        io.observe(document.getElementById('s'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "true|1");
+}
+
+#[test]
+fn intersection_observer_zero_size_sentinel_fires_after_scroll() {
+    let html = r#"<!DOCTYPE html><html><body style="margin:0">
+      <div style="height:1500px"></div>
+      <div id="s" style="width:0;height:0"></div>
+      <div style="height:600px"></div>
+      <p id="t">pending</p>
+      <script>
+        var seen = [];
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) { seen.push(String(e.isIntersecting)); });
+          document.getElementById('t').textContent = seen.join(',');
+        });
+        io.observe(document.getElementById('s'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_viewport_scroll(
+        html,
+        Duration::from_millis(300),
+        1300.0,
+        Duration::from_millis(400),
+    );
+    assert_eq!(result.final_text, "false,true");
+}
+
 #[test]
 fn intersection_observer_take_records_buffers_entries() {
     let html = r#"<!DOCTYPE html><html><body>

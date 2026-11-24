@@ -423,16 +423,26 @@
     return { x: left, y: top, top, left, right, bottom, width: w, height: h };
   }
 
+  function isZeroArea(rect) {
+    return !(rect.width > 0 && rect.height > 0);
+  }
+
+  // A zero-area target (a 0x0 or 1-dimensional sentinel, as infinite-scroll feeds use)
+  // intersects when its edge-adjacent rectangle lies inside the root, inclusive of edges
+  // (Intersection Observer, "compute the intersection").
   function rectsOverlap(a, b) {
-    return a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0
-      && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    if (!(b.width > 0 && b.height > 0)) return false;
+    if (isZeroArea(a)) {
+      return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+    }
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
   }
 
   function overlapRatio(rect, root) {
     if (!rectsOverlap(rect, root)) return 0;
+    if (isZeroArea(rect)) return 1;
     const box = intersectRect(rect, root);
-    const area = rect.width * rect.height;
-    return area > 0 ? (box.width * box.height) / area : 0;
+    return (box.width * box.height) / (rect.width * rect.height);
   }
 
   function viewportRootBounds() {

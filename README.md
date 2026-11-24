@@ -135,7 +135,12 @@ process can read are loadable.
 
 **Shipped tools:** `glide_navigate`, `glide_back`, `glide_forward`, `glide_reload`,
 `glide_page_info`, `glide_snapshot_text`, `glide_dom`, `glide_query`, `glide_computed_style`,
-`glide_screenshot`.
+`glide_screenshot`, `glide_scroll`.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `glide_scroll` | `dx`, `dy` (CSS px), `to_selector`, `timeout_ms` (default 3000) | JSON `{x, y, scroll_width, scroll_height, viewport_width, viewport_height, settled}` after page scripts react (scroll events, IntersectionObserver, `fetch`, all bounded by `timeout_ms`; `settled` is false if the page was still busy); call repeatedly for infinite-scroll pages |
+| `glide_screenshot` | `full_page` (default false) | PNG of the 1100x760 viewport at the current scroll offset, or of the whole document (capped at 16384 px) |
 
 **Planned:** `glide_console_messages`, `glide_eval`, click/type tools, tab helpers,
 `glide --mcp --attach` to drive a live window (`glide --remote-control`, feature `remote-control-window`).
@@ -179,7 +184,7 @@ Globals: `self` / `window` / `globalThis` (`String(window)` is `[object Window]`
 
 Form controls mirror Blitz on `input`/`textarea` `.value` and `.checked` getters and sync before `requestSubmit`/`submit`. Headless and MCP loads follow `POST` navigations as `application/x-www-form-urlencoded` (multipart document posts are unsupported); history back loads the previous URL with `GET` only.
 
-Layout reads go to Blitz by node id. `getBoundingClientRect` and `offsetWidth` / `offsetHeight` / `offsetTop` / `offsetLeft` use Blitz's border box (`offset*` is relative to the offset parent). `clientWidth` / `clientHeight` are that same border-box size, not the CSS padding box. `getComputedStyle` returns Blitz's resolved value for the property (used values for layout-dependent properties such as `width`). There is no `Range`. ES modules resolve `file://`, `data:`, and `http(s)` imports; inline `<script type="importmap">` remaps bare specifiers for static and dynamic imports. No workers or service workers. Five-second per-script watchdog. `tests/fixtures/counter.html`, `js-toggle.html`, `web-api-shims.html`, and `observers.html` are smoke tests; WPT `dom/nodes` and Acid3 scores are in `docs/compat/REPORT.md`.
+Layout reads go to Blitz by node id. `getBoundingClientRect` and `offsetWidth` / `offsetHeight` / `offsetTop` / `offsetLeft` use Blitz's border box (`offset*` is relative to the offset parent). `clientWidth` / `clientHeight` are that same border-box size, not the CSS padding box, except on the root element, where they are the viewport size (so IntersectionObserver and `scrollingElement` math match other browsers). `getComputedStyle` returns Blitz's resolved value for the property (used values for layout-dependent properties such as `width`). There is no `Range`. ES modules resolve `file://`, `data:`, and `http(s)` imports; inline `<script type="importmap">` remaps bare specifiers for static and dynamic imports. No workers or service workers. Five-second per-script watchdog. `tests/fixtures/counter.html`, `js-toggle.html`, `web-api-shims.html`, and `observers.html` are smoke tests; WPT `dom/nodes` and Acid3 scores are in `docs/compat/REPORT.md`.
 
 ### Diagnostics
 

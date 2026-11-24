@@ -94,6 +94,12 @@ pub struct JsHost {
     console_page_epoch: u64,
     host_wake: Arc<HostWake>,
     session_history: Arc<Mutex<History>>,
+    /// Viewport scroll offset last seen on the page document; a change is reported to the page.
+    last_page_scroll: (f64, f64),
+    pending_fetches: super::apply::PendingFetches,
+    /// True for the window app, where the page lives in the chrome document's `#page` iframe.
+    /// Headless hosts load the page itself as the document.
+    window_mode: bool,
 }
 
 impl JsHost {
@@ -118,6 +124,9 @@ impl JsHost {
             console_page_epoch: 1,
             host_wake: Arc::new(HostWake::new()),
             session_history: Arc::new(Mutex::new(History::new(String::new()))),
+            last_page_scroll: (0.0, 0.0),
+            pending_fetches: super::apply::PendingFetches::default(),
+            window_mode: false,
         }
     }
 
@@ -127,6 +136,12 @@ impl JsHost {
 
     pub fn session_history(&self) -> Arc<Mutex<History>> {
         Arc::clone(&self.session_history)
+    }
+
+    /// Mark this host as driving the window app (page in the chrome document's iframe).
+    pub fn in_window(mut self) -> Self {
+        self.window_mode = true;
+        self
     }
 
     pub fn set_waker(&self, waker: JsWaker) {
@@ -269,6 +284,7 @@ impl JsHost {
         super::storage_events::unregister_command_sender(retiring);
         super::storage_events::detach(retiring);
         self.worker = None;
+        self.last_page_scroll = (0.0, 0.0);
         self.started_for = None;
         self.pending_sources = None;
         self.pending_indices = None;
@@ -479,6 +495,7 @@ impl JsHost {
         self.try_finish_pending_sources();
 
         let mut redraw = self.drain_dom_rpc(chrome);
+        self.report_viewport_scroll(chrome);
 
         if let Some(worker) = &self.worker {
             worker.pump(self.now_ms());
@@ -489,6 +506,22 @@ impl JsHost {
             dispatch_tap_event(chrome, &self.worker, &evt, &mut redraw);
         }
         redraw
+    }
+
+    /// Tell the page runtime when the page viewport offset changed since the last pump, whoever
+    /// moved it (window wheel or keys, an agent scroll, page script). The runtime ignores a
+    /// move it already knows about, so a page-initiated `scrollTo` does not fire twice.
+    fn report_viewport_scroll(&mut self, chrome: &BaseDocument) {
+        let Some(now) = page_scroll_offset(chrome, self.window_mode) else {
+            return;
+        };
+        if now == self.last_page_scroll {
+            return;
+        }
+        self.last_page_scroll = now;
+        if let Some(worker) = &self.worker {
+            worker.viewport_scrolled();
+        }
     }
 
     pub fn flush_dom_rpc(&mut self, chrome: &mut BaseDocument, budget: Duration) -> bool {
@@ -514,6 +547,11 @@ impl JsHost {
         redraw | self.drain_dom_rpc(chrome)
     }
 
+    /// Page `fetch()` requests dispatched whose reply has not been delivered yet.
+    pub fn outstanding_fetches(&self) -> usize {
+        self.pending_fetches.count()
+    }
+
     /// Drain DOM RPC until `idle` passes with no messages or `max` elapses (headless session).
     pub fn flush_dom_rpc_until_idle(
         &mut self,
@@ -521,12 +559,39 @@ impl JsHost {
         max: Duration,
         idle: Duration,
     ) -> bool {
+        self.flush_dom_rpc_idle(chrome, max, idle, false).0
+    }
+
+    /// Like [`Self::flush_dom_rpc_until_idle`], but idle also needs every page `fetch()` answered.
+    /// Returns the redraw flag and whether idle was reached before `max` elapsed.
+    pub fn flush_dom_rpc_until_fetches_idle(
+        &mut self,
+        chrome: &mut BaseDocument,
+        max: Duration,
+        idle: Duration,
+    ) -> (bool, bool) {
+        self.flush_dom_rpc_idle(chrome, max, idle.min(max), true)
+    }
+
+    fn flush_dom_rpc_idle(
+        &mut self,
+        chrome: &mut BaseDocument,
+        max: Duration,
+        idle: Duration,
+        wait_for_fetches: bool,
+    ) -> (bool, bool) {
         if !self.is_enabled() {
-            return false;
+            return (false, true);
+        }
+        if max.is_zero() {
+            // No budget left: report quiet when nothing is queued or in flight.
+            let redraw = self.drain_dom_rpc(chrome);
+            return (redraw, !wait_for_fetches || self.outstanding_fetches() == 0);
         }
         let deadline = Instant::now() + max;
         let mut last_rpc = Instant::now();
         let mut redraw = false;
+        let mut quiet = false;
         while Instant::now() < deadline {
             self.try_finish_pending_sources();
             match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
@@ -535,17 +600,23 @@ impl JsHost {
                     last_rpc = Instant::now();
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    if last_rpc.elapsed() >= idle {
+                    if last_rpc.elapsed() >= idle
+                        && (!wait_for_fetches || self.outstanding_fetches() == 0)
+                    {
+                        quiet = true;
                         break;
                     }
                     if let Some(worker) = &self.worker {
                         worker.pump(self.now_ms());
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    quiet = true;
+                    break;
+                }
             }
         }
-        redraw | self.drain_dom_rpc(chrome)
+        (redraw | self.drain_dom_rpc(chrome), quiet)
     }
 
     fn drain_dom_rpc(&mut self, chrome: &mut BaseDocument) -> bool {
@@ -574,7 +645,13 @@ impl JsHost {
         }
         match rpc.request {
             DomRequest::Fetch(fetch) => {
-                super::apply::start_fetch(self.net.clone(), &self.base_url, fetch, rpc.reply);
+                super::apply::start_fetch(
+                    self.net.clone(),
+                    &self.base_url,
+                    fetch,
+                    self.pending_fetches.begin(),
+                    rpc.reply,
+                );
                 false
             }
             DomRequest::WebSocketConnect {
@@ -647,9 +724,10 @@ impl JsHost {
                 false
             }
             request => {
+                let changes_page = !request.is_layout_read();
                 let response = self.apply_dom_rpc(chrome, request);
                 let _ = rpc.reply.send(response);
-                true
+                changes_page
             }
         }
     }
@@ -804,6 +882,21 @@ fn log_discovered_scripts(page_url: &str, specs: &[ScriptSpec]) {
 
 fn page_document_id(chrome: &BaseDocument) -> usize {
     with_page_subdoc(chrome, |doc| doc.id()).unwrap_or_else(|| chrome.id())
+}
+
+/// The page document's viewport scroll offset. In the window the page is the `#page` iframe's
+/// subdocument; without one there is nothing to report (the chrome document's own scroll is not
+/// the page's). A headless host's document is the page itself.
+fn page_scroll_offset(chrome: &BaseDocument, window_mode: bool) -> Option<(f64, f64)> {
+    let read = |doc: &BaseDocument| {
+        let scroll = doc.viewport_scroll();
+        (scroll.x, scroll.y)
+    };
+    match with_page_subdoc(chrome, read) {
+        Some(offset) => Some(offset),
+        None if window_mode => None,
+        None => Some(read(chrome)),
+    }
 }
 
 fn with_page_subdoc<R>(chrome: &BaseDocument, f: impl FnOnce(&BaseDocument) -> R) -> Option<R> {
@@ -988,6 +1081,31 @@ mod tests {
 
         host.maybe_start_page(&doc_b, url, handle);
         assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
+    }
+
+    #[test]
+    fn flush_with_no_budget_reports_quiet_when_nothing_is_in_flight() {
+        let (_worker, _console) = worker_test_lock();
+        let mut doc = page_doc(true);
+        let mut host = JsHost::new(true, JsTap::new_enabled(), None);
+        let (_, quiet) = host.flush_dom_rpc_until_fetches_idle(
+            &mut doc,
+            Duration::ZERO,
+            Duration::from_millis(100),
+        );
+        assert!(
+            quiet,
+            "an idle host with no budget must report quiet, not 'gave up'"
+        );
+    }
+
+    #[test]
+    fn page_scroll_offset_ignores_chrome_scroll_in_window_mode_without_a_page() {
+        let mut doc = page_doc(false);
+        doc.resolve(0.0);
+        crate::js::viewport::scroll_to(&mut doc, 0.0, 0.0);
+        assert_eq!(page_scroll_offset(&doc, true), None);
+        assert_eq!(page_scroll_offset(&doc, false), Some((0.0, 0.0)));
     }
 
     #[test]

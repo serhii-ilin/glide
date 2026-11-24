@@ -419,6 +419,31 @@ pub fn reply_computed_style(
     DomResponse::ok(reply, DomValue::String(value))
 }
 
+/// CSSOM View `scrollWidth`/`scrollHeight`/`scrollTop`/`scrollLeft`. The root element reports
+/// the viewport (document) values; other elements their own scrollable overflow and offset.
+fn scroll_field(
+    doc: &mut BaseDocument,
+    id: blitz_traits::node_id::NodeId,
+    field: &str,
+) -> Option<f64> {
+    if doc.try_root_element().is_some_and(|root| root.id == id) {
+        let state = super::viewport::state(doc);
+        return Some(match field {
+            "scrollWidth" => state.scroll_width,
+            "scrollHeight" => state.scroll_height,
+            "scrollTop" => state.scroll_y,
+            _ => state.scroll_x,
+        });
+    }
+    let node = doc.get_node(id)?;
+    Some(match field {
+        "scrollWidth" => f64::from(node.scroll_width()),
+        "scrollHeight" => f64::from(node.scroll_height()),
+        "scrollTop" => node.scroll_offset().y,
+        _ => node.scroll_offset().x,
+    })
+}
+
 pub fn reply_layout_number(
     doc: &mut BaseDocument,
     raw: u64,
@@ -430,6 +455,18 @@ pub fn reply_layout_number(
     let offset = doc.offset_rect(id);
     let border = doc.get_client_bounding_rect(id);
     let n = match field {
+        // CSSOM View: the root element's client size is the viewport (excluding scrollbars).
+        "clientWidth" | "clientHeight"
+            if doc.try_root_element().is_some_and(|root| root.id == id) =>
+        {
+            let viewport = super::viewport::state(doc);
+            let n = if field == "clientWidth" {
+                viewport.width
+            } else {
+                viewport.height
+            };
+            return DomResponse::ok(reply, DomValue::Number(n));
+        }
         "offsetWidth" => offset.map(|r| r.width).or_else(|| border.map(|r| r.width)),
         "offsetHeight" => offset
             .map(|r| r.height)
@@ -440,6 +477,12 @@ pub fn reply_layout_number(
         // does not expose that edge separately.
         "clientWidth" => border.map(|r| r.width),
         "clientHeight" => border.map(|r| r.height),
+        "scrollWidth" | "scrollHeight" | "scrollTop" | "scrollLeft" => {
+            return DomResponse::ok(
+                reply,
+                DomValue::Number(scroll_field(doc, id, field).unwrap_or(0.0)),
+            );
+        }
         _ => None,
     }
     .unwrap_or(0.0);

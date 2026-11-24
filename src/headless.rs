@@ -28,6 +28,8 @@ pub struct SettleOptions {
     pub min_js: Duration,
     pub max: Duration,
     pub quiet_ticks: u32,
+    /// Also wait for page `fetch()` requests in flight (they bypass the Blitz `Provider`).
+    pub wait_for_fetches: bool,
 }
 
 impl Default for SettleOptions {
@@ -36,6 +38,7 @@ impl Default for SettleOptions {
             min_js: Duration::from_secs(1),
             max: Duration::from_secs(12),
             quiet_ticks: 20,
+            wait_for_fetches: false,
         }
     }
 }
@@ -159,7 +162,8 @@ where
             js_quiet_ticks = js_quiet_ticks.saturating_add(1);
         }
         let elapsed = start.elapsed();
-        let net_done = net.is_empty();
+        let net_done =
+            net.is_empty() && !(opts.wait_for_fetches && js_host.outstanding_fetches() > 0);
         let js_done = !js_enabled || js_quiet_ticks > opts.quiet_ticks;
         match settle_decision(net_done, js_done, elapsed, min_js, opts.max) {
             Some(SettleBreak::TimedOut) => {

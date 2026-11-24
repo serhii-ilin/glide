@@ -165,10 +165,30 @@ pub enum DomRequest {
         node: u64,
         reply: u64,
     },
-    /// Set the viewport scroll offset (`window.scrollTo` x/y in CSS pixels).
+    /// Set the viewport scroll offset (`window.scrollTo` x/y in CSS pixels). Replies with the
+    /// resulting [`ViewportState`](super::viewport::ViewportState) JSON.
     ScrollViewport {
         x: f64,
         y: f64,
+        reply: u64,
+    },
+    /// Read the viewport scroll offset and size (`window.scrollY`, `innerHeight`, ...).
+    ViewportInfo {
+        reply: u64,
+    },
+    /// `Element.scrollTop`/`scrollLeft` setters on a non-root element: scroll it to the absolute
+    /// offset, clamped to its overflow. Replies with `{scrollLeft, scrollTop}` after clamping.
+    ScrollElement {
+        node: u64,
+        x: f64,
+        y: f64,
+        reply: u64,
+    },
+    /// `Element.scrollIntoView`: align the element in the viewport (`block` is a CSSOM View
+    /// `ScrollLogicalPosition` keyword). Replies with the resulting viewport state JSON.
+    ScrollIntoView {
+        node: u64,
+        block: String,
         reply: u64,
     },
 }
@@ -239,4 +259,19 @@ pub fn bubble_handles(doc: &BaseDocument, target: NodeId) -> Vec<u64> {
         cur = doc.get_node(id).and_then(|n| n.parent);
     }
     path
+}
+
+impl DomRequest {
+    /// True for requests that only read layout or viewport state. They never ask for a redraw
+    /// or count as page activity, so a page that polls geometry (IntersectionObserver checks)
+    /// still lets the headless settle loop go quiet.
+    pub fn is_layout_read(&self) -> bool {
+        matches!(
+            self,
+            DomRequest::BoundingRect { .. }
+                | DomRequest::ComputedStyle { .. }
+                | DomRequest::LayoutField { .. }
+                | DomRequest::ViewportInfo { .. }
+        )
+    }
 }

@@ -153,8 +153,8 @@ pub(crate) fn run_inline_page_with_runtime_on_base(
     run_inline_page_full(html, pump_for, rt, extra_settle, false, page_base).0
 }
 
-/// Pump, scroll the page viewport on the UI thread, then pump again.
-#[allow(dead_code)]
+/// Pump, scroll the page viewport on the UI thread (as an agent or the wheel does), then pump
+/// again; the host notices the new offset on its next pump and tells the page runtime.
 pub fn run_inline_page_with_viewport_scroll(
     html: &str,
     pump_before: Duration,
@@ -195,8 +195,7 @@ pub fn run_inline_page_with_viewport_scroll(
         js_host.pump(&mut document.0, Instant::now());
         thread::sleep(Duration::from_millis(5));
     }
-    document.0.scroll_viewport_by(0.0, scroll_y);
-    document.0.resolve(0.0);
+    crate::js::viewport::scroll_by(&mut document.0, 0.0, scroll_y);
     let scroll_start = Instant::now();
     while scroll_start.elapsed() < pump_after {
         document.0.resolve(0.0);

@@ -423,16 +423,41 @@
     return { x: left, y: top, top, left, right, bottom, width: w, height: h };
   }
 
+  function isZeroArea(rect) {
+    return !(rect.width > 0 && rect.height > 0);
+  }
+
+  // A zero-area target (a 0x0 or 1-dimensional sentinel, as infinite-scroll feeds use)
+  // intersects when its edge-adjacent rectangle lies inside the root, inclusive of edges
+  // (Intersection Observer, "compute the intersection").
   function rectsOverlap(a, b) {
-    return a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0
-      && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    if (!(b.width > 0 && b.height > 0)) return false;
+    if (isZeroArea(a)) {
+      return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+    }
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  }
+
+  // A zero-area target only counts when it has a layout box: a detached element, or one
+  // under a `display:none` / `display:contents` ancestor, reads as a (0,0,0,0) rect and
+  // must never intersect.
+  function elementHasNoBox(el) {
+    if (!el.isConnected) return true;
+    if (typeof global.getComputedStyle !== 'function') return false;
+    for (let node = el.parentNode; node && node.nodeType === 1; node = node.parentNode) {
+      try {
+        const display = global.getComputedStyle(node).display;
+        if (display === 'none' || display === 'contents') return true;
+      } catch (_) { /* layout may be unavailable */ }
+    }
+    return false;
   }
 
   function overlapRatio(rect, root) {
     if (!rectsOverlap(rect, root)) return 0;
+    if (isZeroArea(rect)) return 1;
     const box = intersectRect(rect, root);
-    const area = rect.width * rect.height;
-    return area > 0 ? (box.width * box.height) / area : 0;
+    return (box.width * box.height) / (rect.width * rect.height);
   }
 
   function viewportRootBounds() {
@@ -573,6 +598,7 @@
     if (loading !== 'lazy' || el.__glide_lazy_loaded) return;
     const rect = el.getBoundingClientRect();
     if (!rectsOverlap(rect, rootBounds)) return;
+    if (isZeroArea(rect) && elementHasNoBox(el)) return;
     el.__glide_lazy_loaded = true;
     if (typeof global.__glide_load_lazy_image === 'function') {
       global.__glide_load_lazy_image(el);
@@ -617,8 +643,8 @@
       const pending = [];
       for (const [el, state] of obs._targets) {
         if (!el || el.nodeType !== 1) continue;
-        const hidden = elementIsHidden(el);
         const rect = el.getBoundingClientRect();
+        const hidden = elementIsHidden(el) || (isZeroArea(rect) && elementHasNoBox(el));
         const ratio = hidden ? 0 : overlapRatio(rect, rootBounds);
         const isect = !hidden && ratio > 0;
         const prevRatio = state == null ? null : state.ratio;
@@ -788,34 +814,119 @@
     }
   }
 
-  function scrollViewportTo(x, y) {
+  function viewportState() {
+    if (typeof global.__glide_viewport_state === 'function') {
+      try {
+        const state = global.__glide_viewport_state();
+        if (state && !state.__error) return state;
+      } catch (_) { /* viewport may be unavailable before the page is mirrored */ }
+    }
+    return { scrollX: 0, scrollY: 0, scrollWidth: 0, scrollHeight: 0, innerWidth: 0, innerHeight: 0 };
+  }
+
+  // window.scrollX/scrollY/pageXOffset/pageYOffset/innerWidth/innerHeight/outerWidth/outerHeight
+  // read the real viewport (cached per task by dom-glue's layout cache). Assigning one
+  // replaces the getter with a plain value, as browsers allow for the size properties.
+  [
+    ['scrollX', 'scrollX'], ['pageXOffset', 'scrollX'],
+    ['scrollY', 'scrollY'], ['pageYOffset', 'scrollY'],
+    ['innerWidth', 'innerWidth'], ['outerWidth', 'innerWidth'],
+    ['innerHeight', 'innerHeight'], ['outerHeight', 'innerHeight'],
+  ].forEach(function (pair) {
+    const name = pair[0];
+    const key = pair[1];
+    Object.defineProperty(global, name, {
+      configurable: true,
+      enumerable: true,
+      get: function () { return viewportState()[key]; },
+      set: function (value) {
+        Object.defineProperty(global, name, {
+          value: value, writable: true, configurable: true, enumerable: true,
+        });
+      },
+    });
+  });
+
+  // "Run the scroll steps": one `scroll` event per animation-frame turn, fired at the document
+  // (bubbling, so window listeners run too), after the viewport actually moved.
+  let scrollEventQueued = false;
+  function fireScrollEvents() {
+    scrollEventQueued = false;
+    if (document) {
+      try {
+        document.dispatchEvent(new Event('scroll', { bubbles: true }));
+      } catch (e) { console.error(e); }
+    }
+    scheduleIntersectionChecks();
+  }
+
+  function queueScrollEvent() {
+    scheduleIntersectionChecks();
+    if (scrollEventQueued) return;
+    scrollEventQueued = true;
+    requestAnimationFrame(fireScrollEvents);
+  }
+
+  // Offset the page runtime last saw (updated by page-initiated scrolls and host notices), so a
+  // move is reported once however it reaches the page: a `scroll` event is queued only when
+  // the new offset differs from this one, never from a possibly stale "before" snapshot.
+  let knownScroll = { scrollX: 0, scrollY: 0 };
+
+  function noteScroll(after) {
+    if (!after) return;
+    if (after.scrollX === knownScroll.scrollX && after.scrollY === knownScroll.scrollY) return;
+    knownScroll = { scrollX: after.scrollX, scrollY: after.scrollY };
+    queueScrollEvent();
+  }
+
+  global.__glide_after_viewport_scroll = noteScroll;
+
+  // The host saw the viewport offset change (agent scroll or window wheel): drop cached layout
+  // and run the scroll steps unless the page already knows this offset.
+  global.__glide_viewport_scrolled = function () {
     if (typeof global.__glide_begin_task === 'function') global.__glide_begin_task();
+    noteScroll(viewportState());
+  };
+
+  function scrollViewportTo(x, y) {
+    const before = viewportState();
+    let after = before;
     if (typeof global.__glide_dom_sync === 'function') {
       try {
-        global.__glide_dom_sync('scrollViewport', 0, String(Number(x) || 0), String(Number(y) || 0));
+        const result = global.__glide_dom_sync('scrollViewport', 0, String(x), String(y));
+        if (result && !result.__error) after = result;
       } catch (_) { /* scroll may be unavailable in this build */ }
     }
+    if (typeof global.__glide_begin_task === 'function') global.__glide_begin_task();
     if (typeof global.__glide_flush_dom === 'function') global.__glide_flush_dom();
-    scheduleIntersectionChecks();
-    const root = document && document.documentElement;
-    if (root) {
-      try {
-        root.dispatchEvent(new Event('scroll', { bubbles: false }));
-      } catch (_) {
-        const evt = document.createEvent('Event');
-        evt.initEvent('scroll', false, false);
-        root.dispatchEvent(evt);
-      }
-    }
-    global.dispatchEvent(new Event('scroll', { bubbles: false }));
+    noteScroll(after);
+  }
+
+  // scrollTo/scroll/scrollBy take (x, y) or an options dictionary {left, top, behavior}.
+  // Missing or non-finite coordinates keep the current position (scrollTo) or add 0 (scrollBy).
+  function scrollCoordinates(x, y) {
+    if (x !== null && typeof x === 'object') return { left: x.left, top: x.top };
+    return { left: x, top: y };
+  }
+
+  function finiteOr(value, fallback) {
+    if (value === undefined) return fallback;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
   }
 
   global.scrollTo = function scrollTo(x, y) {
-    const nx = typeof x === 'object' && x != null ? Number(x.left) || 0 : Number(x) || 0;
-    const ny = typeof x === 'object' && x != null ? Number(x.top) || 0 : Number(y) || 0;
-    scrollViewportTo(nx, ny);
+    const cur = viewportState();
+    const c = scrollCoordinates(x, y);
+    scrollViewportTo(finiteOr(c.left, cur.scrollX), finiteOr(c.top, cur.scrollY));
   };
   global.scroll = global.scrollTo;
+
+  global.scrollBy = function scrollBy(x, y) {
+    const cur = viewportState();
+    const c = scrollCoordinates(x, y);
+    scrollViewportTo(cur.scrollX + finiteOr(c.left, 0), cur.scrollY + finiteOr(c.top, 0));
+  };
 
   function observersOrLazyImagesPending() {
     if (ioObservers.size) return true;

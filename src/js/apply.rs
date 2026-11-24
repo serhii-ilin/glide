@@ -5,6 +5,7 @@
 
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -67,7 +68,10 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::HistoryGoTo { reply, .. }
         | DomRequest::NodeCount { reply }
         | DomRequest::LoadImage { reply, .. }
-        | DomRequest::ScrollViewport { reply, .. } => *reply,
+        | DomRequest::ScrollViewport { reply, .. }
+        | DomRequest::ViewportInfo { reply }
+        | DomRequest::ScrollElement { reply, .. }
+        | DomRequest::ScrollIntoView { reply, .. } => *reply,
         #[cfg(debug_assertions)]
         DomRequest::TestResize { reply, .. } => *reply,
     }
@@ -204,10 +208,29 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
             DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::ScrollViewport { x, y, reply } => {
-            let cur = doc.viewport_scroll();
-            doc.scroll_viewport_by(x - cur.x, y - cur.y);
-            doc.resolve(0.0);
-            DomResponse::ok(reply, DomValue::Null)
+            let state = super::viewport::scroll_to(doc, x, y);
+            DomResponse::ok(reply, DomValue::Json(state.to_json()))
+        }
+        DomRequest::ViewportInfo { reply } => {
+            let state = super::viewport::state(doc);
+            DomResponse::ok(reply, DomValue::Json(state.to_json()))
+        }
+        DomRequest::ScrollElement { node, x, y, reply } => {
+            let Some(node_id) = super::bridge::resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "unknown node");
+            };
+            let (left, top) = super::viewport::scroll_element_to(doc, node_id, x, y);
+            DomResponse::ok(
+                reply,
+                DomValue::Json(serde_json::json!({ "scrollLeft": left, "scrollTop": top })),
+            )
+        }
+        DomRequest::ScrollIntoView { node, block, reply } => {
+            let Some(node_id) = super::bridge::resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "unknown node");
+            };
+            let state = super::viewport::scroll_into_view(doc, node_id, &block);
+            DomResponse::ok(reply, DomValue::Json(state.to_json()))
         }
         #[cfg(debug_assertions)]
         DomRequest::TestResize {
@@ -436,6 +459,43 @@ fn apply_random_bytes(size: usize, reply: u64) -> DomResponse {
 /// timeout.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(25);
 
+/// Count of page `fetch()` requests dispatched but not yet answered. Page HTTP fetches bypass
+/// the Blitz `Provider`, so `Provider::is_empty` cannot tell a settle loop they are in flight.
+#[derive(Clone, Default)]
+pub struct PendingFetches(Arc<AtomicUsize>);
+
+impl PendingFetches {
+    /// Register one outstanding fetch; it counts until the returned guard is dropped.
+    pub fn begin(&self) -> FetchGuard {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        FetchGuard(Some(self.0.clone()))
+    }
+
+    /// Fetches whose reply has not yet been delivered.
+    pub fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Keeps a fetch counted in [`PendingFetches`] until it is dropped (after the reply is sent).
+pub struct FetchGuard(Option<Arc<AtomicUsize>>);
+
+impl FetchGuard {
+    /// A guard that counts nothing, for callers that do not track outstanding fetches.
+    #[cfg(test)]
+    pub fn untracked() -> Self {
+        Self(None)
+    }
+}
+
+impl Drop for FetchGuard {
+    fn drop(&mut self) {
+        if let Some(count) = &self.0 {
+            count.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
 /// Answer a page `fetch()` / dynamic script source without blocking the UI thread.
 ///
 /// Data URLs are answered inline because they need no I/O. Every other scheme is
@@ -446,6 +506,7 @@ pub fn start_fetch(
     net: Option<Arc<Provider>>,
     base_url: &str,
     fetch: FetchRequest,
+    guard: FetchGuard,
     reply_tx: crossbeam_channel::Sender<DomResponse>,
 ) {
     let FetchRequest {
@@ -506,6 +567,7 @@ pub fn start_fetch(
     let fetch_mode = crate::http::fetch_api_sec_mode(&request.url, page_url.as_ref(), creds);
     let fetch_metadata = crate::http::FetchMetadata::fetch_api(page_url.clone(), fetch_mode);
     handle.spawn(async move {
+        let _guard = guard;
         let response = fetch_response(net, request, reply, page_url, creds, fetch_metadata).await;
         record_js_network(
             stamp,
@@ -1546,6 +1608,7 @@ mod tests {
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
+            FetchGuard::untracked(),
             reply_tx,
         );
         assert!(
@@ -1590,6 +1653,7 @@ mod tests {
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
+            FetchGuard::untracked(),
             reply_tx,
         );
         let _ = reply_rx.recv().expect("reply");
@@ -1621,6 +1685,7 @@ mod tests {
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Xhr,
             },
+            FetchGuard::untracked(),
             reply_tx,
         );
         let _ = reply_rx.recv().expect("reply");
@@ -1649,6 +1714,7 @@ mod tests {
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
+            FetchGuard::untracked(),
             reply_tx,
         );
         let batch = crate::network_feed::drain_pending();
@@ -1682,6 +1748,7 @@ mod tests {
                 reply: 1,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
+            FetchGuard::untracked(),
             reply_tx,
         );
         let _ = reply_rx
@@ -1709,6 +1776,7 @@ mod tests {
                 reply: 2,
                 initiator: crate::devtools::network::NetworkInitiator::Fetch,
             },
+            FetchGuard::untracked(),
             reply_tx,
         );
         let response = reply_rx.try_recv().expect("data URL reply is immediate");

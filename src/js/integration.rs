@@ -3153,18 +3153,22 @@ fn xhr_url_search_params_sends_urlencoded() {
 #[test]
 fn intersection_observer_fires_after_dom_moves_target_into_view() {
     let html = r#"<!DOCTYPE html><html><body>
-      <div id="target" style="width:40px;height:40px;margin-top:1200px"></div>
+      <div id="spacer" style="height:1200px"></div>
+      <div id="target" style="width:40px;height:40px"></div>
       <p id="t">pending</p>
       <script>
         var sawAfterMove = false;
+        var movedAt = 0;
         var io = new IntersectionObserver(function (entries) {
           entries.forEach(function (e) {
-            if (e.target.id === 'target' && e.isIntersecting) sawAfterMove = true;
+            if (e.target.id === 'target' && e.isIntersecting && movedAt) sawAfterMove = true;
           });
         });
         io.observe(document.getElementById('target'));
         setTimeout(function () {
-          document.getElementById('target').style.marginTop = '0px';
+          movedAt = 1;
+          var sp = document.getElementById('spacer');
+          sp.parentNode.removeChild(sp);
         }, 120);
         setTimeout(function () {
           document.getElementById('t').textContent = sawAfterMove ? 'intersected' : 'pending';
@@ -3198,6 +3202,65 @@ fn intersection_observer_threshold_crossing_fires() {
     );
 }
 
+// Source: Intersection Observer spec (zero-area targets); Reddit's next-page sentinel is 0x0.
+#[test]
+fn intersection_observer_reports_zero_size_target_inside_viewport() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div style="height:50px"></div>
+      <div id="s" style="width:0;height:0"></div>
+      <p id="t">pending</p>
+      <script>
+        var io = new IntersectionObserver(function (entries) {
+          var e = entries[0];
+          document.getElementById('t').textContent = e.isIntersecting + '|' + e.intersectionRatio;
+        });
+        io.observe(document.getElementById('s'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "true|1");
+}
+
+#[test]
+fn intersection_observer_zero_size_sentinel_fires_after_scroll() {
+    let html = r#"<!DOCTYPE html><html><body style="margin:0">
+      <div style="height:1500px"></div>
+      <div id="s" style="width:0;height:0"></div>
+      <div style="height:600px"></div>
+      <p id="t">pending</p>
+      <script>
+        var seen = [];
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) { seen.push(String(e.isIntersecting)); });
+          document.getElementById('t').textContent = seen.join(',');
+        });
+        io.observe(document.getElementById('s'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_viewport_scroll(
+        html,
+        Duration::from_millis(300),
+        1300.0,
+        Duration::from_millis(400),
+    );
+    assert_eq!(result.final_text, "false,true");
+}
+
+// Source: Intersection Observer spec (a target without a layout box never intersects).
+#[test]
+fn intersection_observer_zero_size_target_in_display_none_subtree_does_not_intersect() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div style="display:none"><div id="z" style="width:0;height:0"></div></div>
+      <p id="t">pending</p>
+      <script>
+        var io = new IntersectionObserver(function (entries) {
+          var e = entries[0];
+          document.getElementById('t').textContent = e.isIntersecting + '|' + e.intersectionRatio;
+        });
+        io.observe(document.getElementById('z'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "false|0");
+}
+
 #[test]
 fn intersection_observer_take_records_buffers_entries() {
     let html = r#"<!DOCTYPE html><html><body>
@@ -3215,8 +3278,8 @@ fn intersection_observer_take_records_buffers_entries() {
     assert_eq!(result.final_text, "1|box|0", "{}", result.final_text);
 }
 
-#[test]
-fn lazy_img_fetches_only_after_near_viewport_layout_change() {
+/// Loopback image server recording requested paths; returns its port and the shared path list.
+fn spawn_recording_image_server() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
@@ -3254,13 +3317,60 @@ fn lazy_img_fetches_only_after_near_viewport_layout_change() {
             let _ = stream.write_all(&body);
         }
     });
+    (port, requests)
+}
+
+// Source: HTML Living Standard (lazy loading attribute: fetch only when near the viewport).
+#[test]
+fn lazy_img_far_below_viewport_is_not_fetched_without_a_move() {
+    let (port, requests) = spawn_recording_image_server();
+    let html = format!(
+        r#"<!DOCTYPE html><html><body>
+<div style="height:1200px"></div>
+<img id="lz" width="32" height="32" loading="lazy" src="http://127.0.0.1:{port}/pixel.png" alt="">
+<p id="t">pending</p>
+</body></html>"#
+    );
+    super::harness::run_inline_page_in_viewport(&html, 400, 300, Duration::from_millis(1000));
+    let paths = requests.lock().expect("lock").clone();
+    assert!(
+        !paths.iter().any(|p| p.contains("pixel.png")),
+        "lazy image far below the viewport must not load: {paths:?}"
+    );
+}
+
+// Source: HTML Living Standard (lazy loading); an image with no layout box is never near the viewport.
+#[test]
+fn lazy_img_inside_display_none_subtree_is_not_fetched() {
+    let (port, requests) = spawn_recording_image_server();
+    let html = format!(
+        r#"<!DOCTYPE html><html><body>
+<div style="display:none"><img id="lz" loading="lazy" src="http://127.0.0.1:{port}/pixel.png" alt=""></div>
+<p id="t">pending</p>
+</body></html>"#
+    );
+    super::harness::run_inline_page_in_viewport(&html, 400, 300, Duration::from_millis(1000));
+    let paths = requests.lock().expect("lock").clone();
+    assert!(
+        !paths.iter().any(|p| p.contains("pixel.png")),
+        "lazy image inside a display:none subtree must not load: {paths:?}"
+    );
+}
+
+#[test]
+fn lazy_img_fetches_only_after_near_viewport_layout_change() {
+    let (port, requests) = spawn_recording_image_server();
 
     let html_move = format!(
         r#"<!DOCTYPE html><html><body>
-<img id="lz" width="32" height="32" loading="lazy" style="margin-top:1200px" src="http://127.0.0.1:{port}/pixel.png" alt="">
+<div id="spacer" style="height:1200px"></div>
+<img id="lz" width="32" height="32" loading="lazy" src="http://127.0.0.1:{port}/pixel.png" alt="">
 <p id="t">pending</p>
 <script>
-setTimeout(function() {{ document.getElementById('lz').style.marginTop = '0px'; }}, 120);
+setTimeout(function() {{
+  var sp = document.getElementById('spacer');
+  sp.parentNode.removeChild(sp);
+}}, 120);
 </script>
 </body></html>"#
     );
@@ -3598,4 +3708,190 @@ fn reddit_dom_api_before_after_replace_with() {
       </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(100));
     assert_eq!(result.final_text, "|B||A|");
+}
+
+const SCROLL_PROBE_PAGE: &str = r#"<!DOCTYPE html><html><head><style>
+  body { margin: 0; height: 1500px; }
+  #t { position: fixed; top: 0; }
+</style></head><body><p id="t">init</p>
+<script>
+  var counts = { win: 0, doc: 0 };
+  function render(source) {
+    counts[source] += 1;
+    document.getElementById('t').textContent =
+      'win=' + counts.win + ' doc=' + counts.doc +
+      ' y=' + Math.round(window.scrollY) + ' pyo=' + Math.round(window.pageYOffset) +
+      ' x=' + Math.round(window.scrollX) + ' pxo=' + Math.round(window.pageXOffset) +
+      ' iw=' + window.innerWidth + ' ih=' + window.innerHeight +
+      ' se=' + document.scrollingElement.tagName;
+  }
+  window.addEventListener('scroll', function () { render('win'); });
+  document.addEventListener('scroll', function () { render('doc'); });
+</script></body></html>"#;
+
+// Source: HTML Living Standard (scroll event on window and document); CSSOM View Module
+// (Window.scrollY/pageYOffset/scrollX/pageXOffset/innerWidth/innerHeight, Document.scrollingElement).
+#[test]
+fn scroll_event_reaches_window_and_document_after_viewport_moves() {
+    let result = super::harness::run_inline_page_with_viewport_scroll(
+        SCROLL_PROBE_PAGE,
+        Duration::from_millis(200),
+        120.0,
+        Duration::from_millis(500),
+    );
+    assert!(
+        result.final_text.starts_with("win=1 doc=1 "),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn window_scroll_properties_match_viewport_after_scroll() {
+    let result = super::harness::run_inline_page_with_viewport_scroll(
+        SCROLL_PROBE_PAGE,
+        Duration::from_millis(200),
+        120.0,
+        Duration::from_millis(500),
+    );
+    let text = result.final_text;
+    assert!(text.contains("y=120 pyo=120 x=0 pxo=0"), "{text}");
+    assert!(text.contains("iw=400 ih=300"), "{text}");
+    assert!(text.contains("se=HTML"), "{text}");
+}
+
+// Source: CSSOM View Module (Window.scrollTo/scrollBy accept an options dictionary).
+#[test]
+fn page_scroll_to_and_by_move_viewport_and_fire_scroll_events() {
+    let html = r#"<!DOCTYPE html><html><head><style>body { margin: 0; height: 1500px; }</style>
+    </head><body><p id="t">pending</p>
+    <script>
+      var events = 0;
+      window.addEventListener('scroll', function () { events += 1; });
+      scrollTo({ top: 100, left: 0, behavior: 'instant' });
+      var afterTo = window.scrollY;
+      scrollBy(0, 50);
+      var afterBy = window.scrollY;
+      scrollBy({ top: 25, behavior: 'auto' });
+      setTimeout(function () {
+        document.getElementById('t').textContent =
+          [afterTo, afterBy, window.scrollY, events].join('|');
+      }, 200);
+    </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(700));
+    assert_eq!(result.final_text, "100|150|175|1");
+}
+
+// Source: CSSOM View Module (Element.scrollTop/scrollLeft setters scroll the element, clamped).
+#[test]
+fn element_scroll_top_and_left_setters_scroll_overflow_container_and_clamp() {
+    let html = r#"<!DOCTYPE html><html><head><style>
+      body { margin: 0; }
+      #box { width: 100px; height: 100px; overflow: auto; }
+      #inner { width: 300px; height: 1000px; }
+    </style></head><body>
+    <div id="box"><div id="inner"></div></div>
+    <p id="t">pending</p>
+    <script>
+      var box = document.getElementById('box');
+      var out = [];
+      box.scrollTop = 40;
+      out.push(box.scrollTop);
+      box.scrollTop = box.scrollHeight;
+      out.push(box.scrollTop);
+      box.scrollTop = -5;
+      out.push(box.scrollTop);
+      box.scrollLeft = 70;
+      out.push(box.scrollLeft + ':' + box.scrollTop);
+      box.scrollLeft = 100000;
+      out.push(box.scrollLeft);
+      box.scrollTop = 0;
+      var steps = 0;
+      while (box.scrollTop < 500 && steps < 100) { box.scrollTop += 100; steps += 1; }
+      out.push(box.scrollTop + '/' + steps);
+      document.getElementById('t').textContent = out.join('|');
+    </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(400));
+    assert_eq!(result.final_text, "40|900|0|70:0|200|500/5");
+}
+
+// Source: CSSOM View Module (scroll steps: one scroll event per scroll position change).
+#[test]
+fn page_scroll_to_the_offset_the_host_just_set_fires_exactly_one_scroll_event() {
+    let html = r#"<!DOCTYPE html><html><head><style>body { margin: 0; height: 1500px; }</style>
+    </head><body><p id="t">pending</p>
+    <script>
+      var events = 0;
+      window.addEventListener('scroll', function () { events += 1; });
+      setTimeout(function () {
+        // The host moved the viewport (wheel or agent) and the page has not heard yet.
+        __glide_dom_sync('scrollViewport', 0, '0', '200');
+        scrollTo(0, 200);
+      }, 20);
+      setTimeout(function () {
+        document.getElementById('t').textContent = window.scrollY + '|' + events;
+      }, 400);
+    </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(700));
+    assert_eq!(result.final_text, "200|1");
+}
+
+// Source: DOM Standard (the document element can be removed); product decision (no panic).
+#[test]
+fn viewport_reads_and_scroll_do_not_panic_after_document_element_is_removed() {
+    let html = r#"<!DOCTYPE html><html><head></head><body><p id="t">pending</p>
+    <script>
+      var out = [];
+      var t = document.getElementById('t');
+      document.removeChild(document.documentElement);
+      out.push(window.scrollY);
+      out.push(typeof window.innerHeight);
+      scrollTo(0, 100);
+      scrollBy(0, 10);
+      out.push(window.scrollY);
+      out.push('done');
+      window.__out = out.join('|');
+      console.log(window.__out);
+    </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(400));
+    let messages: Vec<_> = result
+        .console_wire
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("0|number|0|done")),
+        "{messages:?}"
+    );
+}
+
+// Source: Intersection Observer; product decision (infinite scroll via a bottom sentinel).
+#[test]
+fn intersection_observer_sentinel_fires_after_viewport_scroll() {
+    let html = r#"<!DOCTYPE html><html><head><style>body { margin: 0; }</style></head><body>
+      <div style="height:1200px"></div>
+      <div id="sentinel" style="height:40px"></div>
+      <div style="height:600px"></div>
+      <p id="t" style="position:fixed;top:0">pending</p>
+      <script>
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (e.isIntersecting) {
+              document.getElementById('t').textContent = 'loaded-more';
+            }
+          });
+        });
+        io.observe(document.getElementById('sentinel'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_viewport_scroll(
+        html,
+        Duration::from_millis(250),
+        1000.0,
+        Duration::from_millis(600),
+    );
+    assert_eq!(result.final_text, "loaded-more");
 }

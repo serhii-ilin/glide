@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Infinite scroll (IntersectionObserver)</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  .item { height: 200px; border-bottom: 1px solid #ccc; }
+  #sentinel { height: 20px; background: #eee; }
+</style>
+</head>
+<body>
+<div id="feed"></div>
+<div id="sentinel"></div>
+<p id="status">page 0</p>
+<script>
+  // Loads the next page of items from the same origin when the bottom sentinel
+  // intersects the viewport. The test serves /items?page=N on loopback.
+  var page = 0;
+  var loading = false;
+  var MAX_PAGES = 3;
+  function loadNext() {
+    if (loading || page >= MAX_PAGES) return;
+    loading = true;
+    fetch('/items?page=' + (page + 1))
+      .then(function (r) { return r.json(); })
+      .then(function (items) {
+        page += 1;
+        var feed = document.getElementById('feed');
+        items.forEach(function (text) {
+          var div = document.createElement('div');
+          div.className = 'item';
+          div.textContent = text;
+          feed.appendChild(div);
+        });
+        document.getElementById('status').textContent = 'page ' + page;
+        loading = false;
+      });
+  }
+  new IntersectionObserver(function (entries) {
+    if (entries.some(function (e) { return e.isIntersecting; })) loadNext();
+  }).observe(document.getElementById('sentinel'));
+</script>
+</body>
+</html>

@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+mod common;
+
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -227,6 +229,7 @@ fn initialize_and_list_tools() {
         "glide_query",
         "glide_computed_style",
         "glide_screenshot",
+        "glide_scroll",
     ] {
         assert!(
             names.iter().any(|n| n == expected),
@@ -531,4 +534,81 @@ fn attach_is_not_supported_yet() {
         "unexpected output (code={:?}): {err:?}",
         output.status.code()
     );
+}
+
+fn scroll_info(result: &Value) -> Value {
+    serde_json::from_str(&tool_text(result)).expect("scroll result JSON")
+}
+
+// Source: CSSOM View Module (scroll offsets); product decision (infinite scroll over MCP).
+#[test]
+fn scroll_then_snapshot_text_loads_more_items_over_stdio() {
+    let base = common::spawn_infinite_scroll_server();
+    let mut client = McpClient::spawn();
+    client.initialize();
+    let nav = client.call_tool(
+        "glide_navigate",
+        json!({ "url": format!("{base}/io.html") }),
+    );
+    assert!(!is_tool_error(&nav));
+    let before = tool_text(&client.call_tool("glide_snapshot_text", json!({})));
+    assert!(before.contains("page-1-item-1"), "{before}");
+    assert!(!before.contains("page-2-item-1"), "{before}");
+    let scrolled = client.call_tool("glide_scroll", json!({ "dy": 1000000 }));
+    assert!(!is_tool_error(&scrolled), "{scrolled}");
+    let info = scroll_info(&scrolled);
+    assert!(info["y"].as_f64().unwrap_or(0.0) > 0.0, "{info}");
+    assert_eq!(info["viewport_height"], 760);
+    let after = tool_text(&client.call_tool("glide_snapshot_text", json!({})));
+    assert!(after.contains("page-2-item-1"), "{after}");
+}
+
+#[test]
+fn scroll_waits_for_slow_fetch_and_reports_settled_over_stdio() {
+    let base = common::spawn_infinite_scroll_server_with_delay(700);
+    let mut client = McpClient::spawn();
+    client.initialize();
+    client.call_tool(
+        "glide_navigate",
+        json!({ "url": format!("{base}/scroll-event.html") }),
+    );
+    let scrolled = client.call_tool("glide_scroll", json!({ "dy": 1000000 }));
+    assert!(!is_tool_error(&scrolled), "{scrolled}");
+    assert_eq!(scroll_info(&scrolled)["settled"], true);
+    let after = tool_text(&client.call_tool("glide_snapshot_text", json!({})));
+    assert!(after.contains("page-2-item-1"), "{after}");
+}
+
+#[test]
+fn scroll_to_missing_selector_is_tool_error_over_stdio() {
+    let mut client = McpClient::spawn();
+    client.initialize();
+    client.call_tool(
+        "glide_navigate",
+        json!({ "url": fixture_url("scroll-colors.html") }),
+    );
+    let result = client.call_tool("glide_scroll", json!({ "to_selector": "#nope" }));
+    assert!(is_tool_error(&result), "{result}");
+}
+
+#[test]
+fn full_page_screenshot_is_taller_than_viewport_over_stdio() {
+    let mut client = McpClient::spawn();
+    client.initialize();
+    client.call_tool(
+        "glide_navigate",
+        json!({ "url": fixture_url("scroll-colors.html") }),
+    );
+    let shot = client.call_tool("glide_screenshot", json!({ "full_page": true }));
+    assert!(!is_tool_error(&shot));
+    let data = shot["content"][0]["data"].as_str().expect("base64 data");
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .expect("base64 png");
+    let reader = png::Decoder::new(std::io::Cursor::new(&bytes))
+        .read_info()
+        .expect("png info");
+    assert_eq!(reader.info().width, 1100);
+    assert!(reader.info().height >= 2050, "{}", reader.info().height);
 }

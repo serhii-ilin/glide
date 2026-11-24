@@ -14,7 +14,7 @@ requirements:
 gherkin: "tests/features/intersection-observer.feature"
 tests:
   [
-    "`js::integration::{intersection_observer_fires_after_dom_moves_target_into_view,intersection_observer_fires_for_visible_and_hidden_elements,intersection_observer_threshold_crossing_fires,intersection_observer_take_records_buffers_entries,lazy_img_fetches_only_after_near_viewport_layout_change}`",
+    "`js::integration::{intersection_observer_fires_after_dom_moves_target_into_view,intersection_observer_fires_for_visible_and_hidden_elements,intersection_observer_threshold_crossing_fires,intersection_observer_reports_zero_size_target_inside_viewport,intersection_observer_zero_size_sentinel_fires_after_scroll,intersection_observer_zero_size_target_in_display_none_subtree_does_not_intersect,lazy_img_inside_display_none_subtree_is_not_fetched,intersection_observer_take_records_buffers_entries,lazy_img_far_below_viewport_is_not_fetched_without_a_move,lazy_img_fetches_only_after_near_viewport_layout_change}`",
     "manual intersection-observer#1"
   ]
 mcp: "n/a (engine behavior; observable via `glide_eval`)"
@@ -34,4 +34,4 @@ IntersectionObserver re-evaluates after scroll, layout/DOM updates and rAF, deli
 
 ## Notes
 
-Layout rects come from Blitz/Taffy via `getBoundingClientRect`. Checks are rAF-throttled and also scheduled after `__glide_flush_dom` / `__glide_flush_raf`. `window.scrollTo` maps to viewport scroll over DOM RPC. Native lazy images use a root-margin observer plus `LoadImage` RPC.
+Layout rects come from Blitz/Taffy via `getBoundingClientRect`. Checks are rAF-throttled and also scheduled after `__glide_flush_dom` / `__glide_flush_raf`. `window.scrollTo`/`scrollBy` map to viewport scroll over DOM RPC and fire `scroll` events (see `mcp-scroll`). The root element's `clientWidth`/`clientHeight` are the viewport size, so the root bounds follow the viewport, not the document. Native lazy images use a root-margin observer plus `LoadImage` RPC.

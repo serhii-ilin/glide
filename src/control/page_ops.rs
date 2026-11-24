@@ -4,10 +4,13 @@ use blitz_dom::node::NodeData;
 use blitz_dom::{BaseDocument, local_name};
 use blitz_traits::node_id::NodeId;
 
-use super::protocol::{ElementInfo, Rect, truncate_chars};
-use crate::headless;
+use super::protocol::{ElementInfo, Rect, ScrollInfo, truncate_chars};
+use crate::headless::{self, VIEWPORT_HEIGHT, VIEWPORT_WIDTH};
+use crate::js::viewport::{self, ViewportState};
 
 const MAX_ELEMENT_TEXT_CHARS: usize = 200;
+/// Tallest full-page screenshot (CSS pixels); longer documents are cut here.
+pub const MAX_FULL_PAGE_HEIGHT: u32 = 16_384;
 
 pub fn snapshot_text(
     doc: &BaseDocument,
@@ -91,6 +94,76 @@ pub fn page_title(doc: &BaseDocument) -> String {
 pub fn paint_png(doc: &mut BaseDocument, width: u32, height: u32) -> Result<Vec<u8>, String> {
     let rgba = crate::shot::paint_rgba(doc, width, height);
     crate::shot::encode_png(&rgba, width, height)
+}
+
+/// Resizes a document's viewport to the full page and restores size and scroll offset on drop,
+/// so a panic while painting still leaves the page unchanged.
+struct FullPageViewport<'a> {
+    doc: &'a mut BaseDocument,
+    saved_size: (u32, u32),
+    saved_scroll: (f64, f64),
+}
+
+impl<'a> FullPageViewport<'a> {
+    fn new(doc: &'a mut BaseDocument, height: u32, saved_scroll: (f64, f64)) -> Self {
+        let saved_size = doc.viewport().window_size;
+        doc.viewport_mut().window_size = (VIEWPORT_WIDTH, height);
+        Self {
+            doc,
+            saved_size,
+            saved_scroll,
+        }
+    }
+}
+
+impl Drop for FullPageViewport<'_> {
+    fn drop(&mut self) {
+        self.doc.viewport_mut().window_size = self.saved_size;
+        viewport::scroll_to(self.doc, self.saved_scroll.0, self.saved_scroll.1);
+    }
+}
+
+/// Paint the whole document height (capped at [`MAX_FULL_PAGE_HEIGHT`]) from the top, then put
+/// the viewport size and scroll offset back so the page is unchanged.
+pub fn paint_full_page_png(doc: &mut BaseDocument) -> Result<Vec<u8>, String> {
+    let before = viewport::state(doc);
+    let tall = (before.scroll_height.ceil() as u32).clamp(VIEWPORT_HEIGHT, MAX_FULL_PAGE_HEIGHT);
+    let guard = FullPageViewport::new(doc, tall, (before.scroll_x, before.scroll_y));
+    viewport::scroll_to(guard.doc, 0.0, 0.0);
+    paint_png(guard.doc, VIEWPORT_WIDTH, tall)
+}
+
+/// Convert viewport state to the control result shape.
+pub fn scroll_info(state: ViewportState, settled: bool) -> ScrollInfo {
+    ScrollInfo {
+        x: state.scroll_x,
+        y: state.scroll_y,
+        scroll_width: state.scroll_width,
+        scroll_height: state.scroll_height,
+        viewport_width: state.width.round() as u32,
+        viewport_height: state.height.round() as u32,
+        settled,
+    }
+}
+
+/// Apply a scroll request to the document: first `to_selector` (when given), then the deltas.
+pub fn apply_scroll(
+    doc: &mut BaseDocument,
+    to_selector: Option<&str>,
+    dx: f64,
+    dy: f64,
+) -> Result<ViewportState, String> {
+    if !dx.is_finite() || !dy.is_finite() {
+        return Err("dx and dy must be finite numbers".to_string());
+    }
+    let mut state = viewport::state(doc);
+    if let Some(selector) = to_selector {
+        state = viewport::scroll_to_selector(doc, selector)?;
+    }
+    if dx != 0.0 || dy != 0.0 {
+        state = viewport::scroll_by(doc, dx, dy);
+    }
+    Ok(state)
 }
 
 fn element_info(doc: &BaseDocument, id: NodeId, scripting_enabled: bool) -> Option<ElementInfo> {
@@ -209,6 +282,24 @@ mod tests {
     fn page_title_empty_without_title_element() {
         let doc = laid_out("<!DOCTYPE html><html><body><p>x</p></body></html>");
         assert_eq!(page_title(&doc), "");
+    }
+
+    #[test]
+    fn apply_scroll_clamps_and_reports_new_state() {
+        let mut doc = laid_out(
+            r#"<!DOCTYPE html><html><body style="margin:0"><div style="height:3000px"></div></body></html>"#,
+        );
+        let moved = apply_scroll(&mut doc, None, 0.0, 500.0).expect("scroll");
+        assert_eq!(moved.scroll_y, 500.0);
+        let end = apply_scroll(&mut doc, None, 0.0, 1.0e9).expect("scroll to end");
+        assert_eq!(end.scroll_y, end.scroll_height - end.height);
+    }
+
+    #[test]
+    fn apply_scroll_rejects_non_finite_delta() {
+        let mut doc = laid_out("<!DOCTYPE html><html><body></body></html>");
+        let err = apply_scroll(&mut doc, None, f64::NAN, 0.0).expect_err("nan");
+        assert!(err.contains("finite"), "{err}");
     }
 
     #[test]

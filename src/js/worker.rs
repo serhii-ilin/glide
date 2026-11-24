@@ -113,6 +113,7 @@ pub enum WorkerCommand {
     ApplyHistoryStep {
         json: String,
     },
+    ViewportScrolled,
     Shutdown,
 }
 
@@ -237,6 +238,11 @@ impl JsWorker {
 
     pub fn apply_history_step(&self, json: String) {
         let _ = self.tx.send(WorkerCommand::ApplyHistoryStep { json });
+    }
+
+    /// Tell the page runtime the viewport offset changed outside page script (agent or wheel).
+    pub fn viewport_scrolled(&self) {
+        let _ = self.tx.send(WorkerCommand::ViewportScrolled);
     }
 
     pub fn page_settled(&self) {
@@ -592,6 +598,15 @@ fn worker_main(state: WorkerThreadState) {
                 let scope = &mut v8::ContextScope::new(hs, ctx);
                 let payload = v8::String::new(scope, &json).unwrap();
                 call_global_fn(scope, "__glide_apply_history_step", &[payload.into()]);
+                settle_task(scope);
+                request_host_wake();
+                publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
+            }
+            WorkerCommand::ViewportScrolled => {
+                v8::scope!(let hs, isolate);
+                let ctx = v8::Local::new(hs, &global_context);
+                let scope = &mut v8::ContextScope::new(hs, ctx);
+                call_global_fn(scope, "__glide_viewport_scrolled", &[]);
                 settle_task(scope);
                 request_host_wake();
                 publish_next_wake(scope, &wake_deadline_ms, &wake_epoch);
@@ -999,6 +1014,26 @@ fn map_dom_op(
                 .map_err(|_| "scrollViewport y must be a number".to_string())?;
             DomRequest::ScrollViewport { x, y, reply }
         }
+        "scrollElement" => {
+            let x = arg_string(scope, args, 3)?
+                .parse::<f64>()
+                .map_err(|_| "scrollElement x must be a number".to_string())?;
+            let y = arg_string(scope, args, 4)?
+                .parse::<f64>()
+                .map_err(|_| "scrollElement y must be a number".to_string())?;
+            DomRequest::ScrollElement {
+                node: arg_handle(scope, args, 2)?,
+                x,
+                y,
+                reply,
+            }
+        }
+        "viewportInfo" => DomRequest::ViewportInfo { reply },
+        "scrollIntoView" => DomRequest::ScrollIntoView {
+            node: arg_handle(scope, args, 2)?,
+            block: arg_string(scope, args, 3)?,
+            reply,
+        },
         "computedStyle" => DomRequest::ComputedStyle {
             node: arg_handle(scope, args, 2)?,
             prop: arg_string(scope, args, 3)?,

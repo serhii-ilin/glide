@@ -16,7 +16,7 @@ tests:
   [
     "`remote_socket::tests::*`"
   ]
-mcp: "all mcp-headless-session–mcp-page-input tools via `glide --mcp --attach [socket]`"
+mcp: "all mcp-headless-session, mcp-console-eval, mcp-page-input tools via `glide --mcp --attach [socket]`"
 manual: []
 ---
 

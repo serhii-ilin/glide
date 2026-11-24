@@ -119,6 +119,20 @@ function validate({ features, requirements, loadErrors }) {
     }
   }
 
+  const allSlugs = new Set([...bySlug.feature.keys(), ...bySlug.requirement.keys()]);
+  const KEYS = {
+    feature: ['slug', 'kind', 'title', 'status', 'milestone', 'aliases', 'requirements', 'gherkin', 'tests', 'mcp', 'manual'],
+    requirement: ['slug', 'kind', 'title', 'status', 'milestone', 'aliases', 'features', 'source'],
+  };
+  for (const it of all) {
+    for (const k of Object.keys(it.data)) {
+      if (!KEYS[it.kind].includes(k)) errors.push(`${it.file}: unknown front-matter key '${k}'`);
+    }
+    for (const a of isArr(it.data.aliases) ? it.data.aliases : []) {
+      if (allSlugs.has(a)) errors.push(`${it.file}: alias '${a}' is also a slug`);
+    }
+  }
+
   // The same slug in both directories is allowed, but flag a duplicate across kinds as a warning.
   for (const s of bySlug.feature.keys()) {
     if (bySlug.requirement.has(s)) warnings.push(`slug '${s}' exists as both a feature and a requirement`);
@@ -139,6 +153,22 @@ function validate({ features, requirements, loadErrors }) {
     }
     if (str(d.gherkin) && /\.feature$/.test(d.gherkin) && !fs.existsSync(path.join(root, d.gherkin))) {
       errors.push(`${where}: gherkin file '${d.gherkin}' does not exist`);
+    }
+    if (str(d.gherkin)) {
+      const placeholder = /^(backfill pending|planned \(spec added when promoted\))$/.test(d.gherkin);
+      if (!placeholder && d.gherkin !== `tests/features/${d.slug}.feature`) {
+        errors.push(`${where}: gherkin must be 'tests/features/${d.slug}.feature' or a known placeholder, got '${d.gherkin}'`);
+      }
+    }
+    for (const entry of isArr(d.tests) ? d.tests : []) {
+      for (const g of String(entry).match(/tests\/features\/[\w./-]+\.feature/g) || []) {
+        if (!fs.existsSync(path.join(root, g))) errors.push(`${where}: tests entry references missing file '${g}'`);
+      }
+      for (const [, slug, n] of String(entry).matchAll(/manual\s+`?([a-z0-9-]+)#(\d+)/g)) {
+        const target = bySlug.feature.get(slug);
+        const count = target && isArr(target.data.manual) ? target.data.manual.length : 0;
+        if (!target || Number(n) < 1 || Number(n) > count) errors.push(`${where}: manual reference '${slug}#${n}' does not resolve`);
+      }
     }
     const manual = d.manual === undefined ? [] : d.manual;
     if (!isArr(manual)) errors.push(`${where}: 'manual' must be a list`);
@@ -161,6 +191,23 @@ function validate({ features, requirements, loadErrors }) {
       const feat = bySlug.feature.get(s);
       if (!feat) errors.push(`${where}: unknown feature '${s}'`);
       else if (!(isArr(feat.data.requirements) && feat.data.requirements.includes(d.slug))) errors.push(`${where}: feature '${s}' does not list this requirement back`);
+    }
+  }
+
+  const gherkinOwner = new Map();
+  for (const f of features) {
+    if (!/\.feature$/.test(String(f.data.gherkin))) continue;
+    if (gherkinOwner.has(f.data.gherkin)) errors.push(`${f.file}: gherkin '${f.data.gherkin}' is also used by ${gherkinOwner.get(f.data.gherkin)}`);
+    else gherkinOwner.set(f.data.gherkin, f.file);
+  }
+
+  // Requirement milestones exist in docs/milestones.md when that file is present.
+  const msFile = path.join(root, 'docs/milestones.md');
+  if (fs.existsSync(msFile)) {
+    const known = new Set([...fs.readFileSync(msFile, 'utf8').matchAll(/^\|\s*(M\d+)\s*\|/gm)].map((m) => m[1]));
+    for (const it of all) {
+      const ms = String(it.data.milestone || '').trim();
+      if (ms && known.size && !known.has(ms)) errors.push(`${it.file}: milestone '${ms}' is not in docs/milestones.md`);
     }
   }
 

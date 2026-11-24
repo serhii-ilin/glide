@@ -17,7 +17,7 @@ tests:
   [
     "`js::integration::{mutation_observer_reports_child_and_attribute_changes,mutation_observer_honors_attribute_filter_and_character_data}`",
     "`headless_js::observers_and_idle_work`",
-    "`tests/features/observers-idle-observers-idle.feature`"
+    "`tests/features/observers-idle.feature`"
   ]
 mcp: "n/a (engine behavior; observable via `glide_eval`)"
 manual: []

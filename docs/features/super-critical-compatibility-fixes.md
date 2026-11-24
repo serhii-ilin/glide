@@ -25,4 +25,4 @@ No super-critical crash, hang or panic was found in the first compatibility run.
 
 ## Notes
 
-T7 run (191 checks) found no crash, panic or hang; nothing to fix. Non-critical gaps are wpt-css-reftest-pixel-diffs–acid2-acid3-layout-js-test
+T7 run (191 checks) found no crash, panic or hang; nothing to fix. Non-critical gaps are wpt-css-reftest-pixel-diffs, wpt-testharness-dom-nodes-measurable, missing-web-apis-dom-bindings, acid2-acid3-layout-js-test

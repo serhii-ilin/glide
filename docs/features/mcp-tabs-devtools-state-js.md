@@ -12,7 +12,7 @@ requirements:
     "agent-drive-headless-glide-session",
     "running-glide-window-controlled-agent"
   ]
-gherkin: "—"
+gherkin: "planned (spec added when promoted)"
 tests: []
 mcp: "`glide_tabs_list`, `glide_tab_select`, `glide_tab_new`, `glide_tab_close`, `glide_devtools_state`, `glide_set_js`"
 manual: []

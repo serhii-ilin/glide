@@ -108,7 +108,7 @@ ever throwing. These rules keep records parseable, bounded and useful.
   change, the default filter; `debug` = per-item diagnosis (each script, discovery
   counts, capability probes). Routine per-page chatter is `debug`, never `info`.
 - **Correlate and act.** Every error and warning carries `page_url` and a `hint` that
-  says what to check or which feature slug tracks it. Unsupported behavior also carries
+  says what to check or which feature slug (or its legacy `F-xxx` alias, still used by older log fields) tracks it. Unsupported behavior also carries
   `feature` and `detail` with `error_kind="unsupported"`.
 - **Aggregate per load.** Emit one `js.page` "settled" record with counts and
   `status="clean|degraded"`; log it at `info` when degraded and `debug` when clean.

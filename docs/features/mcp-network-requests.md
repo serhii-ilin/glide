@@ -11,7 +11,7 @@ requirements:
   [
     "agent-drive-headless-glide-session"
   ]
-gherkin: "—"
+gherkin: "planned (spec added when promoted)"
 tests: []
 mcp: "`glide_network_requests`"
 manual: []

@@ -982,6 +982,177 @@
   };
   global.CSS.escape = cssEscape;
 
+  // Constructable style sheets (CSSOM). Reddit's design system constructs sheets
+  // with `new CSSStyleSheet()` and adopts them on the document.
+  function splitCssRules(text) {
+    const rules = [];
+    let depth = 0;
+    let start = 0;
+    let quote = null;
+    let comment = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      const next = text[i + 1];
+      if (comment) {
+        if (ch === '*' && next === '/') { comment = false; i += 1; }
+        continue;
+      }
+      if (quote) {
+        if (ch === '\\') { i += 1; continue; }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '/' && next === '*') { comment = true; i += 1; continue; }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === '{') {
+        depth += 1;
+      } else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          const rule = text.slice(start, i + 1).trim();
+          if (rule) rules.push(rule);
+          start = i + 1;
+        }
+      } else if (ch === ';' && depth === 0) {
+        const rule = text.slice(start, i + 1).trim();
+        if (rule) rules.push(rule);
+        start = i + 1;
+      }
+    }
+    const tail = text.slice(start).trim();
+    if (tail) rules.push(tail);
+    return rules;
+  }
+
+  const adoptedDocumentSheets = [];
+  let adoptedDocumentStyle = null;
+
+  function refreshAdoptedDocumentStyle() {
+    const doc = global.document;
+    if (!doc || !doc.documentElement) return;
+    if (adoptedDocumentStyle && adoptedDocumentStyle.parentNode) {
+      adoptedDocumentStyle.parentNode.removeChild(adoptedDocumentStyle);
+    }
+    adoptedDocumentStyle = null;
+    const text = adoptedDocumentSheets.map((sheet) => sheet._text).filter(Boolean).join('\n');
+    if (!text) return;
+    const style = doc.createElement('style');
+    style.setAttribute('data-glide-adopted', '');
+    (doc.head || doc.documentElement).appendChild(style);
+    style.textContent = text;
+    adoptedDocumentStyle = style;
+  }
+
+  function cssRule(cssText, sheet) {
+    return { cssText, type: 1, parentStyleSheet: sheet, parentRule: null };
+  }
+
+  function indexSizeError(message) {
+    const err = new Error(message);
+    err.name = 'IndexSizeError';
+    return err;
+  }
+
+  class CSSStyleSheet {
+    constructor(options) {
+      this._text = '';
+      this._rules = [];
+      this.disabled = false;
+      this.ownerNode = null;
+      this.ownerRule = null;
+      this.parentStyleSheet = null;
+      this.href = null;
+      this.title = '';
+      this.type = 'text/css';
+      this.media = {
+        mediaText: (options && options.media) || '',
+        length: 0,
+        item() { return null; },
+      };
+    }
+
+    get cssRules() { return this._rules; }
+
+    get rules() { return this._rules; }
+
+    replaceSync(text) {
+      const css = String(text);
+      this._text = css;
+      this._rules = splitCssRules(css).map((rule) => cssRule(rule, this));
+      if (adoptedDocumentSheets.indexOf(this) !== -1) refreshAdoptedDocumentStyle();
+    }
+
+    replace(text) {
+      try {
+        this.replaceSync(text);
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      return Promise.resolve(this);
+    }
+
+    insertRule(rule, index) {
+      const css = String(rule).trim();
+      if (!css) throw new SyntaxError('The rule is empty');
+      const at = index == null ? 0 : Number(index);
+      if (!Number.isInteger(at) || at < 0 || at > this._rules.length) {
+        throw indexSizeError('The index is larger than the length of the rule list');
+      }
+      this._rules.splice(at, 0, cssRule(css, this));
+      this._text = this._rules.map((item) => item.cssText).join('\n');
+      if (adoptedDocumentSheets.indexOf(this) !== -1) refreshAdoptedDocumentStyle();
+      return at;
+    }
+
+    deleteRule(index) {
+      const at = Number(index);
+      if (!Number.isInteger(at) || at < 0 || at >= this._rules.length) {
+        throw indexSizeError('The index is larger than the length of the rule list');
+      }
+      this._rules.splice(at, 1);
+      this._text = this._rules.map((item) => item.cssText).join('\n');
+      if (adoptedDocumentSheets.indexOf(this) !== -1) refreshAdoptedDocumentStyle();
+    }
+
+    addRule(selector, style, index) {
+      return this.insertRule(String(selector) + '{' + String(style) + '}', index);
+    }
+  }
+
+  global.CSSStyleSheet = global.CSSStyleSheet || CSSStyleSheet;
+
+  let adoptedStyleDocument = null;
+
+  // dom-glue installs a fresh document per navigation; call back into it once the
+  // page document exists (this script is evaluated before the first page loads).
+  global.__glide_install_adopted_style_sheets = function installAdoptedStyleSheets() {
+    const doc = global.document;
+    if (!doc) return;
+    if (adoptedStyleDocument !== doc) {
+      adoptedStyleDocument = doc;
+      adoptedDocumentSheets.length = 0;
+      adoptedDocumentStyle = null;
+    }
+    try {
+      Object.defineProperty(doc, 'adoptedStyleSheets', {
+        configurable: true,
+        enumerable: true,
+        get() { return adoptedDocumentSheets.slice(); },
+        set(value) {
+          const list = Array.from(value == null ? [] : value);
+          for (let i = 0; i < list.length; i += 1) {
+            if (!(list[i] instanceof CSSStyleSheet)) {
+              throw new TypeError('adoptedStyleSheets must contain CSSStyleSheet objects');
+            }
+          }
+          adoptedDocumentSheets.length = 0;
+          Array.prototype.push.apply(adoptedDocumentSheets, list);
+          refreshAdoptedDocumentStyle();
+        },
+      });
+    } catch (_) { /* the document may already define this */ }
+  };
+
   function Image(width, height) {
     const img = document.createElement('img');
     if (arguments.length >= 1 && width != null) img.width = width;

@@ -913,6 +913,7 @@
     ['crypto', () => global.crypto != null],
     ['matchMedia', () => typeof global.matchMedia === 'function'],
     ['CSS.supports', () => !!(global.CSS && typeof global.CSS.supports === 'function')],
+    ['CSSStyleSheet', () => typeof global.CSSStyleSheet === 'function'],
     ['history.pushState', () => !!(global.history && typeof global.history.pushState === 'function')],
     ['performance.timing', () => !!(global.performance && global.performance.timing != null)],
     ['navigator.sendBeacon', () => !!(global.navigator && typeof global.navigator.sendBeacon === 'function')],
@@ -2192,6 +2193,9 @@
     } catch (_) { /* domino defines these as readonly */ }
     installUrlGlobal();
     installWebStorage(storageJson);
+    if (typeof global.__glide_install_adopted_style_sheets === 'function') {
+      global.__glide_install_adopted_style_sheets();
+    }
   }
 
   const EVENT_HANDLER_TYPES = [

@@ -36,6 +36,11 @@ Feature: F-085 Reddit compatibility
     Then the home document renders HOME-CHALLENGE-OK
     And a plain home GET without the token shows the failure page
 
+  Scenario: Constructable stylesheets are available
+    Given a page constructs a CSSStyleSheet and calls replaceSync
+    When it adopts the sheet with document.adoptedStyleSheets
+    Then the stylesheet reports its rules and the adopted CSS applies to the page
+
   Scenario: Composed Reddit-like fixture settles cleanly
     Given reddit-composed.html is loaded with JavaScript enabled
     When page scripts settle

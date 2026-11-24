@@ -3490,6 +3490,28 @@ fn reddit_document_append_text() {
 }
 
 #[test]
+fn reddit_css_style_sheet_constructs_and_applies_adopted_sheet() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><script>
+      var out = [];
+      out.push('ctor:' + (typeof CSSStyleSheet));
+      var sheet = new CSSStyleSheet();
+      sheet.replaceSync('#t { color: red; }');
+      var replaced = sheet.replace('#t { display: none; }');
+      out.push('promise:' + (typeof replaced.then === 'function'));
+      out.push('rules:' + sheet.cssRules.length);
+      document.adoptedStyleSheets = [sheet];
+      out.push('adopted:' + document.adoptedStyleSheets.length);
+      out.push('display:' + getComputedStyle(document.getElementById('t')).display);
+      document.getElementById('t').textContent = out.join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(
+        result.final_text,
+        "ctor:function|promise:true|rules:1|adopted:1|display:none"
+    );
+}
+
+#[test]
 fn reddit_dom_api_before_after_replace_with() {
     let html = r#"<!DOCTYPE html><html><body><div id="p"><i id="i">x</i></div><p id="t"></p>
       <script>

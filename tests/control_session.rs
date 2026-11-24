@@ -831,6 +831,11 @@ fn full_page_screenshot_covers_document_height_and_keeps_scroll() {
     assert_eq!(rgb_at(&full, width, 50, 1500), [0, 0, 255]);
     let after = scroll(&backend, None, Some(0.0), None).expect("scroll offset");
     assert_eq!(after.y, 500.0);
+    assert_eq!(
+        (after.viewport_width, after.viewport_height),
+        (1100, 760),
+        "viewport size restored after the full-page shot"
+    );
     let (viewport, width, height) = screenshot(&backend, false);
     assert_eq!((width, height), (1100, 760));
     assert_eq!(rgb_at(&viewport, width, 50, 50), [255, 0, 0]);
@@ -898,8 +903,12 @@ fn scroll_scroll_result_is_not_settled_while_page_mutates_forever() {
 fn scroll_moves_viewport_when_javascript_is_disabled() {
     let backend = session_js_off();
     navigate_to(&backend, fixture_url("scroll-colors.html"));
-    let info = scroll(&backend, None, Some(200.0), None).expect("scroll");
-    assert_eq!(info.y, 200.0);
+    let (top, width, _) = screenshot(&backend, false);
+    assert_eq!(rgb_at(&top, width, 50, 200), [255, 0, 0]);
+    let info = scroll(&backend, None, Some(900.0), None).expect("scroll");
+    assert_eq!(info.y, 900.0);
     let (shot, width, _) = screenshot(&backend, false);
+    // Red covers document y 0..1000: at offset 900 the viewport shows red for 100 px, then blue.
     assert_eq!(rgb_at(&shot, width, 50, 50), [255, 0, 0]);
+    assert_eq!(rgb_at(&shot, width, 50, 200), [0, 0, 255]);
 }

@@ -96,18 +96,41 @@ pub fn paint_png(doc: &mut BaseDocument, width: u32, height: u32) -> Result<Vec<
     crate::shot::encode_png(&rgba, width, height)
 }
 
+/// Resizes a document's viewport to the full page and restores size and scroll offset on drop,
+/// so a panic while painting still leaves the page unchanged.
+struct FullPageViewport<'a> {
+    doc: &'a mut BaseDocument,
+    saved_size: (u32, u32),
+    saved_scroll: (f64, f64),
+}
+
+impl<'a> FullPageViewport<'a> {
+    fn new(doc: &'a mut BaseDocument, height: u32, saved_scroll: (f64, f64)) -> Self {
+        let saved_size = doc.viewport().window_size;
+        doc.viewport_mut().window_size = (VIEWPORT_WIDTH, height);
+        Self {
+            doc,
+            saved_size,
+            saved_scroll,
+        }
+    }
+}
+
+impl Drop for FullPageViewport<'_> {
+    fn drop(&mut self) {
+        self.doc.viewport_mut().window_size = self.saved_size;
+        viewport::scroll_to(self.doc, self.saved_scroll.0, self.saved_scroll.1);
+    }
+}
+
 /// Paint the whole document height (capped at [`MAX_FULL_PAGE_HEIGHT`]) from the top, then put
 /// the viewport size and scroll offset back so the page is unchanged.
 pub fn paint_full_page_png(doc: &mut BaseDocument) -> Result<Vec<u8>, String> {
     let before = viewport::state(doc);
     let tall = (before.scroll_height.ceil() as u32).clamp(VIEWPORT_HEIGHT, MAX_FULL_PAGE_HEIGHT);
-    let saved_size = doc.viewport().window_size;
-    doc.viewport_mut().window_size = (VIEWPORT_WIDTH, tall);
-    viewport::scroll_to(doc, 0.0, 0.0);
-    let png = paint_png(doc, VIEWPORT_WIDTH, tall);
-    doc.viewport_mut().window_size = saved_size;
-    viewport::scroll_to(doc, before.scroll_x, before.scroll_y);
-    png
+    let guard = FullPageViewport::new(doc, tall, (before.scroll_x, before.scroll_y));
+    viewport::scroll_to(guard.doc, 0.0, 0.0);
+    paint_png(guard.doc, VIEWPORT_WIDTH, tall)
 }
 
 /// Convert viewport state to the control result shape.

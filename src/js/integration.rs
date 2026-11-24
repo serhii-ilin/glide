@@ -3219,8 +3219,8 @@ fn intersection_observer_take_records_buffers_entries() {
     assert_eq!(result.final_text, "1|box|0", "{}", result.final_text);
 }
 
-#[test]
-fn lazy_img_fetches_only_after_near_viewport_layout_change() {
+/// Loopback image server recording requested paths; returns its port and the shared path list.
+fn spawn_recording_image_server() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
@@ -3258,6 +3258,31 @@ fn lazy_img_fetches_only_after_near_viewport_layout_change() {
             let _ = stream.write_all(&body);
         }
     });
+    (port, requests)
+}
+
+// Source: HTML Living Standard (lazy loading attribute: fetch only when near the viewport).
+#[test]
+fn lazy_img_far_below_viewport_is_not_fetched_without_a_move() {
+    let (port, requests) = spawn_recording_image_server();
+    let html = format!(
+        r#"<!DOCTYPE html><html><body>
+<div style="height:1200px"></div>
+<img id="lz" width="32" height="32" loading="lazy" src="http://127.0.0.1:{port}/pixel.png" alt="">
+<p id="t">pending</p>
+</body></html>"#
+    );
+    super::harness::run_inline_page_in_viewport(&html, 400, 300, Duration::from_millis(1000));
+    let paths = requests.lock().expect("lock").clone();
+    assert!(
+        !paths.iter().any(|p| p.contains("pixel.png")),
+        "lazy image far below the viewport must not load: {paths:?}"
+    );
+}
+
+#[test]
+fn lazy_img_fetches_only_after_near_viewport_layout_change() {
+    let (port, requests) = spawn_recording_image_server();
 
     let html_move = format!(
         r#"<!DOCTYPE html><html><body>

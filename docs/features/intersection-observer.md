@@ -14,7 +14,7 @@ requirements:
 gherkin: "tests/features/intersection-observer.feature"
 tests:
   [
-    "`js::integration::{intersection_observer_fires_after_dom_moves_target_into_view,intersection_observer_fires_for_visible_and_hidden_elements,intersection_observer_threshold_crossing_fires,intersection_observer_take_records_buffers_entries,lazy_img_fetches_only_after_near_viewport_layout_change}`",
+    "`js::integration::{intersection_observer_fires_after_dom_moves_target_into_view,intersection_observer_fires_for_visible_and_hidden_elements,intersection_observer_threshold_crossing_fires,intersection_observer_take_records_buffers_entries,lazy_img_far_below_viewport_is_not_fetched_without_a_move,lazy_img_fetches_only_after_near_viewport_layout_change}`",
     "manual intersection-observer#1"
   ]
 mcp: "n/a (engine behavior; observable via `glide_eval`)"

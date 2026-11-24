@@ -3715,6 +3715,36 @@ fn element_scroll_top_and_left_setters_scroll_overflow_container_and_clamp() {
     assert_eq!(result.final_text, "40|900|0|70:0|200|500/5");
 }
 
+// Source: DOM Standard (the document element can be removed); product decision (no panic).
+#[test]
+fn viewport_reads_and_scroll_do_not_panic_after_document_element_is_removed() {
+    let html = r#"<!DOCTYPE html><html><head></head><body><p id="t">pending</p>
+    <script>
+      var out = [];
+      var t = document.getElementById('t');
+      document.removeChild(document.documentElement);
+      out.push(window.scrollY);
+      out.push(typeof window.innerHeight);
+      scrollTo(0, 100);
+      scrollBy(0, 10);
+      out.push(window.scrollY);
+      out.push('done');
+      window.__out = out.join('|');
+      console.log(window.__out);
+    </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(400));
+    let messages: Vec<_> = result
+        .console_wire
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("0|number|0|done")),
+        "{messages:?}"
+    );
+}
+
 // Source: Intersection Observer; product decision (infinite scroll via a bottom sentinel).
 #[test]
 fn intersection_observer_sentinel_fires_after_viewport_scroll() {

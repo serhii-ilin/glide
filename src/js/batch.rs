@@ -426,7 +426,7 @@ fn scroll_field(
     id: blitz_traits::node_id::NodeId,
     field: &str,
 ) -> Option<f64> {
-    if doc.root_element().id == id {
+    if doc.try_root_element().is_some_and(|root| root.id == id) {
         let state = super::viewport::state(doc);
         return Some(match field {
             "scrollWidth" => state.scroll_width,
@@ -456,7 +456,9 @@ pub fn reply_layout_number(
     let border = doc.get_client_bounding_rect(id);
     let n = match field {
         // CSSOM View: the root element's client size is the viewport (excluding scrollbars).
-        "clientWidth" | "clientHeight" if doc.root_element().id == id => {
+        "clientWidth" | "clientHeight"
+            if doc.try_root_element().is_some_and(|root| root.id == id) =>
+        {
             let viewport = super::viewport::state(doc);
             let n = if field == "clientWidth" {
                 viewport.width

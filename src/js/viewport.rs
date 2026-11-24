@@ -40,14 +40,21 @@ impl ViewportState {
 pub fn state(doc: &mut BaseDocument) -> ViewportState {
     doc.resolve(0.0);
     let scroll = doc.viewport_scroll();
-    let layout = *doc.root_element().final_layout();
-    let content_width = f64::from(layout.size.width.max(layout.scrollable_overflow_rect.right));
-    let content_height = f64::from(
-        layout
-            .size
-            .height
-            .max(layout.scrollable_overflow_rect.bottom),
-    );
+    let (content_width, content_height) = match doc.try_root_element() {
+        Some(root) => {
+            let layout = *root.final_layout();
+            (
+                f64::from(layout.size.width.max(layout.scrollable_overflow_rect.right)),
+                f64::from(
+                    layout
+                        .size
+                        .height
+                        .max(layout.scrollable_overflow_rect.bottom),
+                ),
+            )
+        }
+        None => (0.0, 0.0),
+    };
     let (width, height) = doc.viewport().logical_size();
     let (width, height) = (f64::from(width), f64::from(height));
     ViewportState {
@@ -63,16 +70,18 @@ pub fn state(doc: &mut BaseDocument) -> ViewportState {
 /// Scroll by a delta, clamped to the document, and return the new state.
 pub fn scroll_by(doc: &mut BaseDocument, dx: f64, dy: f64) -> ViewportState {
     doc.resolve(0.0);
-    let root = doc.root_element().id;
-    doc.scroll_by(root, dx, dy, ScrollBehavior::Instant);
+    if let Some(root) = doc.try_root_element().map(|n| n.id) {
+        doc.scroll_by(root, dx, dy, ScrollBehavior::Instant);
+    }
     state(doc)
 }
 
 /// Scroll to an absolute offset, clamped to the document, and return the new state.
 pub fn scroll_to(doc: &mut BaseDocument, x: f64, y: f64) -> ViewportState {
     doc.resolve(0.0);
-    let root = doc.root_element().id;
-    doc.scroll_to(root, x, y, ScrollBehavior::Instant);
+    if let Some(root) = doc.try_root_element().map(|n| n.id) {
+        doc.scroll_to(root, x, y, ScrollBehavior::Instant);
+    }
     state(doc)
 }
 
@@ -115,4 +124,34 @@ pub fn scroll_element_to(doc: &mut BaseDocument, node: NodeId, x: f64, y: f64) -
             (offset.x, offset.y)
         })
         .unwrap_or((0.0, 0.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    fn document_without_root_element() -> BaseDocument {
+        let mut doc = parse::document_from_html(
+            "<!doctype html><body><div style=\"height:2000px\"></div></body>",
+            blitz_dom::DocumentConfig::default(),
+            false,
+        );
+        doc.resolve(0.0);
+        let root = doc.root_element().id;
+        doc.mutate().remove_node(root);
+        assert!(doc.try_root_element().is_none());
+        doc
+    }
+
+    // Source: DOM Standard (a script may remove the document element); product decision (no panic).
+    #[test]
+    fn viewport_helpers_return_neutral_state_without_a_root_element() {
+        let mut doc = document_without_root_element();
+        let state = state(&mut doc);
+        assert_eq!((state.scroll_x, state.scroll_y), (0.0, 0.0));
+        assert!(state.scroll_height >= state.height);
+        assert_eq!(scroll_by(&mut doc, 0.0, 50.0).scroll_y, 0.0);
+        assert_eq!(scroll_to(&mut doc, 0.0, 50.0).scroll_y, 0.0);
+    }
 }

@@ -17,7 +17,7 @@ use super::ControlBackend;
 use super::page_ops;
 use super::protocol::{
     ControlRequest, ControlResult, DEFAULT_MAX_CHARS, DEFAULT_NAV_TIMEOUT_MS, DEFAULT_QUERY_LIMIT,
-    LoadStatus, PageInfo,
+    DEFAULT_SCROLL_SETTLE_MS, LoadStatus, PageInfo, ScrollParams, clamp_client_timeout_ms,
 };
 use crate::devtools::console::{ConsoleEntry, ConsoleJournal};
 use crate::headless::{self, SettleOptions, VIEWPORT_HEIGHT, VIEWPORT_WIDTH};
@@ -193,8 +193,9 @@ fn request_method_name(request: &ControlRequest) -> String {
         ControlRequest::SnapshotText(_) => "snapshot_text",
         ControlRequest::Dom(_) => "dom",
         ControlRequest::Query(_) => "query",
-        ControlRequest::Screenshot => "screenshot",
+        ControlRequest::Screenshot(_) => "screenshot",
         ControlRequest::ComputedStyle(_) => "computed_style",
+        ControlRequest::Scroll(_) => "scroll",
     }
     .to_string()
 }
@@ -210,6 +211,8 @@ pub struct HeadlessSession {
     epoch: u64,
     last_status: LoadStatus,
     current_url: String,
+    /// Network provider of the current page; the scroll settle loop waits for its requests.
+    net: Option<Arc<Provider>>,
 }
 
 impl HeadlessSession {
@@ -226,6 +229,7 @@ impl HeadlessSession {
             epoch: 1,
             last_status: LoadStatus::Settled,
             current_url: String::new(),
+            net: None,
         }
     }
 
@@ -274,12 +278,17 @@ impl HeadlessSession {
                 let elements = page_ops::query(&doc.0, &p.selector, limit, self.opts.js_enabled)?;
                 Ok(ControlResult::Elements(elements))
             }
-            ControlRequest::Screenshot => {
+            ControlRequest::Screenshot(p) => {
                 let doc = self.document.as_mut().ok_or_else(no_page_loaded)?;
                 doc.0.resolve(0.0);
-                let png = page_ops::paint_png(&mut doc.0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)?;
+                let png = if p.full_page {
+                    page_ops::paint_full_page_png(&mut doc.0)?
+                } else {
+                    page_ops::paint_png(&mut doc.0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)?
+                };
                 Ok(ControlResult::Png(png))
             }
+            ControlRequest::Scroll(p) => self.scroll(p),
             ControlRequest::ComputedStyle(p) => {
                 let doc = self.document.as_mut().ok_or_else(no_page_loaded)?;
                 doc.0.resolve(0.0);
@@ -290,6 +299,50 @@ impl HeadlessSession {
                 Ok(ControlResult::ComputedStyle(map))
             }
         }
+    }
+
+    /// Scroll the page like the window does, then pump page scripts until they go quiet so
+    /// scroll listeners, IntersectionObserver callbacks and the fetches they start finish
+    /// before the new position is reported.
+    fn scroll(&mut self, p: ScrollParams) -> Result<ControlResult, String> {
+        let doc = self.document.as_mut().ok_or_else(no_page_loaded)?;
+        page_ops::apply_scroll(
+            &mut doc.0,
+            p.to_selector.as_deref(),
+            p.dx.unwrap_or(0.0),
+            p.dy.unwrap_or(0.0),
+        )?;
+        if self.opts.js_enabled
+            && let Some(js_host) = self.js_host.as_mut()
+        {
+            let timeout = Duration::from_millis(clamp_client_timeout_ms(Some(
+                p.timeout_ms.unwrap_or(DEFAULT_SCROLL_SETTLE_MS),
+            )));
+            let opts = SettleOptions {
+                min_js: Duration::from_millis(200),
+                max: timeout,
+                quiet_ticks: 8,
+            };
+            if let Some(net) = self.net.as_ref() {
+                let tab_id = self.tab_id;
+                let epoch = self.epoch;
+                let journal = &mut self.console;
+                headless::settle(&mut doc.0, js_host, net, true, opts, || {
+                    for ev in console_feed::drain_for_tab(tab_id) {
+                        if ev.page_epoch == epoch {
+                            journal.push(ConsoleEntry::from_wire(ev));
+                        }
+                    }
+                });
+                js_host.flush_dom_rpc_until_idle(
+                    &mut doc.0,
+                    timeout.min(Duration::from_secs(2)),
+                    Duration::from_millis(100),
+                );
+            }
+        }
+        let state = crate::js::viewport::state(&mut doc.0);
+        Ok(ControlResult::Scroll(page_ops::scroll_info(state)))
     }
 
     pub fn tick(&mut self) {
@@ -539,6 +592,7 @@ impl HeadlessSession {
         };
         self.document = Some(document);
         self.js_host = Some(js_host);
+        self.net = Some(net.clone());
         self.epoch = new_epoch;
         self.current_url = final_url.clone();
         self.last_status = last_status;

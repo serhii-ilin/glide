@@ -8,6 +8,9 @@ pub const DEFAULT_QUERY_LIMIT: usize = 50;
 pub const DEFAULT_NAV_TIMEOUT_MS: u64 = 12_000;
 /// Upper bound for client-supplied navigation/wait timeouts (MCP and control callers).
 pub const MAX_CLIENT_TIMEOUT_MS: u64 = 120_000;
+/// Default time `glide_scroll` keeps pumping page scripts after a scroll (scroll listeners,
+/// IntersectionObserver callbacks and the `fetch` they start) before it answers.
+pub const DEFAULT_SCROLL_SETTLE_MS: u64 = 3_000;
 
 /// Resolve an optional client timeout to milliseconds, applying [`DEFAULT_NAV_TIMEOUT_MS`]
 /// when absent and capping at [`MAX_CLIENT_TIMEOUT_MS`].
@@ -16,7 +19,7 @@ pub fn clamp_client_timeout_ms(timeout_ms: Option<u64>) -> u64 {
     ms.min(MAX_CLIENT_TIMEOUT_MS)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum ControlRequest {
     Navigate(NavigateParams),
@@ -27,8 +30,9 @@ pub enum ControlRequest {
     SnapshotText(TextParams),
     Dom(DomParams),
     Query(QueryParams),
-    Screenshot,
+    Screenshot(ScreenshotParams),
     ComputedStyle(ComputedStyleParams),
+    Scroll(ScrollParams),
 }
 
 /// Arguments for `glide_navigate`.
@@ -81,6 +85,45 @@ pub struct QueryParams {
     pub limit: Option<usize>,
 }
 
+/// Arguments for `glide_screenshot`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+pub struct ScreenshotParams {
+    /// When true, capture the whole document height (capped at 16384 px) instead of the
+    /// viewport at the current scroll offset. Default false.
+    #[serde(default)]
+    pub full_page: bool,
+}
+
+/// Arguments for `glide_scroll`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
+pub struct ScrollParams {
+    /// Horizontal scroll delta in CSS pixels (positive scrolls right).
+    #[serde(default)]
+    pub dx: Option<f64>,
+    /// Vertical scroll delta in CSS pixels (positive scrolls down).
+    #[serde(default)]
+    pub dy: Option<f64>,
+    /// CSS selector of an element to scroll into view first (top-aligned); a delta, when
+    /// given, is applied after it.
+    #[serde(default)]
+    pub to_selector: Option<String>,
+    /// How long to let page scripts react after the scroll, in milliseconds (default 3000;
+    /// clamped to 120000).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+/// Viewport position and sizes after a scroll, in CSS pixels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScrollInfo {
+    pub x: f64,
+    pub y: f64,
+    pub scroll_width: f64,
+    pub scroll_height: f64,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+}
+
 /// Arguments for `glide_computed_style`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ComputedStyleParams {
@@ -104,6 +147,7 @@ pub enum ControlResult {
     Elements(Vec<ElementInfo>),
     Png(Vec<u8>),
     ComputedStyle(std::collections::BTreeMap<String, String>),
+    Scroll(ScrollInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -174,6 +218,23 @@ mod tests {
         assert!(json.contains("\"method\":\"dom\""));
         let back: ControlRequest = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, req);
+    }
+
+    #[test]
+    fn scroll_request_json_roundtrip_with_optional_fields() {
+        let req = ControlRequest::Scroll(ScrollParams {
+            dx: None,
+            dy: Some(120.5),
+            to_selector: Some("#end".into()),
+            timeout_ms: None,
+        });
+        let json = serde_json::to_string(&req).expect("serialize");
+        assert!(json.contains("\"method\":\"scroll\""), "{json}");
+        let back: ControlRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, req);
+        let sparse: ScrollParams = serde_json::from_str("{\"dy\": 5}").expect("sparse");
+        assert_eq!(sparse.dy, Some(5.0));
+        assert_eq!(sparse.to_selector, None);
     }
 
     #[test]

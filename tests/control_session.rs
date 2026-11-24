@@ -7,9 +7,11 @@ use std::time::{Duration, Instant};
 use glide::control::ControlBackend;
 use glide::control::protocol::{
     ComputedStyleParams, ControlRequest, ControlResult, DomParams, NavigateParams, QueryParams,
-    TextParams, WaitParams,
+    ScreenshotParams, ScrollInfo, ScrollParams, TextParams, WaitParams,
 };
 use glide::control::session::{SessionOptions, spawn_session};
+
+mod common;
 
 static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -471,8 +473,11 @@ fn screenshot_is_png_with_viewport_size() {
         }),
     )
     .expect("navigate");
-    let ControlResult::Png(bytes) = call(&backend, ControlRequest::Screenshot).expect("shot")
-    else {
+    let ControlResult::Png(bytes) = call(
+        &backend,
+        ControlRequest::Screenshot(ScreenshotParams::default()),
+    )
+    .expect("shot") else {
         panic!("expected png");
     };
     assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
@@ -645,4 +650,217 @@ fn blank_scripted_page_falls_back_to_static_text() {
     };
     assert!(text.contains("FAILSAFE-SERVER-TEXT"), "{text}");
     assert!(text.contains("FAILSAFE-NOSCRIPT-TEXT"), "{text}");
+}
+
+fn navigate_to<B: ControlBackend>(backend: &B, url: String) {
+    call(
+        backend,
+        ControlRequest::Navigate(NavigateParams {
+            url,
+            timeout_ms: None,
+        }),
+    )
+    .expect("navigate");
+}
+
+fn scroll<B: ControlBackend>(
+    backend: &B,
+    dx: Option<f64>,
+    dy: Option<f64>,
+    to_selector: Option<&str>,
+) -> Result<ScrollInfo, String> {
+    match call(
+        backend,
+        ControlRequest::Scroll(ScrollParams {
+            dx,
+            dy,
+            to_selector: to_selector.map(str::to_string),
+            timeout_ms: None,
+        }),
+    )? {
+        ControlResult::Scroll(info) => Ok(info),
+        other => Err(format!("expected scroll result, got {other:?}")),
+    }
+}
+
+fn page_text<B: ControlBackend>(backend: &B) -> String {
+    let ControlResult::Text { text, .. } = call(
+        backend,
+        ControlRequest::SnapshotText(TextParams { max_chars: None }),
+    )
+    .expect("snapshot") else {
+        panic!("expected text");
+    };
+    text
+}
+
+fn screenshot<B: ControlBackend>(backend: &B, full_page: bool) -> (Vec<u8>, u32, u32) {
+    let ControlResult::Png(bytes) = call(
+        backend,
+        ControlRequest::Screenshot(ScreenshotParams { full_page }),
+    )
+    .expect("screenshot") else {
+        panic!("expected png");
+    };
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&bytes))
+        .read_info()
+        .expect("png header");
+    let mut buf = vec![0; reader.output_buffer_size().expect("png buffer size")];
+    let info = reader.next_frame(&mut buf).expect("png frame");
+    buf.truncate(info.buffer_size());
+    (buf, info.width, info.height)
+}
+
+fn rgb_at(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
+    let i = ((y * width + x) * 4) as usize;
+    [rgba[i], rgba[i + 1], rgba[i + 2]]
+}
+
+// Source: CSSOM View Module (Window.scrollBy, scroll offsets, scrollHeight).
+#[test]
+fn scroll_by_delta_moves_viewport_and_reports_offsets() {
+    let backend = session_js_on();
+    navigate_to(&backend, fixture_url("scroll-colors.html"));
+    let info = scroll(&backend, None, Some(300.0), None).expect("scroll");
+    assert_eq!(info.y, 300.0);
+    assert_eq!(info.x, 0.0);
+    assert_eq!(info.viewport_width, 1100);
+    assert_eq!(info.viewport_height, 760);
+    assert!(info.scroll_height >= 2050.0, "{info:?}");
+    let again = scroll(&backend, None, Some(100.0), None).expect("scroll again");
+    assert_eq!(again.y, 400.0);
+}
+
+// Source: CSSOM View Module (scroll position is clamped to the scrollable overflow).
+#[test]
+fn scroll_is_clamped_to_document_extent() {
+    let backend = session_js_on();
+    navigate_to(&backend, fixture_url("scroll-colors.html"));
+    let info = scroll(&backend, None, Some(1_000_000.0), None).expect("scroll");
+    assert_eq!(info.y, info.scroll_height - f64::from(info.viewport_height));
+    let up = scroll(&backend, None, Some(-1_000_000.0), None).expect("scroll up");
+    assert_eq!(up.y, 0.0);
+}
+
+// Source: CSSOM View Module (Element.scrollIntoView).
+#[test]
+fn scroll_to_selector_brings_element_into_view() {
+    let backend = session_js_on();
+    navigate_to(&backend, fixture_url("scroll-colors.html"));
+    let info = scroll(&backend, None, None, Some("#far")).expect("scroll to selector");
+    assert!(info.y > 1000.0, "{info:?}");
+    let ControlResult::Elements(list) = call(
+        &backend,
+        ControlRequest::Query(QueryParams {
+            selector: "#far".into(),
+            limit: None,
+        }),
+    )
+    .expect("query") else {
+        panic!("expected elements");
+    };
+    let far = &list[0];
+    let top_in_viewport = f64::from(far.rect.y) - info.y;
+    assert!(
+        top_in_viewport >= 0.0 && top_in_viewport < f64::from(info.viewport_height),
+        "far top {top_in_viewport} not inside the viewport: {info:?}"
+    );
+}
+
+#[test]
+fn scroll_to_missing_selector_is_error() {
+    let backend = session_js_on();
+    navigate_to(&backend, fixture_url("scroll-colors.html"));
+    let err = scroll(&backend, None, None, Some("#nope")).expect_err("error");
+    assert!(err.contains("no element matches selector"), "{err}");
+}
+
+#[test]
+fn scroll_without_page_is_error() {
+    let backend = session_js_on();
+    let err = scroll(&backend, None, Some(10.0), None).expect_err("error");
+    assert!(err.contains("no page loaded"), "{err}");
+}
+
+// Source: CSSOM View Module (Window.scrollY/pageYOffset/scrollX/innerWidth/innerHeight,
+// Document.scrollingElement); HTML Living Standard (scroll event on window and document).
+#[test]
+fn page_script_sees_viewport_and_scroll_events_after_scroll() {
+    let backend = session_js_on();
+    navigate_to(&backend, fixture_url("scroll-state.html"));
+    scroll(&backend, None, Some(250.0), None).expect("scroll");
+    let text = page_text(&backend);
+    assert!(text.contains("win=1 doc=1"), "{text}");
+    assert!(text.contains("y=250 pyo=250 x=0 pxo=0"), "{text}");
+    assert!(text.contains("iw=1100 ih=760"), "{text}");
+    assert!(text.contains("se=HTML"), "{text}");
+}
+
+// Source: CSSOM View Module (screenshot of the viewport at its scroll offset).
+#[test]
+fn screenshot_honors_scroll_offset() {
+    let backend = session_js_on();
+    navigate_to(&backend, fixture_url("scroll-colors.html"));
+    let (top, width, _) = screenshot(&backend, false);
+    assert_eq!(rgb_at(&top, width, 50, 50), [255, 0, 0]);
+    scroll(&backend, None, Some(1000.0), None).expect("scroll");
+    let (scrolled, width, height) = screenshot(&backend, false);
+    assert_eq!((width, height), (1100, 760));
+    assert_eq!(rgb_at(&scrolled, width, 50, 50), [0, 0, 255]);
+}
+
+#[test]
+fn full_page_screenshot_covers_document_height_and_keeps_scroll() {
+    let backend = session_js_on();
+    navigate_to(&backend, fixture_url("scroll-colors.html"));
+    scroll(&backend, None, Some(500.0), None).expect("scroll");
+    let (full, width, height) = screenshot(&backend, true);
+    assert_eq!(width, 1100);
+    assert!(height >= 2050, "full page height {height}");
+    assert_eq!(rgb_at(&full, width, 50, 50), [255, 0, 0]);
+    assert_eq!(rgb_at(&full, width, 50, 1500), [0, 0, 255]);
+    let after = scroll(&backend, None, Some(0.0), None).expect("scroll offset");
+    assert_eq!(after.y, 500.0);
+    let (viewport, width, height) = screenshot(&backend, false);
+    assert_eq!((width, height), (1100, 760));
+    assert_eq!(rgb_at(&viewport, width, 50, 50), [255, 0, 0]);
+}
+
+// Source: Intersection Observer; product decision (infinite scroll via a bottom sentinel).
+#[test]
+fn infinite_scroll_intersection_observer_appends_items_after_scroll() {
+    let base = common::spawn_infinite_scroll_server();
+    let backend = session_js_on();
+    navigate_to(&backend, format!("{base}/io.html"));
+    let before = page_text(&backend);
+    assert!(before.contains("page-1-item-1"), "{before}");
+    assert!(!before.contains("page-2-item-1"), "{before}");
+    scroll(&backend, None, Some(1_000_000.0), None).expect("scroll to bottom");
+    let after = page_text(&backend);
+    assert!(after.contains("page-2-item-1"), "{after}");
+}
+
+// Source: HTML Living Standard (scroll event); product decision (infinite scroll via scrollY).
+#[test]
+fn infinite_scroll_scroll_event_appends_items_after_scroll() {
+    let base = common::spawn_infinite_scroll_server();
+    let backend = session_js_on();
+    navigate_to(&backend, format!("{base}/scroll-event.html"));
+    let before = page_text(&backend);
+    assert!(before.contains("page-1-item-1"), "{before}");
+    assert!(!before.contains("page-2-item-1"), "{before}");
+    scroll(&backend, None, Some(1_000_000.0), None).expect("scroll to bottom");
+    let after = page_text(&backend);
+    assert!(after.contains("page-2-item-1"), "{after}");
+    assert!(after.contains("scrollY="), "{after}");
+}
+
+#[test]
+fn scroll_moves_viewport_when_javascript_is_disabled() {
+    let backend = session_js_off();
+    navigate_to(&backend, fixture_url("scroll-colors.html"));
+    let info = scroll(&backend, None, Some(200.0), None).expect("scroll");
+    assert_eq!(info.y, 200.0);
+    let (shot, width, _) = screenshot(&backend, false);
+    assert_eq!(rgb_at(&shot, width, 50, 50), [255, 0, 0]);
 }

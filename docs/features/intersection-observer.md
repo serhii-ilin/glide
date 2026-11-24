@@ -34,4 +34,4 @@ IntersectionObserver re-evaluates after scroll, layout/DOM updates and rAF, deli
 
 ## Notes
 
-Layout rects come from Blitz/Taffy via `getBoundingClientRect`. Checks are rAF-throttled and also scheduled after `__glide_flush_dom` / `__glide_flush_raf`. `window.scrollTo` maps to viewport scroll over DOM RPC. Native lazy images use a root-margin observer plus `LoadImage` RPC.
+Layout rects come from Blitz/Taffy via `getBoundingClientRect`. Checks are rAF-throttled and also scheduled after `__glide_flush_dom` / `__glide_flush_raf`. `window.scrollTo`/`scrollBy` map to viewport scroll over DOM RPC and fire `scroll` events (see `mcp-scroll`). The root element's `clientWidth`/`clientHeight` are the viewport size, so the root bounds follow the viewport, not the document. Native lazy images use a root-margin observer plus `LoadImage` RPC.

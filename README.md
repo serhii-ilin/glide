@@ -135,7 +135,12 @@ process can read are loadable.
 
 **Shipped tools:** `glide_navigate`, `glide_back`, `glide_forward`, `glide_reload`,
 `glide_page_info`, `glide_snapshot_text`, `glide_dom`, `glide_query`, `glide_computed_style`,
-`glide_screenshot`.
+`glide_screenshot`, `glide_scroll`.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `glide_scroll` | `dx`, `dy` (CSS px), `to_selector`, `timeout_ms` (default 3000) | JSON `{x, y, scroll_width, scroll_height, viewport_width, viewport_height}` after page scripts react (scroll events, IntersectionObserver, `fetch`); call repeatedly for infinite-scroll pages |
+| `glide_screenshot` | `full_page` (default false) | PNG of the 1100x760 viewport at the current scroll offset, or of the whole document (capped at 16384 px) |
 
 **Planned:** `glide_console_messages`, `glide_eval`, click/type tools, tab helpers,
 `glide --mcp --attach` to drive a live window (`glide --remote-control`, feature `remote-control-window`).

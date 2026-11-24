@@ -67,7 +67,9 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::HistoryGoTo { reply, .. }
         | DomRequest::NodeCount { reply }
         | DomRequest::LoadImage { reply, .. }
-        | DomRequest::ScrollViewport { reply, .. } => *reply,
+        | DomRequest::ScrollViewport { reply, .. }
+        | DomRequest::ViewportInfo { reply }
+        | DomRequest::ScrollIntoView { reply, .. } => *reply,
         #[cfg(debug_assertions)]
         DomRequest::TestResize { reply, .. } => *reply,
     }
@@ -204,10 +206,19 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
             DomResponse::ok(reply, DomValue::Null)
         }
         DomRequest::ScrollViewport { x, y, reply } => {
-            let cur = doc.viewport_scroll();
-            doc.scroll_viewport_by(x - cur.x, y - cur.y);
-            doc.resolve(0.0);
-            DomResponse::ok(reply, DomValue::Null)
+            let state = super::viewport::scroll_to(doc, x, y);
+            DomResponse::ok(reply, DomValue::Json(state.to_json()))
+        }
+        DomRequest::ViewportInfo { reply } => {
+            let state = super::viewport::state(doc);
+            DomResponse::ok(reply, DomValue::Json(state.to_json()))
+        }
+        DomRequest::ScrollIntoView { node, block, reply } => {
+            let Some(node_id) = super::bridge::resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "unknown node");
+            };
+            let state = super::viewport::scroll_into_view(doc, node_id, &block);
+            DomResponse::ok(reply, DomValue::Json(state.to_json()))
         }
         #[cfg(debug_assertions)]
         DomRequest::TestResize {

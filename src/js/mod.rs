@@ -19,6 +19,7 @@ pub mod scripts;
 mod snapshot;
 pub mod storage_events;
 mod tap;
+pub mod viewport;
 pub mod websocket;
 mod worker;
 

@@ -1631,7 +1631,8 @@
       }
       return cachedRpc('boundingRect', id);
     };
-    ['offsetWidth', 'offsetHeight', 'offsetTop', 'offsetLeft', 'clientWidth', 'clientHeight'].forEach((field) => {
+    ['offsetWidth', 'offsetHeight', 'offsetTop', 'offsetLeft', 'clientWidth', 'clientHeight',
+      'scrollWidth', 'scrollHeight'].forEach((field) => {
       Object.defineProperty(elProto, field, {
         configurable: true,
         get() {
@@ -1643,6 +1644,57 @@
       });
     });
   }
+
+  // `scrollTop`/`scrollLeft` read the element's offset (the viewport's for the root element).
+  // Only the root element scrolls from script: assigning moves the viewport like `scrollTo`.
+  function patchScrollOffsets(elProto) {
+    [['scrollTop', 'scrollY', 1], ['scrollLeft', 'scrollX', 0]].forEach(([field, viewportKey, axis]) => {
+      Object.defineProperty(elProto, field, {
+        configurable: true,
+        get() {
+          flushMutations();
+          const id = blitzId(this);
+          if (id == null) return 0;
+          return cachedRpc('layoutField', id, field);
+        },
+        set(value) {
+          if (!pageDocument || this !== pageDocument.documentElement) return;
+          const next = Number(value);
+          if (!Number.isFinite(next)) return;
+          const cur = global.__glide_viewport_state();
+          const x = axis === 0 ? next : cur.scrollX;
+          const y = axis === 1 ? next : cur.scrollY;
+          if (typeof global.scrollTo === 'function') global.scrollTo(x, y);
+        },
+      });
+    });
+  }
+
+  // Element.scrollIntoView(arg): align the element in the viewport (instant; `block` honored).
+  function patchScrollIntoView(elProto) {
+    elProto.scrollIntoView = function scrollIntoView(arg) {
+      flushMutations();
+      const id = blitzId(this);
+      if (id == null) return;
+      let block = 'start';
+      if (arg === false) block = 'end';
+      else if (arg && typeof arg === 'object' && arg.block) block = String(arg.block);
+      const before = cachedRpc('viewportInfo', 0);
+      let after = before;
+      try {
+        after = rpc('scrollIntoView', String(id), block) || before;
+      } catch (_) { /* detached or unknown node: nothing to scroll */ }
+      layoutCache.clear();
+      if (typeof global.__glide_after_viewport_scroll === 'function') {
+        global.__glide_after_viewport_scroll(before, after);
+      }
+    };
+  }
+
+  global.__glide_viewport_state = function () {
+    flushMutations();
+    return cachedRpc('viewportInfo', 0);
+  };
 
   function styleFor(id) {
     const api = {
@@ -2257,6 +2309,8 @@
     global.CustomEvent = impl.CustomEvent;
     global.MouseEvent = impl.MouseEvent;
     patchLayout(global.Element.prototype);
+    patchScrollOffsets(global.Element.prototype);
+    patchScrollIntoView(global.Element.prototype);
     patchDataset(global.HTMLElement.prototype);
     installEventHandlerProperties(impl.HTMLElement.prototype);
     installScriptElementExtras(impl.HTMLScriptElement);

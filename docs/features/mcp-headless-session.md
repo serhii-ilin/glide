@@ -33,4 +33,4 @@ manual:
 
 ## Notes
 
-Served by `glide --mcp` (rmcp 3.11). Never opens the user profile. Known gaps: `glide_snapshot_text` reuses the `--dump-text` DOM walk, so `display:none` text is included (planned: layout-aware visible text); pipelined tool calls are not ordered (clients should wait for each result).
+Served by `glide --mcp` (rmcp 3.11). Never opens the user profile. Scrolling and the full-page screenshot option are in `mcp-scroll`. Known gaps: `glide_snapshot_text` reuses the `--dump-text` DOM walk, so `display:none` text is included (planned: layout-aware visible text); pipelined tool calls are not ordered (clients should wait for each result).

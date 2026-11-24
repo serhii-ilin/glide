@@ -94,6 +94,8 @@ pub struct JsHost {
     console_page_epoch: u64,
     host_wake: Arc<HostWake>,
     session_history: Arc<Mutex<History>>,
+    /// Viewport scroll offset last seen on the page document; a change is reported to the page.
+    last_page_scroll: (f64, f64),
 }
 
 impl JsHost {
@@ -118,6 +120,7 @@ impl JsHost {
             console_page_epoch: 1,
             host_wake: Arc::new(HostWake::new()),
             session_history: Arc::new(Mutex::new(History::new(String::new()))),
+            last_page_scroll: (0.0, 0.0),
         }
     }
 
@@ -269,6 +272,7 @@ impl JsHost {
         super::storage_events::unregister_command_sender(retiring);
         super::storage_events::detach(retiring);
         self.worker = None;
+        self.last_page_scroll = (0.0, 0.0);
         self.started_for = None;
         self.pending_sources = None;
         self.pending_indices = None;
@@ -479,6 +483,7 @@ impl JsHost {
         self.try_finish_pending_sources();
 
         let mut redraw = self.drain_dom_rpc(chrome);
+        self.report_viewport_scroll(chrome);
 
         if let Some(worker) = &self.worker {
             worker.pump(self.now_ms());
@@ -489,6 +494,24 @@ impl JsHost {
             dispatch_tap_event(chrome, &self.worker, &evt, &mut redraw);
         }
         redraw
+    }
+
+    /// Tell the page runtime when the page viewport offset changed since the last pump, whoever
+    /// moved it (window wheel or keys, an agent scroll, page script). The runtime ignores a
+    /// move it already knows about, so a page-initiated `scrollTo` does not fire twice.
+    fn report_viewport_scroll(&mut self, chrome: &BaseDocument) {
+        let read = |doc: &BaseDocument| {
+            let scroll = doc.viewport_scroll();
+            (scroll.x, scroll.y)
+        };
+        let now = with_page_subdoc(chrome, read).unwrap_or_else(|| read(chrome));
+        if now == self.last_page_scroll {
+            return;
+        }
+        self.last_page_scroll = now;
+        if let Some(worker) = &self.worker {
+            worker.viewport_scrolled();
+        }
     }
 
     pub fn flush_dom_rpc(&mut self, chrome: &mut BaseDocument, budget: Duration) -> bool {
@@ -647,9 +670,10 @@ impl JsHost {
                 false
             }
             request => {
+                let changes_page = !request.is_layout_read();
                 let response = self.apply_dom_rpc(chrome, request);
                 let _ = rpc.reply.send(response);
-                true
+                changes_page
             }
         }
     }

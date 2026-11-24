@@ -3153,18 +3153,22 @@ fn xhr_url_search_params_sends_urlencoded() {
 #[test]
 fn intersection_observer_fires_after_dom_moves_target_into_view() {
     let html = r#"<!DOCTYPE html><html><body>
-      <div id="target" style="width:40px;height:40px;margin-top:1200px"></div>
+      <div id="spacer" style="height:1200px"></div>
+      <div id="target" style="width:40px;height:40px"></div>
       <p id="t">pending</p>
       <script>
         var sawAfterMove = false;
+        var movedAt = 0;
         var io = new IntersectionObserver(function (entries) {
           entries.forEach(function (e) {
-            if (e.target.id === 'target' && e.isIntersecting) sawAfterMove = true;
+            if (e.target.id === 'target' && e.isIntersecting && movedAt) sawAfterMove = true;
           });
         });
         io.observe(document.getElementById('target'));
         setTimeout(function () {
-          document.getElementById('target').style.marginTop = '0px';
+          movedAt = 1;
+          var sp = document.getElementById('spacer');
+          sp.parentNode.removeChild(sp);
         }, 120);
         setTimeout(function () {
           document.getElementById('t').textContent = sawAfterMove ? 'intersected' : 'pending';
@@ -3257,10 +3261,14 @@ fn lazy_img_fetches_only_after_near_viewport_layout_change() {
 
     let html_move = format!(
         r#"<!DOCTYPE html><html><body>
-<img id="lz" width="32" height="32" loading="lazy" style="margin-top:1200px" src="http://127.0.0.1:{port}/pixel.png" alt="">
+<div id="spacer" style="height:1200px"></div>
+<img id="lz" width="32" height="32" loading="lazy" src="http://127.0.0.1:{port}/pixel.png" alt="">
 <p id="t">pending</p>
 <script>
-setTimeout(function() {{ document.getElementById('lz').style.marginTop = '0px'; }}, 120);
+setTimeout(function() {{
+  var sp = document.getElementById('spacer');
+  sp.parentNode.removeChild(sp);
+}}, 120);
 </script>
 </body></html>"#
     );
@@ -3598,4 +3606,104 @@ fn reddit_dom_api_before_after_replace_with() {
       </script></body></html>"#;
     let result = super::harness::run_inline_page(html, Duration::from_millis(100));
     assert_eq!(result.final_text, "|B||A|");
+}
+
+const SCROLL_PROBE_PAGE: &str = r#"<!DOCTYPE html><html><head><style>
+  body { margin: 0; height: 1500px; }
+  #t { position: fixed; top: 0; }
+</style></head><body><p id="t">init</p>
+<script>
+  var counts = { win: 0, doc: 0 };
+  function render(source) {
+    counts[source] += 1;
+    document.getElementById('t').textContent =
+      'win=' + counts.win + ' doc=' + counts.doc +
+      ' y=' + Math.round(window.scrollY) + ' pyo=' + Math.round(window.pageYOffset) +
+      ' x=' + Math.round(window.scrollX) + ' pxo=' + Math.round(window.pageXOffset) +
+      ' iw=' + window.innerWidth + ' ih=' + window.innerHeight +
+      ' se=' + document.scrollingElement.tagName;
+  }
+  window.addEventListener('scroll', function () { render('win'); });
+  document.addEventListener('scroll', function () { render('doc'); });
+</script></body></html>"#;
+
+// Source: HTML Living Standard (scroll event on window and document); CSSOM View Module
+// (Window.scrollY/pageYOffset/scrollX/pageXOffset/innerWidth/innerHeight, Document.scrollingElement).
+#[test]
+fn scroll_event_reaches_window_and_document_after_viewport_moves() {
+    let result = super::harness::run_inline_page_with_viewport_scroll(
+        SCROLL_PROBE_PAGE,
+        Duration::from_millis(200),
+        120.0,
+        Duration::from_millis(500),
+    );
+    assert!(
+        result.final_text.starts_with("win=1 doc=1 "),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn window_scroll_properties_match_viewport_after_scroll() {
+    let result = super::harness::run_inline_page_with_viewport_scroll(
+        SCROLL_PROBE_PAGE,
+        Duration::from_millis(200),
+        120.0,
+        Duration::from_millis(500),
+    );
+    let text = result.final_text;
+    assert!(text.contains("y=120 pyo=120 x=0 pxo=0"), "{text}");
+    assert!(text.contains("iw=400 ih=300"), "{text}");
+    assert!(text.contains("se=HTML"), "{text}");
+}
+
+// Source: CSSOM View Module (Window.scrollTo/scrollBy accept an options dictionary).
+#[test]
+fn page_scroll_to_and_by_move_viewport_and_fire_scroll_events() {
+    let html = r#"<!DOCTYPE html><html><head><style>body { margin: 0; height: 1500px; }</style>
+    </head><body><p id="t">pending</p>
+    <script>
+      var events = 0;
+      window.addEventListener('scroll', function () { events += 1; });
+      scrollTo({ top: 100, left: 0, behavior: 'instant' });
+      var afterTo = window.scrollY;
+      scrollBy(0, 50);
+      var afterBy = window.scrollY;
+      scrollBy({ top: 25, behavior: 'auto' });
+      setTimeout(function () {
+        document.getElementById('t').textContent =
+          [afterTo, afterBy, window.scrollY, events >= 1].join('|');
+      }, 200);
+    </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(700));
+    assert_eq!(result.final_text, "100|150|175|true");
+}
+
+// Source: Intersection Observer; product decision (infinite scroll via a bottom sentinel).
+#[test]
+fn intersection_observer_sentinel_fires_after_viewport_scroll() {
+    let html = r#"<!DOCTYPE html><html><head><style>body { margin: 0; }</style></head><body>
+      <div style="height:1200px"></div>
+      <div id="sentinel" style="height:40px"></div>
+      <div style="height:600px"></div>
+      <p id="t" style="position:fixed;top:0">pending</p>
+      <script>
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (e.isIntersecting) {
+              document.getElementById('t').textContent = 'loaded-more';
+            }
+          });
+        });
+        io.observe(document.getElementById('sentinel'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page_with_viewport_scroll(
+        html,
+        Duration::from_millis(250),
+        1000.0,
+        Duration::from_millis(600),
+    );
+    assert_eq!(result.final_text, "loaded-more");
 }

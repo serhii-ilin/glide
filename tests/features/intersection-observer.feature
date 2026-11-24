@@ -12,6 +12,8 @@ Feature: intersection-observer Real IntersectionObserver and native lazy images
   #          intersection_observer_threshold_crossing_fires,
   #          intersection_observer_reports_zero_size_target_inside_viewport,
   #          intersection_observer_zero_size_sentinel_fires_after_scroll,
+  #          intersection_observer_zero_size_target_in_display_none_subtree_does_not_intersect,
+  #          lazy_img_inside_display_none_subtree_is_not_fetched,
   #          intersection_observer_take_records_buffers_entries,
   #          lazy_img_fetches_only_after_near_viewport_layout_change
   #        }
@@ -29,6 +31,16 @@ Feature: intersection-observer Real IntersectionObserver and native lazy images
     Given a page observes an element with width and height 0 that sits inside the viewport
     When the observer callback runs
     Then isIntersecting is true and intersectionRatio is 1
+
+  Scenario: A zero-size target inside a display:none subtree never intersects
+    Given a page observes a zero-size element whose ancestor has display none
+    When the observer callback runs
+    Then isIntersecting is false and intersectionRatio is 0
+
+  Scenario: A lazy image inside a display:none subtree is not fetched
+    Given a loading=lazy image inside a display none container near the top of the page
+    When the page settles
+    Then the image is not requested
 
   Scenario: A zero-size sentinel fires when scrolling brings it into view
     Given a page observes a zero-size sentinel below the viewport

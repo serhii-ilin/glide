@@ -438,6 +438,21 @@
     return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
   }
 
+  // A zero-area target only counts when it has a layout box: a detached element, or one
+  // under a `display:none` / `display:contents` ancestor, reads as a (0,0,0,0) rect and
+  // must never intersect.
+  function elementHasNoBox(el) {
+    if (!el.isConnected) return true;
+    if (typeof global.getComputedStyle !== 'function') return false;
+    for (let node = el.parentNode; node && node.nodeType === 1; node = node.parentNode) {
+      try {
+        const display = global.getComputedStyle(node).display;
+        if (display === 'none' || display === 'contents') return true;
+      } catch (_) { /* layout may be unavailable */ }
+    }
+    return false;
+  }
+
   function overlapRatio(rect, root) {
     if (!rectsOverlap(rect, root)) return 0;
     if (isZeroArea(rect)) return 1;
@@ -583,6 +598,7 @@
     if (loading !== 'lazy' || el.__glide_lazy_loaded) return;
     const rect = el.getBoundingClientRect();
     if (!rectsOverlap(rect, rootBounds)) return;
+    if (isZeroArea(rect) && elementHasNoBox(el)) return;
     el.__glide_lazy_loaded = true;
     if (typeof global.__glide_load_lazy_image === 'function') {
       global.__glide_load_lazy_image(el);
@@ -627,8 +643,8 @@
       const pending = [];
       for (const [el, state] of obs._targets) {
         if (!el || el.nodeType !== 1) continue;
-        const hidden = elementIsHidden(el);
         const rect = el.getBoundingClientRect();
+        const hidden = elementIsHidden(el) || (isZeroArea(rect) && elementHasNoBox(el));
         const ratio = hidden ? 0 : overlapRatio(rect, rootBounds);
         const isect = !hidden && ratio > 0;
         const prevRatio = state == null ? null : state.ratio;

@@ -583,6 +583,11 @@ impl JsHost {
         if !self.is_enabled() {
             return (false, true);
         }
+        if max.is_zero() {
+            // No budget left: report quiet when nothing is queued or in flight.
+            let redraw = self.drain_dom_rpc(chrome);
+            return (redraw, !wait_for_fetches || self.outstanding_fetches() == 0);
+        }
         let deadline = Instant::now() + max;
         let mut last_rpc = Instant::now();
         let mut redraw = false;
@@ -1076,6 +1081,22 @@ mod tests {
 
         host.maybe_start_page(&doc_b, url, handle);
         assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
+    }
+
+    #[test]
+    fn flush_with_no_budget_reports_quiet_when_nothing_is_in_flight() {
+        let (_worker, _console) = worker_test_lock();
+        let mut doc = page_doc(true);
+        let mut host = JsHost::new(true, JsTap::new_enabled(), None);
+        let (_, quiet) = host.flush_dom_rpc_until_fetches_idle(
+            &mut doc,
+            Duration::ZERO,
+            Duration::from_millis(100),
+        );
+        assert!(
+            quiet,
+            "an idle host with no budget must report quiet, not 'gave up'"
+        );
     }
 
     #[test]

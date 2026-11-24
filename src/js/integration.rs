@@ -3244,6 +3244,23 @@ fn intersection_observer_zero_size_sentinel_fires_after_scroll() {
     assert_eq!(result.final_text, "false,true");
 }
 
+// Source: Intersection Observer spec (a target without a layout box never intersects).
+#[test]
+fn intersection_observer_zero_size_target_in_display_none_subtree_does_not_intersect() {
+    let html = r#"<!DOCTYPE html><html><body>
+      <div style="display:none"><div id="z" style="width:0;height:0"></div></div>
+      <p id="t">pending</p>
+      <script>
+        var io = new IntersectionObserver(function (entries) {
+          var e = entries[0];
+          document.getElementById('t').textContent = e.isIntersecting + '|' + e.intersectionRatio;
+        });
+        io.observe(document.getElementById('z'));
+      </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(300));
+    assert_eq!(result.final_text, "false|0");
+}
+
 #[test]
 fn intersection_observer_take_records_buffers_entries() {
     let html = r#"<!DOCTYPE html><html><body>
@@ -3319,6 +3336,24 @@ fn lazy_img_far_below_viewport_is_not_fetched_without_a_move() {
     assert!(
         !paths.iter().any(|p| p.contains("pixel.png")),
         "lazy image far below the viewport must not load: {paths:?}"
+    );
+}
+
+// Source: HTML Living Standard (lazy loading); an image with no layout box is never near the viewport.
+#[test]
+fn lazy_img_inside_display_none_subtree_is_not_fetched() {
+    let (port, requests) = spawn_recording_image_server();
+    let html = format!(
+        r#"<!DOCTYPE html><html><body>
+<div style="display:none"><img id="lz" loading="lazy" src="http://127.0.0.1:{port}/pixel.png" alt=""></div>
+<p id="t">pending</p>
+</body></html>"#
+    );
+    super::harness::run_inline_page_in_viewport(&html, 400, 300, Duration::from_millis(1000));
+    let paths = requests.lock().expect("lock").clone();
+    assert!(
+        !paths.iter().any(|p| p.contains("pixel.png")),
+        "lazy image inside a display:none subtree must not load: {paths:?}"
     );
 }
 

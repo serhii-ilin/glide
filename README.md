@@ -167,7 +167,7 @@ Glide therefore links the native crates Kitesurf is built on, at the versions Ki
 | Pixels | `anyrender_vello_cpu` 0.18 (`vello_cpu` 0.3) | The CPU rasterizer Kitesurf uses. The window presents it with softbuffer, so Glide does not need Vulkan or Metal |
 | Network | `blitz-net` (vendored patch), `src/http.rs` | http, https, file, and data URLs; document navigations set an honest Glide `User-Agent`, `Accept-Language`, and `Sec-Fetch-*` |
 
-Kitesurf patches those crates (box-shadow performance, gradient LUTs, iframe scene recording, a smaller `NodeId`, and others) before compiling them to Wasm. Glide links the published Blitz-family crates and additionally vendors patches for `blitz-net` and `blitz-dom` under `third_party/`. The painting model is the same: Blitz builds a display list, Vello rasterizes it.
+Kitesurf patches those crates (box-shadow performance, gradient LUTs, iframe scene recording, a smaller `NodeId`, and others) before compiling them to Wasm. Glide links the published Blitz-family crates and additionally vendors patches for `blitz-net`, `blitz-dom` and `blitz-paint` under `third_party/`. The painting model is the same: Blitz builds a display list, Vello rasterizes it.
 
 ## Page JavaScript
 

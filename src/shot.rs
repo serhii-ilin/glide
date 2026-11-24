@@ -94,4 +94,33 @@ mod tests {
         assert_eq!(reader.info().width, 64);
         assert_eq!(reader.info().height, 64);
     }
+
+    fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
+        let i = ((y * width + x) * 4) as usize;
+        [rgba[i], rgba[i + 1], rgba[i + 2]]
+    }
+
+    fn painted_fixture() -> Vec<u8> {
+        let html = include_str!("../tests/fixtures/visibility-child-of-hidden.html");
+        let config = DocumentConfig {
+            viewport: Some(Viewport::new(300, 300, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        };
+        let mut doc = parse::document_from_html(html, config, false);
+        doc.resolve(0.0);
+        paint_rgba(&mut doc, 300, 300)
+    }
+
+    // Source: CSS 2.1 section 11.2 (visibility); descendants may override a hidden ancestor.
+    #[test]
+    fn visible_child_of_hidden_body_is_painted() {
+        let rgba = painted_fixture();
+        assert_eq!(pixel(&rgba, 300, 50, 50), [255, 0, 0]);
+    }
+
+    #[test]
+    fn visibility_hidden_element_is_not_painted() {
+        let rgba = painted_fixture();
+        assert_eq!(pixel(&rgba, 300, 50, 150), [255, 255, 255]);
+    }
 }

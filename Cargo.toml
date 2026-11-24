@@ -98,6 +98,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
 [patch.crates-io]
 blitz-dom = { path = "third_party/blitz-dom" }
 blitz-net = { path = "third_party/blitz-net" }
+blitz-paint = { path = "third_party/blitz-paint" }
 
 [dev-dependencies]
 # Constructs Blitz pointer events in wheel/hover tests (same crate blitz-traits uses).

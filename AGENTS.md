@@ -25,7 +25,7 @@ src/find.rs           find-in-page text search and chrome find UI state
 src/zoom.rs           page zoom level and chrome toolbar counter-scale
 src/profile.rs        profile dir, settings, session, history log, bookmarks
 src/js/               V8 worker, domino glue, Blitz mirror RPC, script loading
-third_party/          vendored JS (domino 2.1.9)
+third_party/          vendored JS (domino 2.1.9) and patched crates (blitz-dom, blitz-net, blitz-paint)
 src/js/vendor/        generated domino embed (scripts/vendor-domino.mjs)
 scripts/              vendor-domino.mjs regenerates the embed
 src/parse.rs          html5ever with configurable scripting flag

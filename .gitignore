@@ -2,3 +2,5 @@
 **/*.rs.bk
 .DS_Store
 glide-screenshot.png
+/docs/features.md
+/docs/manual-tests.md

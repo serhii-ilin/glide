@@ -44,11 +44,11 @@ code on its branch. Runs are **sequential in the main checkout** (no worktrees).
 
 ## Workflow
 
-1. **Pick the task** from `docs/features.md` (or the user). Set its row to `in-progress`
+1. **Pick the task** from `docs/features/` (or the user). Set its `status` to `in-progress`
    on `main` only if the user wants that tracked separately; otherwise the agent does it.
 2. **Write the prompt** in the scratchpad (never inside the repo): goal, out of scope,
    files and existing functions to reuse (paths), tests to write first, acceptance
-   criteria, the registry rows to update, and the feature's `MCP` exposure (tool to add or
+   criteria, the registry files to update, and the feature's `MCP` exposure (tool to add or
    extend, or why it is `n/a`). The agent has no conversation context.
 3. **Launch** as one background Bash call (`run_in_background: true`):
    ```bash
@@ -74,7 +74,7 @@ code on its branch. Runs are **sequential in the main checkout** (no worktrees).
    ```bash
    git switch main && git merge --no-ff feat/<task> -m "Merge feat/<task>: <summary>" && git branch -d feat/<task>
    ```
-   Confirm the registry row is `done` (or `deferred` with a reason) on `main`.
+   Confirm the registry feature file is `done` (or `deferred` with a reason) on `main`.
 8. **Report** to the user: what the agent did, gates you verified, review findings and
    fixes, rounds/model used, anything deferred.
 

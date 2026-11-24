@@ -32,11 +32,15 @@ src/parse.rs          html5ever with configurable scripting flag
 src/location.rs       URL vs. search
 src/headless.rs       headless load/settle and --dump-text text extraction
 src/shot.rs           paint a loaded page to PNG
-src/remote_socket.rs  user-only NDJSON socket for opt-in live-window control (F-069)
-src/control/          agent control: request/result protocol, headless session (window backend planned F-069)
+src/remote_socket.rs  user-only NDJSON socket for opt-in live-window control (remote-control-window)
+src/control/          agent control: request/result protocol, headless session (window backend planned: remote-control-window)
 src/mcp/              MCP stdio server (`glide --mcp`) mapping tools onto src/control
-docs/features.md      requirements + feature registry + spec links (keep current)
-tests/features/       Gherkin acceptance specs, one F-xxx-<slug>.feature per feature
+docs/requirements/   one <slug>.md per requirement (source of truth)
+docs/features/       one <slug>.md per feature: description, links, tests, manual checks
+docs/registry.md     how the slug registry works; docs/features.md and docs/manual-tests.md
+                      are GENERATED (git-ignored) by `node scripts/registry.mjs`
+scripts/registry.mjs registry generator and `--check` validator (scripts/registry-test.mjs tests it)
+tests/features/       Gherkin acceptance specs, one <slug>.feature per feature
 tests/fixtures/       local HTML used by tests
 ```
 
@@ -68,12 +72,12 @@ tests/fixtures/       local HTML used by tests
   over adding tests after the implementation. Doc-only changes are exempt.
 - Derive acceptance criteria from standards and browser benchmarks, not from the current
   implementation: HTML Living Standard, DOM Standard, ECMA-262, CSS specifications, WPT
-  tests and Acid1–3. Record the source in the `Source / basis` column of the requirement
-  row and in a comment above the Gherkin scenario or test. Use `docs/compat/REPORT.md`
+  tests and Acid1–3. Record the source in the `source` field of the requirement
+  file and in a comment above the Gherkin scenario or test. Use `docs/compat/REPORT.md`
   to choose representative cases; when a benchmark exposes a gap, add a local `file://`
   fixture that reproduces it before fixing the gap.
-- Every Gherkin `Scenario` maps to at least one test named in the feature row's `Tests`
-  column, or to a row in `docs/manual-tests.md` when real window input, focus or OS
+- Every Gherkin `Scenario` maps to at least one test named in the feature file's `tests`
+  list, or to an entry in its `manual:` list when real window input, focus or OS
   integration is required.
 - Every behavior change ships with tests: unit tests in a `#[cfg(test)] mod tests` next to
   the code, or integration tests in `tests/`.
@@ -81,8 +85,9 @@ tests/fixtures/       local HTML used by tests
 - Name tests after the behavior: `back_at_first_entry_returns_none`, not `test_history_2`.
 - Do not delete, weaken or `#[ignore]` existing tests to get green. If a test is wrong,
   say why in the commit.
-- Behavior that cannot be automated (real window input, focus) gets a row in
-  `docs/manual-tests.md` with exact steps and the expected result.
+- Behavior that cannot be automated (real window input, focus) gets an entry in
+  the feature's `manual:` list (shown in the generated `docs/manual-tests.md`) with exact
+  steps and the expected result.
 
 ## Logging and observability
 
@@ -103,7 +108,7 @@ ever throwing. These rules keep records parseable, bounded and useful.
   change, the default filter; `debug` = per-item diagnosis (each script, discovery
   counts, capability probes). Routine per-page chatter is `debug`, never `info`.
 - **Correlate and act.** Every error and warning carries `page_url` and a `hint` that
-  says what to check or which feature ID tracks it. Unsupported behavior also carries
+  says what to check or which feature slug (or its legacy `F-xxx` alias, still used by older log fields) tracks it. Unsupported behavior also carries
   `feature` and `detail` with `error_kind="unsupported"`.
 - **Aggregate per load.** Emit one `js.page` "settled" record with counts and
   `status="clean|degraded"`; log it at `info` when degraded and `debug` when clean.
@@ -139,39 +144,47 @@ passes when run locally or in tools that do not use nextest.
 
 ## Requirements, feature descriptions and Gherkin specs
 
-`docs/features.md` is the single registry of requirements (`R-xxx`) and features (`F-xxx`).
+Every requirement and every feature is its own file, identified by a **slug**:
+`docs/requirements/<slug>.md` and `docs/features/<slug>.md`. **Choose a slug, never a
+number**: sequential IDs collide when branches or agents work in parallel. The slug is the
+file name, kebab-case and unique; the old `R-xxx`/`F-xxx`/`M-xxx` IDs survive only as
+`aliases`. `docs/registry.md` has the full scheme. `docs/features.md` and
+`docs/manual-tests.md` are generated, git-ignored tables: never edit or commit them; build
+them with `node scripts/registry.mjs`, and validate with `node scripts/registry.mjs --check`
+(CI runs it).
 
-**Requirements are structured.** Every `R-xxx` row has an ID, a testable requirement
-statement, a `Source / basis` (the HTML/DOM/ECMAScript/CSS spec, WPT or Acid benchmark, or an
-explicit product decision), the `Features` that satisfy it, and a milestone. Do not add a
-requirement that cannot be expressed as a Gherkin scenario.
+**Requirements are structured.** Every requirement file has a slug, a testable requirement
+statement (the body), a `source` (the HTML/DOM/ECMAScript/CSS spec, WPT or Acid benchmark, or
+an explicit product decision), the `features` that satisfy it, and a `milestone`. Do not add
+a requirement that cannot be expressed as a Gherkin scenario.
 
-**Features are structured.** Every `F-xxx` row has:
+**Features are structured.** Every feature file has front matter fields and a body:
 
-- `Description`: one or two sentences of user-visible behavior, written from the user's
-  point of view, not implementation detail.
-- `Gherkin`: the path to `tests/features/F-xxx-<slug>.feature`, the feature's acceptance
-  spec. One file per feature ID; use `Background` and `Scenario Outline` where they reduce
+- Body: one or two sentences of user-visible behavior, written from the user's point of
+  view, not implementation detail, then optional `## Notes`.
+- `gherkin`: the path to `tests/features/<slug>.feature`, the feature's acceptance spec. One
+  file per feature slug; use `Background` and `Scenario Outline` where they reduce
   duplication. Copy `tests/features/_TEMPLATE.feature` when adding a feature.
-- `MCP`: how an agent reaches the feature over MCP (see "Agent control (MCP)").
-- `Status`, `Req`, `Tests` and `Notes` as before.
+- `mcp`: how an agent reaches the feature over MCP (see "Agent control (MCP)").
+- `status`, `requirements` (requirement slugs), `tests`, `manual` and `aliases`.
 
 Update rules:
 
-- Any change that adds, changes or removes behavior updates the requirement row(s), the
-  feature row (description, status, requirement IDs, Gherkin path, covering tests, MCP, notes)
-  and the `.feature` file in the same branch.
+- Any change that adds, changes or removes behavior updates the requirement file(s), the
+  feature file (description, status, requirement slugs, gherkin path, covering tests, mcp,
+  notes) and the `.feature` file in the same branch. Requirement and feature links must
+  resolve in both directions.
 - Add or edit the Gherkin scenario **before** writing code, then write the failing test,
   then implement. TDD takes priority over post-hoc test writing wherever automation is
   possible.
 - Status values: `planned`, `in-progress`, `done`, `partial`, `deferred` (with a reason), `removed`.
 - A feature is `done` only when its description and Gherkin spec exist, its tests exist and
-  pass (or its manual check is listed in `docs/manual-tests.md`), and the compatibility
+  pass (or its manual check is in its `manual:` list), and the compatibility
   report shows no regression for that behavior.
-- New ideas or out-of-scope findings become `planned` or `deferred` rows instead of
+- New ideas or out-of-scope findings become `planned` or `deferred` feature files instead of
   drive-by code; when promoted, add the description and Gherkin spec in the same branch.
-- Existing features that still lack a `.feature` file are backfilled on the next change to
-  that feature; new or changed behavior must include its script immediately.
+- Existing features whose `gherkin` is `backfill pending` are backfilled on the next change
+  to that feature; new or changed behavior must include its script immediately.
 - A branch that changes behavior without a registry + Gherkin update is not merged.
 
 ## Agent control (MCP)
@@ -180,15 +193,15 @@ Glide is also a browser for agents: `glide --mcp` serves the Model Context Proto
 stdio so another agent can navigate, inspect pages and read DevTools data. Every feature is
 designed with that second user in mind.
 
-- **Consider MCP for every feature.** Each `F-xxx` row has an `MCP` value:
+- **Consider MCP for every feature.** Each feature file has an `mcp` value:
   - the `glide_*` tool names that expose it;
-  - `planned F-xxx (tool)` when a later feature adds the tool;
+  - `planned <slug> (tool)` when a later feature adds the tool;
   - `n/a (reason)`: chrome-only UI, engine behavior already observable through
     `glide_eval`/`glide_snapshot_text`, process/tooling, or deferred.
 - **Expose agent-relevant behavior.** A feature that adds page state, DevTools data,
   navigation, tab or settings behavior that an agent would need to read or drive adds or
   extends a tool in the same branch once `src/mcp/` exists. If that is out of scope, add a
-  `planned` row and point the `MCP` column at it. Never leave the column empty.
+  `planned` feature and point `mcp` at it. Never leave the field empty.
 - **One code path.** Tools are thin: they map onto `control::ControlRequest` and share
   `control::page_ops` with both backends (headless session and live window). A request a
   backend cannot serve returns a clear "needs a live window" / "unsupported" error, never a
@@ -196,7 +209,7 @@ designed with that second user in mind.
 - **Tests.** Each tool has a Gherkin scenario and an automated test: an in-process
   `tests/control_session.rs` test plus a `tests/mcp_stdio.rs` subprocess test that speaks
   JSON-RPC to `glide --mcp` against a `file://` fixture. Window-only behavior adds a
-  `docs/manual-tests.md` row.
+  `manual:` entry.
 - **Stdout is the protocol.** In MCP mode nothing but JSON-RPC may reach stdout; logs go to
   stderr through `crate::logging`.
 - **Results are bounded.** Text, HTML and console results take a `max_chars`/`limit` and

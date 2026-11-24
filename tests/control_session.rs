@@ -669,13 +669,23 @@ fn scroll<B: ControlBackend>(
     dy: Option<f64>,
     to_selector: Option<&str>,
 ) -> Result<ScrollInfo, String> {
+    scroll_with_timeout(backend, dx, dy, to_selector, None)
+}
+
+fn scroll_with_timeout<B: ControlBackend>(
+    backend: &B,
+    dx: Option<f64>,
+    dy: Option<f64>,
+    to_selector: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<ScrollInfo, String> {
     match call(
         backend,
         ControlRequest::Scroll(ScrollParams {
             dx,
             dy,
             to_selector: to_selector.map(str::to_string),
-            timeout_ms: None,
+            timeout_ms,
         }),
     )? {
         ControlResult::Scroll(info) => Ok(info),
@@ -853,6 +863,35 @@ fn infinite_scroll_scroll_event_appends_items_after_scroll() {
     let after = page_text(&backend);
     assert!(after.contains("page-2-item-1"), "{after}");
     assert!(after.contains("scrollY="), "{after}");
+}
+
+// Source: product decision (a scroll result is final: fetches the scroll started are applied).
+#[test]
+fn scroll_waits_for_slow_page_fetch_started_by_scroll_handler() {
+    let base = common::spawn_infinite_scroll_server_with_delay(700);
+    let backend = session_js_on();
+    navigate_to(&backend, format!("{base}/scroll-event.html"));
+    let before = page_text(&backend);
+    assert!(before.contains("page-1-item-1"), "{before}");
+    assert!(!before.contains("page-2-item-1"), "{before}");
+    let info = scroll(&backend, None, Some(1_000_000.0), None).expect("scroll to bottom");
+    assert!(info.settled, "{info:?}");
+    let after = page_text(&backend);
+    assert!(after.contains("page-2-item-1"), "{after}");
+}
+
+#[test]
+fn scroll_scroll_result_is_not_settled_while_page_mutates_forever() {
+    let backend = session_js_on();
+    navigate_to(&backend, fixture_url("infinite-scroll/busy.html"));
+    let started = std::time::Instant::now();
+    let info = scroll_with_timeout(&backend, None, Some(100.0), None, Some(1_000)).expect("scroll");
+    assert!(!info.settled, "{info:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(2_500),
+        "scroll took {:?}",
+        started.elapsed()
+    );
 }
 
 #[test]

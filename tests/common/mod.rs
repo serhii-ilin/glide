@@ -11,6 +11,12 @@ pub const ITEMS_PER_PAGE: usize = 5;
 /// `page-N-item-K` strings) on a loopback port. Returns the base URL, for example
 /// `http://127.0.0.1:41234`. The accept thread lives until the test process exits.
 pub fn spawn_infinite_scroll_server() -> String {
+    spawn_infinite_scroll_server_with_delay(0)
+}
+
+/// Like [`spawn_infinite_scroll_server`], but `/items?page=N` answers after `items_delay_ms`
+/// (requests are served one at a time, so a slow endpoint also serializes its callers).
+pub fn spawn_infinite_scroll_server_with_delay(items_delay_ms: u64) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let port = listener.local_addr().expect("local addr").port();
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/infinite-scroll");
@@ -27,6 +33,9 @@ pub fn spawn_infinite_scroll_server() -> String {
                 .and_then(|l| l.split_whitespace().nth(1))
                 .unwrap_or("/")
                 .to_string();
+            if items_delay_ms > 0 && target.starts_with("/items?") {
+                std::thread::sleep(std::time::Duration::from_millis(items_delay_ms));
+            }
             let (status, ctype, body) = route(&dir, &target);
             let resp = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

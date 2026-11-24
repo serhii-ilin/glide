@@ -423,12 +423,14 @@ mod tests {
             scroll_height: 2050.0,
             viewport_width: 1100,
             viewport_height: 760,
+            settled: false,
         };
         let json = format_control_scroll(ControlResult::Scroll(info)).expect("format");
         let value: serde_json::Value = serde_json::from_str(&json).expect("json");
         assert_eq!(value["y"], 300.0);
         assert_eq!(value["scroll_height"], 2050.0);
         assert_eq!(value["viewport_height"], 760);
+        assert_eq!(value["settled"], false);
     }
 
     #[test]

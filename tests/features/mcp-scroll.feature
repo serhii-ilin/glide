@@ -53,6 +53,16 @@ Feature: mcp-scroll Headless scrolling, scroll events and infinite scroll
     When the agent scrolls to the bottom
     Then the next batch of items fetched from a loopback server is in the page text
 
+  Scenario: A scroll result waits for a slow page fetch started by the scroll
+    Given an infinite-scroll page whose items endpoint answers after a delay
+    When the agent scrolls to the bottom
+    Then the result is settled and the next batch of items is already in the page text
+
+  Scenario: A page that never goes quiet returns within the timeout and is reported unsettled
+    Given a page that mutates the document forever once it scrolls
+    When the agent scrolls with a one second timeout
+    Then the call returns within about the timeout and `settled` is false
+
   Scenario: Screenshot honors the scroll offset and can capture the full page
     Given a page with a red block above a blue block below the fold
     When the agent scrolls past the red block and takes a screenshot

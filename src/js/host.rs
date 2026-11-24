@@ -96,6 +96,7 @@ pub struct JsHost {
     session_history: Arc<Mutex<History>>,
     /// Viewport scroll offset last seen on the page document; a change is reported to the page.
     last_page_scroll: (f64, f64),
+    pending_fetches: super::apply::PendingFetches,
 }
 
 impl JsHost {
@@ -121,6 +122,7 @@ impl JsHost {
             host_wake: Arc::new(HostWake::new()),
             session_history: Arc::new(Mutex::new(History::new(String::new()))),
             last_page_scroll: (0.0, 0.0),
+            pending_fetches: super::apply::PendingFetches::default(),
         }
     }
 
@@ -537,6 +539,11 @@ impl JsHost {
         redraw | self.drain_dom_rpc(chrome)
     }
 
+    /// Page `fetch()` requests dispatched whose reply has not been delivered yet.
+    pub fn outstanding_fetches(&self) -> usize {
+        self.pending_fetches.count()
+    }
+
     /// Drain DOM RPC until `idle` passes with no messages or `max` elapses (headless session).
     pub fn flush_dom_rpc_until_idle(
         &mut self,
@@ -544,12 +551,34 @@ impl JsHost {
         max: Duration,
         idle: Duration,
     ) -> bool {
+        self.flush_dom_rpc_idle(chrome, max, idle, false).0
+    }
+
+    /// Like [`Self::flush_dom_rpc_until_idle`], but idle also needs every page `fetch()` answered.
+    /// Returns the redraw flag and whether idle was reached before `max` elapsed.
+    pub fn flush_dom_rpc_until_fetches_idle(
+        &mut self,
+        chrome: &mut BaseDocument,
+        max: Duration,
+        idle: Duration,
+    ) -> (bool, bool) {
+        self.flush_dom_rpc_idle(chrome, max, idle.min(max), true)
+    }
+
+    fn flush_dom_rpc_idle(
+        &mut self,
+        chrome: &mut BaseDocument,
+        max: Duration,
+        idle: Duration,
+        wait_for_fetches: bool,
+    ) -> (bool, bool) {
         if !self.is_enabled() {
-            return false;
+            return (false, true);
         }
         let deadline = Instant::now() + max;
         let mut last_rpc = Instant::now();
         let mut redraw = false;
+        let mut quiet = false;
         while Instant::now() < deadline {
             self.try_finish_pending_sources();
             match self.dom_rx.recv_timeout(Duration::from_millis(25)) {
@@ -558,17 +587,23 @@ impl JsHost {
                     last_rpc = Instant::now();
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    if last_rpc.elapsed() >= idle {
+                    if last_rpc.elapsed() >= idle
+                        && (!wait_for_fetches || self.outstanding_fetches() == 0)
+                    {
+                        quiet = true;
                         break;
                     }
                     if let Some(worker) = &self.worker {
                         worker.pump(self.now_ms());
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    quiet = true;
+                    break;
+                }
             }
         }
-        redraw | self.drain_dom_rpc(chrome)
+        (redraw | self.drain_dom_rpc(chrome), quiet)
     }
 
     fn drain_dom_rpc(&mut self, chrome: &mut BaseDocument) -> bool {
@@ -597,7 +632,13 @@ impl JsHost {
         }
         match rpc.request {
             DomRequest::Fetch(fetch) => {
-                super::apply::start_fetch(self.net.clone(), &self.base_url, fetch, rpc.reply);
+                super::apply::start_fetch(
+                    self.net.clone(),
+                    &self.base_url,
+                    fetch,
+                    self.pending_fetches.begin(),
+                    rpc.reply,
+                );
                 false
             }
             DomRequest::WebSocketConnect {

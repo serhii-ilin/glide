@@ -564,6 +564,22 @@ fn scroll_then_snapshot_text_loads_more_items_over_stdio() {
 }
 
 #[test]
+fn scroll_waits_for_slow_fetch_and_reports_settled_over_stdio() {
+    let base = common::spawn_infinite_scroll_server_with_delay(700);
+    let mut client = McpClient::spawn();
+    client.initialize();
+    client.call_tool(
+        "glide_navigate",
+        json!({ "url": format!("{base}/scroll-event.html") }),
+    );
+    let scrolled = client.call_tool("glide_scroll", json!({ "dy": 1000000 }));
+    assert!(!is_tool_error(&scrolled), "{scrolled}");
+    assert_eq!(scroll_info(&scrolled)["settled"], true);
+    let after = tool_text(&client.call_tool("glide_snapshot_text", json!({})));
+    assert!(after.contains("page-2-item-1"), "{after}");
+}
+
+#[test]
 fn scroll_to_missing_selector_is_tool_error_over_stdio() {
     let mut client = McpClient::spawn();
     client.initialize();

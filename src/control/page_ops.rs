@@ -111,7 +111,7 @@ pub fn paint_full_page_png(doc: &mut BaseDocument) -> Result<Vec<u8>, String> {
 }
 
 /// Convert viewport state to the control result shape.
-pub fn scroll_info(state: ViewportState) -> ScrollInfo {
+pub fn scroll_info(state: ViewportState, settled: bool) -> ScrollInfo {
     ScrollInfo {
         x: state.scroll_x,
         y: state.scroll_y,
@@ -119,6 +119,7 @@ pub fn scroll_info(state: ViewportState) -> ScrollInfo {
         scroll_height: state.scroll_height,
         viewport_width: state.width.round() as u32,
         viewport_height: state.height.round() as u32,
+        settled,
     }
 }
 

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Busy page</title>
+<style>body { margin: 0; } #pad { height: 3000px; }</style>
+</head>
+<body>
+<div id="pad"></div>
+<p id="tick">0</p>
+<script>
+  // After the first scroll, mutates the document forever so the page never goes quiet
+  // (starting on scroll keeps the initial load quick).
+  var n = 0;
+  var started = false;
+  window.addEventListener('scroll', function () {
+    if (started) return;
+    started = true;
+    setInterval(function () {
+      n += 1;
+      document.getElementById('tick').textContent = String(n);
+    }, 20);
+  });
+</script>
+</body>
+</html>

@@ -122,6 +122,9 @@ pub struct ScrollInfo {
     pub scroll_height: f64,
     pub viewport_width: u32,
     pub viewport_height: u32,
+    /// False when the page was still busy (settle timed out or the flush gave up) when the
+    /// result was taken, so scroll-triggered content may still be arriving.
+    pub settled: bool,
 }
 
 /// Arguments for `glide_computed_style`.

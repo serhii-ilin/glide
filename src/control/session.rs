@@ -312,37 +312,41 @@ impl HeadlessSession {
             p.dx.unwrap_or(0.0),
             p.dy.unwrap_or(0.0),
         )?;
+        let mut settled = true;
         if self.opts.js_enabled
             && let Some(js_host) = self.js_host.as_mut()
         {
             let timeout = Duration::from_millis(clamp_client_timeout_ms(Some(
                 p.timeout_ms.unwrap_or(DEFAULT_SCROLL_SETTLE_MS),
             )));
+            let started = Instant::now();
             let opts = SettleOptions {
                 min_js: Duration::from_millis(200),
                 max: timeout,
                 quiet_ticks: 8,
+                wait_for_fetches: true,
             };
             if let Some(net) = self.net.as_ref() {
                 let tab_id = self.tab_id;
                 let epoch = self.epoch;
                 let journal = &mut self.console;
-                headless::settle(&mut doc.0, js_host, net, true, opts, || {
+                let outcome = headless::settle(&mut doc.0, js_host, net, true, opts, || {
                     for ev in console_feed::drain_for_tab(tab_id) {
                         if ev.page_epoch == epoch {
                             journal.push(ConsoleEntry::from_wire(ev));
                         }
                     }
                 });
-                js_host.flush_dom_rpc_until_idle(
+                let (_, quiet) = js_host.flush_dom_rpc_until_fetches_idle(
                     &mut doc.0,
-                    timeout.min(Duration::from_secs(2)),
+                    timeout.saturating_sub(started.elapsed()),
                     Duration::from_millis(100),
                 );
+                settled = !outcome.timed_out && quiet;
             }
         }
         let state = crate::js::viewport::state(&mut doc.0);
-        Ok(ControlResult::Scroll(page_ops::scroll_info(state)))
+        Ok(ControlResult::Scroll(page_ops::scroll_info(state, settled)))
     }
 
     pub fn tick(&mut self) {

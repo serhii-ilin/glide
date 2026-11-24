@@ -86,12 +86,28 @@ pub struct QueryParams {
 }
 
 /// Arguments for `glide_screenshot`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default, JsonSchema)]
 pub struct ScreenshotParams {
     /// When true, capture the whole document height (capped at 16384 px) instead of the
     /// viewport at the current scroll offset. Default false.
     #[serde(default)]
     pub full_page: bool,
+}
+
+/// `Screenshot` used to be a unit variant, so a request with no `params` at all must still
+/// parse: an absent adjacently-tagged content only deserializes as an `Option`.
+impl<'de> Deserialize<'de> for ScreenshotParams {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Fields {
+            #[serde(default)]
+            full_page: bool,
+        }
+        let fields = Option::<Fields>::deserialize(deserializer)?;
+        Ok(Self {
+            full_page: fields.is_some_and(|f| f.full_page),
+        })
+    }
 }
 
 /// Arguments for `glide_scroll`.
@@ -221,6 +237,21 @@ mod tests {
         assert!(json.contains("\"method\":\"dom\""));
         let back: ControlRequest = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, req);
+    }
+
+    // `Screenshot` used to be a unit variant: a bare request without params must still parse.
+    #[test]
+    fn bare_screenshot_request_without_params_still_deserializes() {
+        let req: ControlRequest =
+            serde_json::from_str(r#"{"method":"screenshot"}"#).expect("bare screenshot");
+        assert_eq!(req, ControlRequest::Screenshot(ScreenshotParams::default()));
+        let full: ControlRequest =
+            serde_json::from_str(r#"{"method":"screenshot","params":{"full_page":true}}"#)
+                .expect("full-page screenshot");
+        assert_eq!(
+            full,
+            ControlRequest::Screenshot(ScreenshotParams { full_page: true })
+        );
     }
 
     #[test]

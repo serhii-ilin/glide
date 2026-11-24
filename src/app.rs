@@ -147,7 +147,7 @@ pub fn run_window(launch: WindowLaunch) -> Result<(), String> {
         scripting_enabled: Arc::clone(&scripting_enabled),
         js_tap: js_tap.clone(),
     };
-    let js_host = JsHost::new(js_enabled, js_tap, Some(net_impl));
+    let js_host = JsHost::new(js_enabled, js_tap, Some(net_impl)).in_window();
     let js_wake_proxy = proxy.clone();
     js_host.set_waker(Arc::new(move || js_wake_proxy.wake_up()));
 

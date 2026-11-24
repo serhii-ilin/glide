@@ -97,6 +97,9 @@ pub struct JsHost {
     /// Viewport scroll offset last seen on the page document; a change is reported to the page.
     last_page_scroll: (f64, f64),
     pending_fetches: super::apply::PendingFetches,
+    /// True for the window app, where the page lives in the chrome document's `#page` iframe.
+    /// Headless hosts load the page itself as the document.
+    window_mode: bool,
 }
 
 impl JsHost {
@@ -123,6 +126,7 @@ impl JsHost {
             session_history: Arc::new(Mutex::new(History::new(String::new()))),
             last_page_scroll: (0.0, 0.0),
             pending_fetches: super::apply::PendingFetches::default(),
+            window_mode: false,
         }
     }
 
@@ -132,6 +136,12 @@ impl JsHost {
 
     pub fn session_history(&self) -> Arc<Mutex<History>> {
         Arc::clone(&self.session_history)
+    }
+
+    /// Mark this host as driving the window app (page in the chrome document's iframe).
+    pub fn in_window(mut self) -> Self {
+        self.window_mode = true;
+        self
     }
 
     pub fn set_waker(&self, waker: JsWaker) {
@@ -502,11 +512,9 @@ impl JsHost {
     /// moved it (window wheel or keys, an agent scroll, page script). The runtime ignores a
     /// move it already knows about, so a page-initiated `scrollTo` does not fire twice.
     fn report_viewport_scroll(&mut self, chrome: &BaseDocument) {
-        let read = |doc: &BaseDocument| {
-            let scroll = doc.viewport_scroll();
-            (scroll.x, scroll.y)
+        let Some(now) = page_scroll_offset(chrome, self.window_mode) else {
+            return;
         };
-        let now = with_page_subdoc(chrome, read).unwrap_or_else(|| read(chrome));
         if now == self.last_page_scroll {
             return;
         }
@@ -871,6 +879,21 @@ fn page_document_id(chrome: &BaseDocument) -> usize {
     with_page_subdoc(chrome, |doc| doc.id()).unwrap_or_else(|| chrome.id())
 }
 
+/// The page document's viewport scroll offset. In the window the page is the `#page` iframe's
+/// subdocument; without one there is nothing to report (the chrome document's own scroll is not
+/// the page's). A headless host's document is the page itself.
+fn page_scroll_offset(chrome: &BaseDocument, window_mode: bool) -> Option<(f64, f64)> {
+    let read = |doc: &BaseDocument| {
+        let scroll = doc.viewport_scroll();
+        (scroll.x, scroll.y)
+    };
+    match with_page_subdoc(chrome, read) {
+        Some(offset) => Some(offset),
+        None if window_mode => None,
+        None => Some(read(chrome)),
+    }
+}
+
 fn with_page_subdoc<R>(chrome: &BaseDocument, f: impl FnOnce(&BaseDocument) -> R) -> Option<R> {
     let page_id = chrome.get_element_by_id("page")?;
     let sub = chrome.get_node(page_id)?.subdoc()?;
@@ -1053,6 +1076,15 @@ mod tests {
 
         host.maybe_start_page(&doc_b, url, handle);
         assert_eq!(host.started_for_doc().map(|(id, _)| id), Some(doc_b.id()));
+    }
+
+    #[test]
+    fn page_scroll_offset_ignores_chrome_scroll_in_window_mode_without_a_page() {
+        let mut doc = page_doc(false);
+        doc.resolve(0.0);
+        crate::js::viewport::scroll_to(&mut doc, 0.0, 0.0);
+        assert_eq!(page_scroll_offset(&doc, true), None);
+        assert_eq!(page_scroll_offset(&doc, false), Some((0.0, 0.0)));
     }
 
     #[test]

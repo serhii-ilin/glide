@@ -110,6 +110,14 @@ pub fn scroll_to_selector(doc: &mut BaseDocument, selector: &str) -> Result<View
         .query_selector(selector)
         .map_err(|_| format!("invalid selector `{selector}`"))?
         .ok_or_else(|| format!("no element matches selector `{selector}`"))?;
+    // `display: none` (itself or an ancestor, whose subtree the style traversal skips) leaves no
+    // layout box to scroll to.
+    let styled = doc
+        .get_node(id)
+        .is_some_and(|n| n.primary_styles().is_some());
+    if !styled || doc.resolved_style_value(id, "display") == "none" {
+        return Err(format!("element matching `{selector}` has no layout box"));
+    }
     Ok(scroll_into_view(doc, id, "start"))
 }
 
@@ -142,6 +150,24 @@ mod tests {
         doc.mutate().remove_node(root);
         assert!(doc.try_root_element().is_none());
         doc
+    }
+
+    // Source: CSSOM View Module (scrollIntoView on an element without a box does nothing).
+    #[test]
+    fn scroll_to_selector_on_display_none_element_is_an_error() {
+        let mut doc = parse::document_from_html(
+            "<!doctype html><body><div style=\"height:2000px\"></div>\
+             <div id=\"gone\" style=\"display:none\"></div>\
+             <div id=\"inner\" style=\"display:none\"><p id=\"child\">x</p></div></body>",
+            blitz_dom::DocumentConfig::default(),
+            false,
+        );
+        doc.resolve(0.0);
+        for selector in ["#gone", "#child"] {
+            let err = scroll_to_selector(&mut doc, selector).expect_err("no box");
+            assert!(err.contains("no layout box"), "{err}");
+        }
+        assert_eq!(state(&mut doc).scroll_y, 0.0);
     }
 
     // Source: DOM Standard (a script may remove the document element); product decision (no panic).

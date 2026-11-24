@@ -41,6 +41,20 @@ Feature: F-085 Reddit compatibility
     When it adopts the sheet with document.adoptedStyleSheets
     Then the stylesheet reports its rules and the adopted CSS applies to the page
 
+  # Source: DOM Standard, Element.attachShadow / ShadowRoot; Lit's createRenderRoot calls it.
+  Scenario: Custom elements can attach a shadow root
+    Given a custom element calls this.attachShadow({mode: "open"}) and renders into it
+    When the element connects
+    Then no TypeError is raised and the rendered content is visible in the page
+    And host.shadowRoot returns the root with host and mode set, null for a closed root
+    And a second attachShadow on the same host throws InvalidStateError
+    And getRootNode on a node inside returns the shadow root, or the document when composed
+
+  Scenario: Shadow roots accept adopted stylesheets
+    Given a host with an attached shadow root containing an element
+    When the page assigns shadowRoot.adoptedStyleSheets with a constructed sheet
+    Then the CSS applies to the element and a non-CSSStyleSheet value throws TypeError
+
   Scenario: Composed Reddit-like fixture settles cleanly
     Given reddit-composed.html is loaded with JavaScript enabled
     When page scripts settle

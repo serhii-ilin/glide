@@ -244,6 +244,105 @@
     }
   }
 
+  // Blitz has no shadow trees, so a shadow root is a `display:contents` container
+  // element rendered as the host's first child. It carries the ShadowRoot surface
+  // (host, mode, adoptedStyleSheets, getElementById). Styles are not scoped and
+  // `<slot>` is not projected: light children simply follow the container.
+  function domException(message, name) {
+    const err = typeof DOMException === 'function' ? new DOMException(message, name) : new Error(message);
+    if (err.name !== name) err.name = name;
+    return err;
+  }
+
+  function installShadowDom(ElementProto) {
+    if (!ElementProto || typeof ElementProto.attachShadow === 'function') return;
+    const roots = new WeakMap();
+
+    function ShadowRoot() {
+      throw new TypeError('Illegal constructor');
+    }
+    Object.defineProperty(ShadowRoot, Symbol.hasInstance, {
+      value: (value) => !!(value && value.__glide_shadow_host),
+    });
+    global.ShadowRoot = ShadowRoot;
+
+    function refreshShadowStyles(container, sheets) {
+      const prev = container.querySelector(':scope > style[data-glide-adopted]');
+      if (prev) container.removeChild(prev);
+      const text = sheets.map((sheet) => sheet._text).filter(Boolean).join('\n');
+      if (!text) return;
+      const style = container.ownerDocument.createElement('style');
+      style.setAttribute('data-glide-adopted', '');
+      style.textContent = text;
+      container.insertBefore(style, container.firstChild);
+    }
+
+    function buildRoot(host, init) {
+      const container = host.ownerDocument.createElement('div');
+      container.setAttribute('style', 'display:contents');
+      container.setAttribute('data-glide-shadow', init.mode);
+      const sheets = [];
+      Object.defineProperties(container, {
+        __glide_shadow_host: { value: host },
+        host: { value: host, enumerable: true },
+        mode: { value: init.mode, enumerable: true },
+        delegatesFocus: { value: !!init.delegatesFocus, enumerable: true },
+        activeElement: { value: null, enumerable: true },
+        getElementById: {
+          value(id) {
+            const want = String(id);
+            const all = container.getElementsByTagName('*');
+            for (let i = 0; i < all.length; i += 1) {
+              if (all[i].getAttribute('id') === want) return all[i];
+            }
+            return null;
+          },
+        },
+        adoptedStyleSheets: {
+          enumerable: true,
+          get() { return sheets.slice(); },
+          set(value) {
+            const list = Array.from(value == null ? [] : value);
+            for (let i = 0; i < list.length; i += 1) {
+              if (typeof global.CSSStyleSheet === 'function' && !(list[i] instanceof global.CSSStyleSheet)) {
+                throw new TypeError('adoptedStyleSheets must contain CSSStyleSheet objects');
+              }
+            }
+            sheets.length = 0;
+            Array.prototype.push.apply(sheets, list);
+            refreshShadowStyles(container, sheets);
+          },
+        },
+      });
+      return container;
+    }
+
+    Object.defineProperty(ElementProto, 'attachShadow', {
+      configurable: true,
+      writable: true,
+      value: function attachShadow(init) {
+        const mode = init && init.mode;
+        if (mode !== 'open' && mode !== 'closed') {
+          throw new TypeError("Failed to execute 'attachShadow': mode must be 'open' or 'closed'");
+        }
+        if (roots.has(this)) {
+          throw domException('Shadow root already attached to this element', 'InvalidStateError');
+        }
+        const container = buildRoot(this, init);
+        roots.set(this, container);
+        this.insertBefore(container, this.firstChild);
+        return container;
+      },
+    });
+    Object.defineProperty(ElementProto, 'shadowRoot', {
+      configurable: true,
+      get() {
+        const root = roots.get(this);
+        return root && root.mode === 'open' ? root : null;
+      },
+    });
+  }
+
   // Domino 2.1.x lacks several DOM Standard tree APIs Reddit's bundle calls.
   function installDomTreeApiPatches(impl) {
     if (domTreeApiPatched || !impl) return;
@@ -262,6 +361,11 @@
         for (;;) {
           if (seen.has(root)) return root;
           seen.add(root);
+          if (root.__glide_shadow_host) {
+            if (!composed) return root;
+            root = root.__glide_shadow_host;
+            continue;
+          }
           const parent = root.parentNode;
           if (parent) {
             root = parent;
@@ -275,6 +379,8 @@
         }
       };
     }
+
+    installShadowDom(ElementProto);
 
     function installParentNode(proto) {
       if (!proto || proto.__glide_parent_node_patched) return;

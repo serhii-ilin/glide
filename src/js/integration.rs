@@ -3511,6 +3511,79 @@ fn reddit_css_style_sheet_constructs_and_applies_adopted_sheet() {
     );
 }
 
+// Source: DOM Standard (Element.attachShadow, ShadowRoot); Reddit's Lit components.
+#[test]
+fn reddit_attach_shadow_renders_and_reports_root() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t">x</p><div id="h"></div><script>
+      var out = [];
+      var host = document.getElementById('h');
+      var root = host.attachShadow({ mode: 'open' });
+      var span = document.createElement('span');
+      span.textContent = 'SHADOW-OK';
+      root.appendChild(span);
+      out.push('same:' + (host.shadowRoot === root));
+      out.push('host:' + (root.host === host));
+      out.push('mode:' + root.mode);
+      out.push('inst:' + (root instanceof ShadowRoot));
+      out.push('rootnode:' + (span.getRootNode() === root));
+      out.push('composed:' + (span.getRootNode({ composed: true }) === document));
+      out.push('byid:' + (root.getElementById ? 'fn' : 'none'));
+      try { host.attachShadow({ mode: 'open' }); out.push('twice:no'); }
+      catch (e) { out.push('twice:' + e.name); }
+      var closed = document.createElement('div');
+      document.body.appendChild(closed);
+      closed.attachShadow({ mode: 'closed' });
+      out.push('closed:' + closed.shadowRoot);
+      class C extends HTMLElement {
+        connectedCallback() { this.attachShadow({ mode: 'open' }).innerHTML = '<b>LIT-OK</b>'; }
+      }
+      customElements.define('x-lit', C);
+      document.body.appendChild(document.createElement('x-lit'));
+      document.getElementById('t').textContent = out.join('|');
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(
+        result.final_text,
+        "same:true|host:true|mode:open|inst:true|rootnode:true|composed:true|byid:fn|twice:InvalidStateError|closed:null"
+    );
+}
+
+#[test]
+fn reddit_attach_shadow_content_is_rendered() {
+    let html = r#"<!DOCTYPE html><html><body><p id="t"></p><script>
+      document.getElementById('t').attachShadow({ mode: 'open' }).innerHTML = '<b>SHADOW-VISIBLE</b>';
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert!(
+        result.final_text.contains("SHADOW-VISIBLE"),
+        "{}",
+        result.final_text
+    );
+}
+
+#[test]
+fn reddit_shadow_root_adopted_style_sheets_apply_inside_root() {
+    let html = r#"<!DOCTYPE html><html><body><div id="h"></div><script>
+      var root = document.getElementById('h').attachShadow({ mode: 'open' });
+      var p = document.createElement('p');
+      p.id = 'in';
+      root.appendChild(p);
+      var sheet = new CSSStyleSheet();
+      sheet.replaceSync('#in { display: none; }');
+      root.adoptedStyleSheets = [sheet];
+      var out = ['len:' + root.adoptedStyleSheets.length,
+        'display:' + getComputedStyle(p).display];
+      try { root.adoptedStyleSheets = [{}]; out.push('bad:no'); }
+      catch (e) { out.push('bad:' + e.name); }
+      var t = document.createElement('p');
+      t.id = 't';
+      t.textContent = out.join('|');
+      document.body.appendChild(t);
+    </script></body></html>"#;
+    let result = super::harness::run_inline_page(html, Duration::from_millis(200));
+    assert_eq!(result.final_text, "len:1|display:none|bad:TypeError");
+}
+
 #[test]
 fn reddit_dom_api_before_after_replace_with() {
     let html = r#"<!DOCTYPE html><html><body><div id="p"><i id="i">x</i></div><p id="t"></p>

@@ -3681,6 +3681,40 @@ fn page_scroll_to_and_by_move_viewport_and_fire_scroll_events() {
     assert_eq!(result.final_text, "100|150|175|true");
 }
 
+// Source: CSSOM View Module (Element.scrollTop/scrollLeft setters scroll the element, clamped).
+#[test]
+fn element_scroll_top_and_left_setters_scroll_overflow_container_and_clamp() {
+    let html = r#"<!DOCTYPE html><html><head><style>
+      body { margin: 0; }
+      #box { width: 100px; height: 100px; overflow: auto; }
+      #inner { width: 300px; height: 1000px; }
+    </style></head><body>
+    <div id="box"><div id="inner"></div></div>
+    <p id="t">pending</p>
+    <script>
+      var box = document.getElementById('box');
+      var out = [];
+      box.scrollTop = 40;
+      out.push(box.scrollTop);
+      box.scrollTop = box.scrollHeight;
+      out.push(box.scrollTop);
+      box.scrollTop = -5;
+      out.push(box.scrollTop);
+      box.scrollLeft = 70;
+      out.push(box.scrollLeft + ':' + box.scrollTop);
+      box.scrollLeft = 100000;
+      out.push(box.scrollLeft);
+      box.scrollTop = 0;
+      var steps = 0;
+      while (box.scrollTop < 500 && steps < 100) { box.scrollTop += 100; steps += 1; }
+      out.push(box.scrollTop + '/' + steps);
+      document.getElementById('t').textContent = out.join('|');
+    </script></body></html>"#;
+    let result =
+        super::harness::run_inline_page_in_viewport(html, 400, 300, Duration::from_millis(400));
+    assert_eq!(result.final_text, "40|900|0|70:0|200|500/5");
+}
+
 // Source: Intersection Observer; product decision (infinite scroll via a bottom sentinel).
 #[test]
 fn intersection_observer_sentinel_fires_after_viewport_scroll() {

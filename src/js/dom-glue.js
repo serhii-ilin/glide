@@ -1646,7 +1646,8 @@
   }
 
   // `scrollTop`/`scrollLeft` read the element's offset (the viewport's for the root element).
-  // Only the root element scrolls from script: assigning moves the viewport like `scrollTo`.
+  // Assigning on the root element moves the viewport like `scrollTo`; on any other element it
+  // scrolls that element (clamped to its overflow) through the `scrollElement` RPC.
   function patchScrollOffsets(elProto) {
     [['scrollTop', 'scrollY', 1], ['scrollLeft', 'scrollX', 0]].forEach(([field, viewportKey, axis]) => {
       Object.defineProperty(elProto, field, {
@@ -1658,9 +1659,21 @@
           return cachedRpc('layoutField', id, field);
         },
         set(value) {
-          if (!pageDocument || this !== pageDocument.documentElement) return;
           const next = Number(value);
           if (!Number.isFinite(next)) return;
+          if (!pageDocument || this !== pageDocument.documentElement) {
+            flushMutations();
+            const id = blitzId(this);
+            if (id == null) return;
+            const other = cachedRpc('layoutField', id, axis === 1 ? 'scrollLeft' : 'scrollTop');
+            const x = axis === 0 ? next : other;
+            const y = axis === 1 ? next : other;
+            try {
+              rpc('scrollElement', String(id), String(x), String(y));
+            } catch (_) { /* detached or unknown node: nothing to scroll */ }
+            layoutCache.clear();
+            return;
+          }
           const cur = global.__glide_viewport_state();
           const x = axis === 0 ? next : cur.scrollX;
           const y = axis === 1 ? next : cur.scrollY;

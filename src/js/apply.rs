@@ -70,6 +70,7 @@ pub(crate) fn reply_id(req: &DomRequest) -> u64 {
         | DomRequest::LoadImage { reply, .. }
         | DomRequest::ScrollViewport { reply, .. }
         | DomRequest::ViewportInfo { reply }
+        | DomRequest::ScrollElement { reply, .. }
         | DomRequest::ScrollIntoView { reply, .. } => *reply,
         #[cfg(debug_assertions)]
         DomRequest::TestResize { reply, .. } => *reply,
@@ -213,6 +214,16 @@ fn apply_inner(doc: &mut BaseDocument, base_url: &str, req: DomRequest) -> DomRe
         DomRequest::ViewportInfo { reply } => {
             let state = super::viewport::state(doc);
             DomResponse::ok(reply, DomValue::Json(state.to_json()))
+        }
+        DomRequest::ScrollElement { node, x, y, reply } => {
+            let Some(node_id) = super::bridge::resolve_handle(doc, node) else {
+                return DomResponse::err(reply, "unknown node");
+            };
+            let (left, top) = super::viewport::scroll_element_to(doc, node_id, x, y);
+            DomResponse::ok(
+                reply,
+                DomValue::Json(serde_json::json!({ "scrollLeft": left, "scrollTop": top })),
+            )
         }
         DomRequest::ScrollIntoView { node, block, reply } => {
             let Some(node_id) = super::bridge::resolve_handle(doc, node) else {

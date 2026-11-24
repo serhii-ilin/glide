@@ -63,6 +63,11 @@ Feature: mcp-scroll Headless scrolling, scroll events and infinite scroll
     When the agent scrolls with a one second timeout
     Then the call returns within about the timeout and `settled` is false
 
+  Scenario: Assigning scrollTop on an overflow container scrolls it and clamps
+    Given a page with a 100px overflow:auto container holding 1000px of content
+    When page script assigns scrollTop, scrollLeft and increments scrollTop in a loop
+    Then reading them back returns the clamped offsets and the loop terminates
+
   Scenario: Screenshot honors the scroll offset and can capture the full page
     Given a page with a red block above a blue block below the fold
     When the agent scrolls past the red block and takes a screenshot

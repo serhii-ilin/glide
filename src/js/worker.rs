@@ -1014,6 +1014,20 @@ fn map_dom_op(
                 .map_err(|_| "scrollViewport y must be a number".to_string())?;
             DomRequest::ScrollViewport { x, y, reply }
         }
+        "scrollElement" => {
+            let x = arg_string(scope, args, 3)?
+                .parse::<f64>()
+                .map_err(|_| "scrollElement x must be a number".to_string())?;
+            let y = arg_string(scope, args, 4)?
+                .parse::<f64>()
+                .map_err(|_| "scrollElement y must be a number".to_string())?;
+            DomRequest::ScrollElement {
+                node: arg_handle(scope, args, 2)?,
+                x,
+                y,
+                reply,
+            }
+        }
         "viewportInfo" => DomRequest::ViewportInfo { reply },
         "scrollIntoView" => DomRequest::ScrollIntoView {
             node: arg_handle(scope, args, 2)?,

@@ -176,6 +176,14 @@ pub enum DomRequest {
     ViewportInfo {
         reply: u64,
     },
+    /// `Element.scrollTop`/`scrollLeft` setters on a non-root element: scroll it to the absolute
+    /// offset, clamped to its overflow. Replies with `{scrollLeft, scrollTop}` after clamping.
+    ScrollElement {
+        node: u64,
+        x: f64,
+        y: f64,
+        reply: u64,
+    },
     /// `Element.scrollIntoView`: align the element in the viewport (`block` is a CSSOM View
     /// `ScrollLogicalPosition` keyword). Replies with the resulting viewport state JSON.
     ScrollIntoView {

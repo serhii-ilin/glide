@@ -103,3 +103,16 @@ pub fn scroll_to_selector(doc: &mut BaseDocument, selector: &str) -> Result<View
         .ok_or_else(|| format!("no element matches selector `{selector}`"))?;
     Ok(scroll_into_view(doc, id, "start"))
 }
+
+/// Scroll a non-root element to an absolute offset (clamped to its overflow) and return its
+/// resulting `(scrollLeft, scrollTop)`. The root element scrolls the viewport instead.
+pub fn scroll_element_to(doc: &mut BaseDocument, node: NodeId, x: f64, y: f64) -> (f64, f64) {
+    doc.resolve(0.0);
+    doc.scroll_to(node, x, y, ScrollBehavior::Instant);
+    doc.get_node(node)
+        .map(|n| {
+            let offset = n.scroll_offset();
+            (offset.x, offset.y)
+        })
+        .unwrap_or((0.0, 0.0))
+}
